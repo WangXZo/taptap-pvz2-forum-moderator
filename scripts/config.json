@@ -1,0 +1,83 @@
+{
+  "appId": 54031,
+  "groupId": 40173,
+  "appName": "植物大战僵尸2",
+  "forumUrl": "https://www.taptap.cn/app/54031/topic",
+
+  "myUserId": "63****64",
+  "myUserName": "",
+
+  "watch": {
+    "intervalSeconds": 600
+  },
+
+  "collect": {
+    "topN": 8,
+    "sortBy": "publish_time",
+    "sort": "created",
+    "type": "feed",
+    "commentDelayMs": 1500
+  },
+
+  "match": {
+    "autoReplyScore": 0.65,
+    "suggestScore": 0.45,
+    "maxAutoReplyPerRun": 8,
+    "minPostAgeMinutes": 10
+  },
+
+  "reply": {
+    "channel": "opencli",
+    "session": "tap",
+    "opencliMain": "",
+    "dryRun": false,
+    "delayMs": 6000,
+    "signature": "「版主助手-小鲸鱼」",
+    "blacklistWords": ["客服", "申诉", "退款", "充值失败", "封号", "举报", "官方补偿", "版号"],
+    "allowCloser": true,
+    "refuseOnUnknown": false,
+    "emoji": {
+      "enabled": true,
+      "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。",
+      "allowNames": []
+    },
+    "note": "allowCloser=回复末尾是否随机加一句收尾；refuseOnUnknown=库里没答案时是否回一句婉拒（false=不理会，转人工）"
+  },
+
+  "praise": {
+    "enabled": true,
+    "signature": true,
+    "minScore": 1,
+    "maxPerRun": 3,
+    "note": "提问帖里已有其他玩家给出有效回答 → 在那条评论下盖楼夸一句 + 1 个表情（表情按语境自动挑）"
+  },
+
+  "share": {
+    "enabled": true,
+    "signature": false,
+    "maxPerRun": 2,
+    "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值"
+  },
+
+  "archive": {
+    "enabled": true,
+    "staleDays": 30,
+    "note": "每月 1~5 号首次运行时，把超过 30 天未被引用的条目归档到 qa/归档/，主库重排"
+  },
+
+  "qaHealth": {
+    "enabled": true,
+    "everyHours": 24,
+    "autoPurge": true,
+    "note": "每 24 小时体检一次答疑库：剔除正文里带自己签名（reply.signature）的条目 → 移到 qa/归档/。频率别调高（用户要求「每天就行」）；autoPurge=false 则只报警不剔除"
+  },
+
+  "paths": {
+    "dataDir": "{{SKILL}}/data",
+    "qaFile": "{{SKILL}}/qa/答疑库.md",
+    "usageFile": "{{SKILL}}/data/qa-usage.json",
+    "archiveDir": "{{SKILL}}/qa/归档",
+    "stateFile": "{{SKILL}}/data/state.json",
+    "reportsDir": "{{SKILL}}/reports"
+  }
+}

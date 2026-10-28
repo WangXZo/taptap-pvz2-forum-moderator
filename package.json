@@ -1,0 +1,44 @@
+{
+  "name": "taptap-pvz2-forum-moderator",
+  "version": "1.0.0",
+  "description": "TapTap 论坛版主/答疑组自动化助手：定时扫帖、按答疑库自动回复并带 TapTap 表情、社区答案自动沉淀、缺口报表",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "taptap-bot": "./scripts/watch.mjs",
+    "taptap-bot-doctor": "./scripts/doctor.mjs",
+    "taptap-bot-install": "./scripts/install.mjs"
+  },
+  "scripts": {
+    "doctor": "node scripts/doctor.mjs",
+    "install": "node scripts/install.mjs",
+    "start": "node scripts/watch.mjs",
+    "dry-run": "node scripts/watch.mjs --dry-run",
+    "once": "node scripts/collect.mjs --dry-run",
+    "report": "node scripts/report-gaps.mjs",
+    "test": "node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && node scripts/test-qa-health.mjs"
+  },
+  "keywords": [
+    "taptap",
+    "pvz2",
+    "forum",
+    "moderator",
+    "bot",
+    "qa"
+  ],
+  "files": [
+    "scripts/",
+    "references/",
+    "assets/",
+    "qa/答疑库.md",
+    "SKILL.md",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/WangXZo/taptap-pvz2-forum-moderator.git"
+  }
+}

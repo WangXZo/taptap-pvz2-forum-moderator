@@ -1,0 +1,16 @@
+# 运行时产物（每人独立，不进版本库）
+data/
+reports/
+logs/
+scripts/node-path.txt
+
+# 答疑库的临时/备份文件
+qa/答疑库.md.backup.md
+qa/答疑库.md.before-*
+qa/答疑库.md.before-purge-*
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+node_modules/
+*.log

@@ -1,0 +1,12 @@
+# 默认：仓库里一律 LF，避免 Windows 上 CRLF 混进来
+* text=auto eol=lf
+
+# 但这两个必须 CRLF —— Windows 的宿主程序对换行很挑
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制
+*.png binary
+*.jpg binary
+*.ico binary
