@@ -269,6 +269,28 @@ async function cmdSummon(count = 10) {
  */
 async function cmdManage(momentId) {
   await openPost(momentId);
+
+  // 先看这个页面上到底有哪些带 aria-label 的按钮（诊断「找不到管理按钮」用）
+  console.log('== 页面上的图标按钮（aria-label）==');
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      return JSON.stringify([...document.querySelectorAll('button[aria-label]')].filter(ok).map(b=>({
+        aria:b.getAttribute('aria-label'),
+        cls:String(b.className).slice(0,60),
+        x:Math.round(b.getBoundingClientRect().x), y:Math.round(b.getBoundingClientRect().y)
+      })),null,1);
+    })()`)
+  );
+  console.log('== 页面标题 / 所属版块 ==');
+  console.log(
+    ev(`(()=>{
+      const t=(document.querySelector('.moment-head__title')||{}).innerText||'';
+      const board=[...document.querySelectorAll('[class*=label],[class*=tag],[class*=group]')].map(e=>(e.innerText||'').trim()).filter(x=>x&&x.length<12).slice(0,6);
+      return JSON.stringify({title:t.slice(0,40), labels:[...new Set(board)]});
+    })()`)
+  );
+
   const clicked = ev(`(()=>{
     const b=document.querySelector('button[aria-label="管理"]');
     if(!b) return 'NO_MANAGE_BTN';
@@ -290,6 +312,64 @@ async function cmdManage(momentId) {
   );
 }
 
+/**
+ * 打开某个子版块的**列表页**，看卡片上有没有版主管理入口（只读）
+ *
+ * 用途：详情页没有「管理」按钮的版块（实测：活动报名板），
+ * 管理入口可能在列表卡片的「⋯」菜单里 —— 用它确认。
+ *
+ * 用法：node scripts/probe-dom.mjs board [activity_signup|feed]
+ */
+async function cmdBoard(type = 'activity_signup', appId = '54031') {
+  const url = `https://www.taptap.cn/app/${appId}/topic?sub_type=${type}`;
+  const r = call(['browser', S, 'open', url], 90000);
+  console.log('open', url, 'code =', r.code);
+  await sleep(7000);
+
+  console.log('\n== 卡片上的「⋯」入口数量 ==');
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const more=[...document.querySelectorAll('[class*=header-more-button],[class*=more-button]')].filter(ok);
+      return JSON.stringify({cards:document.querySelectorAll('.moment-card').length, moreBtns:more.length,
+        sample:String(more[0]?.className||'')},null,1);
+    })()`)
+  );
+
+  console.log('\n== 点第一张卡片的「⋯」，看菜单里有什么（不点任何项）==');
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const card=document.querySelector('.moment-card');
+      if(!card) return 'NO_CARD';
+      const t=card.querySelector('[class*=header-more-button] [class*=trigger]')||card.querySelector('[class*=header-more-button] svg')||card.querySelector('[class*=header-more-button]');
+      if(!t) return 'NO_MORE_BTN';
+      t.scrollIntoView({block:'center'});
+      ['mousedown','mouseup','click'].forEach(ty=>t.dispatchEvent(new MouseEvent(ty,{bubbles:true,cancelable:true,view:window})));
+      return 'CLICKED';
+    })()`)
+  );
+  await sleep(2000);
+  console.log('== 弹层里的可见文本（原始 dump）==');
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const pops=[...document.querySelectorAll('[class*=dropdown],[class*=popover],[class*=menu]')].filter(ok)
+        .filter(e=>{const t=(e.innerText||'').trim(); return t && t.length<200;});
+      return JSON.stringify(pops.slice(0,4).map(p=>({cls:String(p.className).slice(0,60), txt:(p.innerText||'').replace(/\\n+/g,' | ').slice(0,160)})),null,1);
+    })()`)
+  );
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const items=[...document.querySelectorAll('*')].filter(e=>ok(e)&&e.children.length===0)
+        .map(e=>(e.textContent||'').trim())
+        .filter(t=>/移除|置顶|加精|沉底|移动|管理|删除|举报|编辑/.test(t));
+      return JSON.stringify([...new Set(items)].slice(0,15),null,1);
+    })()`)
+  );
+}
+
 const CMDS = {
   comment: (a) => cmdComment(a[0], a[1]),
   editor: () => cmdEditor(),
@@ -298,6 +378,7 @@ const CMDS = {
   eval: (a) => cmdEval(a[0]),
   summon: (a) => cmdSummon(a[0]),
   manage: (a) => cmdManage(a[0]),
+  board: (a) => cmdBoard(a[0], a[1]),
 };
 
 if (!cmd || !CMDS[cmd]) {

@@ -77,14 +77,33 @@
   },
   "modTasks": {
     "enabled": true,
+    "intervalSeconds": 120,
+    "session": "tapmod",
+    "targets": [
+      {
+        "groupId": 40173,
+        "type": "activity_signup",
+        "label": "活动报名"
+      },
+      {
+        "groupId": 40173,
+        "type": "feed",
+        "label": "讨论区"
+      }
+    ],
     "friendRequest": {
       "enabled": true,
-      "topN": 10,
+      "scope": "today",
       "cooldownMs": 1000,
+      "maxPerRound": 0,
+      "backlogMax": 500,
+      "maxPages": 4,
+      "maxSweepPages": 30,
+      "bareCodeIsIntent": true,
       "reply": "你好呀～好友码集中贴已经置顶啦，单开帖很容易被刷下去反而没人看到。麻烦把内容按格式盖到这栋楼 👉 https://www.taptap.cn/moment/864806259805654695，能被更多人找到～",
-      "note": "版主管理任务：检查最新 topN 条，命中「加好友/一起玩/好友位」等加好友行为 → 先回固定文案（确认发出）→ 再「论坛管理→移除」（不是删帖，可恢复）。cooldownMs=处理完等多久再下一个（用户要求 1s）"
+      "note": "版主管理任务：只处理**明确存在加好友意图**的帖（加好友/扩列/互赞好友/好友位/好友码/加群/加V…）；活动组队（十月同游/组队/一起玩）、活动邀请码互填、游戏功能里的「好友宝箱」一律放过。先回固定文案（确认发出）→ 再「论坛管理→移除」（不是删帖，可恢复）。cooldownMs=处理完等多久再下一个"
     },
-    "note": "每轮答疑之后跑一轮「版主管理任务」；开关在这里关掉整个任务"
+    "note": "常驻用 scripts/mod-watch.mjs（默认 2 分钟一轮，独立 opencli session，不跟答疑守护抢标签页）。targets=要管的子版块（type=activity_signup 是活动报名板，type=feed 是讨论区）"
   },
   "archive": {
     "enabled": true,

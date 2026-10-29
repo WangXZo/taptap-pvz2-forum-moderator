@@ -11,7 +11,6 @@
 
 import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { runOnce } from './collect.mjs';
-import { runModTask } from './mod-task.mjs';
 
 const argv = process.argv.slice(2);
 const { has, argOf } = argvOf(argv);
@@ -37,13 +36,8 @@ for (;;) {
     console.error(`[第 ${round} 轮] 异常：${e.message}`);
   }
 
-  // 版主管理任务：检查最新 10 条 → 命中「加好友行为」的先回固定文案、再移除
-  // （dry-run 时只判定不动作；--no-reply 时也只判定）
-  try {
-    await runModTask({ dryRun: dryRun || !doReply, log: console.log });
-  } catch (e) {
-    console.error(`[第 ${round} 轮 · 管理任务] 异常：${e.message}`);
-  }
+  // ⚠️ 版主管理任务**不在这里跑** —— 它由 scripts/mod-watch.mjs 独占（2 分钟一轮、
+  //    独立的 opencli session），两个进程各开各的标签页，不互相踩。
 
   if (once) {
     console.log('\n--once 模式，结束。');
