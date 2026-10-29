@@ -11,6 +11,7 @@
 //   rebuild                                            从 data/qa-usage.json 的来源重建沉淀条目
 //   backup                                             手动备份一份到 qa/答疑库.md.backup.md
 //   purge-tag [--apply] [--tag <文字>]                 剔除「携带自己标签」的条目（默认只体检）
+//   purge-junk [--apply]                               剔除「广告/灌水/分享」等垃圾条目（默认只体检）
 //
 // 说明：
 //   * 所有路径都来自 scripts/config.json（跟着 skill 目录走），拷给别人照样能用
@@ -32,6 +33,7 @@ import { buildQaEntry } from './lib/summarize.mjs';
 import { loadState } from './lib/state.mjs';
 import { entryKeyOf } from './lib/usage.mjs';
 import { tagsFromConfig, purgeTagged } from './lib/qa-health.mjs';
+import { purgeJunk, DEFAULT_JUNK_PATTERNS } from './lib/qa-junk.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -287,6 +289,47 @@ async function cmdRebuild() {
   console.log(`\n重建完成：${manual.length} + ${rebuilt.length} = ${manual.length + rebuilt.length} 条`);
 }
 
+/**
+ * 剔除答疑库里的「垃圾条目」（广告 / 灌水 / 分享帖被误收成问答）
+ *
+ * 背景（2026-10-29）：版主管理任务读了非提问帖的评论，
+ * 「加好友呀」这类广告帖被当成「他人已回复 → 沉淀」写进了库。
+ *
+ * 规则在 config.qa.junkPatterns（正则字符串数组），默认见 lib/qa-junk.mjs。
+ * 只看**问法**（标题）；命中就移到 qa/归档/，**不删除**。
+ *
+ * 用法：
+ *   node scripts/qa-admin.mjs purge-junk            # 只体检
+ *   node scripts/qa-admin.mjs purge-junk --apply    # 真剔除（归档）
+ */
+async function cmdPurgeJunk() {
+  const apply = flag('apply');
+  const patterns = config.qa?.junkPatterns?.length ? config.qa.junkPatterns : DEFAULT_JUNK_PATTERNS;
+
+  const res = await purgeJunk({
+    qaFile: QA,
+    archiveDir: config.paths.archiveDir,
+    patterns,
+    apply,
+  });
+
+  if (!res.hits.length) {
+    console.log(`答疑库干净：${res.before} 条，没有命中垃圾规则`);
+    console.log(`（当前规则：${patterns.join(' | ')}）`);
+    return;
+  }
+
+  console.log(`发现 ${res.hits.length} 条垃圾条目：`);
+  for (const h of res.hits) console.log(`  ✗ 《${h.question.slice(0, 30)}》 命中「${h.pattern}」`);
+
+  if (!apply) {
+    console.log('\n（只体检，没动文件；加 --apply 才剔除）');
+    return;
+  }
+  console.log(`\n已剔除并归档 → ${res.archivedFile}`);
+  console.log(`主库 ${res.before} → ${res.after} 条（备份：${res.backupFile}）`);
+}
+
 const CMDS = {
   show: cmdShow,
   append: cmdAppend,
@@ -295,6 +338,7 @@ const CMDS = {
   rebuild: cmdRebuild,
   backup: cmdBackup,
   'purge-tag': cmdPurgeTag,
+  'purge-junk': cmdPurgeJunk,
 };
 
 if (!cmd || !CMDS[cmd]) {

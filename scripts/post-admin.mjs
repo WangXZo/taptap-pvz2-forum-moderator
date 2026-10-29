@@ -8,6 +8,7 @@
 //   reset-share <momentId...>      重置「已分享互动」标记
 //   cleanup <来源链接...>          按来源链接清理：答疑库条目 + 使用统计 + 状态记录
 //   diag [条数]                    命中率诊断：每个帖子的最高匹配分 + 各阈值命中数
+//   check-removed <momentId...>     查这些帖子还在不在版块里（被「移除」过就查不到了）
 //
 // 说明：所有路径来自 scripts/config.json，跟着 skill 目录走。
 //
@@ -384,6 +385,45 @@ async function cmdRecheck() {
   console.log('\n状态库与使用统计已更新');
 }
 
+/**
+ * 查这些帖子还在不在版块里
+ *
+ * 背景：「移除」之后，**帖子详情页还能打开**（标题、正文、评论都还在），
+ * 唯一的变化是它从版块列表里消失了 —— 所以判断移除是否生效，要看**列表**而不是详情页。
+ */
+async function cmdCheckRemoved() {
+  if (!rest.length) {
+    console.error('用法：post-admin.mjs check-removed <momentId...>');
+    process.exit(1);
+  }
+  const ids = rest.map(String);
+  const found = new Map();
+
+  for (let from = 0; from < 50; from += 10) {
+    const data = await listFeed({
+      groupId: config.groupId,
+      from,
+      limit: 10,
+      sort: config.collect.sort || 'created',
+      type: config.collect.type,
+    });
+    const list = data.list || [];
+    if (!list.length) break;
+    for (const it of list) {
+      const id = String(it.moment?.id_str || '');
+      if (ids.includes(id)) found.set(id, extractText(it).title);
+    }
+    if (ids.every((id) => found.has(id))) break;
+    await sleep(1200);
+  }
+
+  console.log('');
+  for (const id of ids) {
+    if (found.has(id)) console.log(`  ✗ 仍在版块里：${id}  《${found.get(id).slice(0, 30)}》`);
+    else console.log(`  ✓ 已不在版块里（被移除过）：${id}`);
+  }
+}
+
 const CMDS = {
   fetch: cmdFetch,
   'mark-replied': cmdMarkReplied,
@@ -392,6 +432,7 @@ const CMDS = {
   cleanup: cmdCleanup,
   diag: cmdDiag,
   recheck: cmdRecheck,
+  'check-removed': cmdCheckRemoved,
 };
 
 if (!cmd || !CMDS[cmd]) {

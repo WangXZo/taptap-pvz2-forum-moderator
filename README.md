@@ -46,6 +46,9 @@
 - 命中答疑库就**打开帖子 → 填正文 → 点选 TapTap 表情 → 发送**（带签名）
 - 社区已有人答对的帖子 → **把那份答案沉淀进答疑库**，并在楼中楼夸一句
 - 分享/进度/吐槽帖 → 去说句话（不输出信息，只互动）
+- **玩家喊你**（签名/别名/「版主在吗」）→ 过去互动一次：敏感问题婉拒、问问题先查答疑库、其余按语气鼓励共情
+- **多人协作按签名识别「回过没」** → 队友回过的不会重复回
+- **版主管理任务**：检查最新 10 条 → 命中「加好友/一起玩/好友位」等 → 回统一提醒 → 「论坛管理 → 移除」
 - 每天体检一次答疑库，剔除「携带自己标签」的脏条目
 
 **不会**（有硬性安全阀）：
@@ -84,8 +87,12 @@ node scripts/collect.mjs --dry-run     # 只跑一轮，不常驻、不发送
 node scripts/qa-admin.mjs show         # 看答疑库有哪些条目
 node scripts/qa-admin.mjs append ...   # 手工加一条问答
 node scripts/qa-admin.mjs purge-tag    # 体检：有没有带自己标签的脏条目
+node scripts/qa-admin.mjs purge-junk   # 体检：有没有广告/灌水条目
 node scripts/post-admin.mjs recheck <id>   # 老帖子判定错了，重新判
+node scripts/post-admin.mjs check-removed <id>  # 这帖还在不在版块里
+node scripts/mod-task.mjs --dry-run    # 版主管理任务：只判定不移除
 node scripts/report-gaps.mjs           # 生成「待补充问题清单」
+node scripts/probe-dom.mjs summon      # 扫最新帖，找「玩家喊我们」的评论
 ```
 
 ## 答疑库：整个项目的核心
@@ -147,10 +154,13 @@ node scripts\schedule.ps1 -Action doctor
 | 事实 | 后果 |
 |---|---|
 | 每个人的 `data/state.json` 独立 | A 回过哪些帖 B 不知道 → **同一问题可能被多人各回一遍** |
-| `myUserId` 各不相同 | 互相判断不出「我已回过」 |
+| `myUserId` 各不相同 | 互相判断不出「我已回过」（**现在靠签名兜住**：签名结尾的回复一律算「我们回过」） |
 | 答疑库共享一份（仓库） | 答案口径一致 —— 这正是要共建它的原因 |
 
 **结论：能多人用，但只能有一个账号开自动回复**，其他人用 `--no-reply` 只采集出报表。
+
+> 版主管理任务（移除加好友帖）是**不可逆的版主动作**，多人同时开容易重复动同一帖 ——
+> 建议只让一个账号开 `modTasks.enabled`。
 
 ## 文档
 

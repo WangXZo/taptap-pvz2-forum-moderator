@@ -41,10 +41,10 @@ node scripts/whoami.mjs
 
 # 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
 
-# 4) 全部自检（改规则前后都要跑，8 套）
+# 4) 全部自检（改规则前后都要跑，9 套）
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-summon.mjs
+node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run
@@ -378,6 +378,60 @@ node scripts/test-variants.mjs       # 60 条断言：变体不重样 + 泄露�
 node scripts/test-summon.mjs   # 122 条断言：签名识别 + 分桶 + 护栏 + 答疑库作答
 ```
 
+## 版主管理任务：加好友帖 → 回固定文案 → 移除
+
+论坛现在满屏都是「加好友 / 好友位 / 一起玩 + 邀请码」的广告帖。
+用户 2026-10-29 要求：**检查最新 10 条，命中就统一回一句提醒，然后把帖子「移除」**。
+
+⚠️ **「移除」不是删帖** —— 用的是 TapTap 的「论坛管理 → 移除」，内容仍在、可恢复。
+确认弹窗要**自动点掉**（弹窗按钮就叫「移除」，不是「确定」）。
+
+```
+最新 10 条 → 判定「加好友行为」→ 回固定文案 → 确认发出 → 管理→移除 → 自动点确认 → 等 1s 下一个
+```
+
+### 判定：宁可漏，不可错
+
+| 类别 | 规则 |
+|---|---|
+| 强特征 | 加好友 / 好友位 / 好友码 / 好友 / 互加 / 加群 / 加微 / 加v / 加我 / 邀请码 / 二维码 → 命中即处理 |
+| 弱特征 | 一起玩 / 找人一起 / 求一起 → **必须同时带邀请码**才处理（否则误伤组队帖） |
+| 裸码帖 | 正文只有一个 `andXXXXXX` → 处理 |
+| 排除词 | 官方 / 公告 / 攻略 / 招募 / 组队 / 开黑 / 兑换码 / 天宫码 … → 一律放过 |
+
+邀请码 = TapTap 分享码（`and` + 6~12 位字母数字），现场广告帖几乎都带。
+
+### 页面操作（实测）
+
+| 步骤 | 选择器 |
+|---|---|
+| 打开「管理」 | `button[aria-label="管理"]`（右上角那个剪刀图标） |
+| 点「移除」 | 菜单里文字**恰好等于**「移除」的可见元素 |
+| 二次确认 | `.tap-media-modal` 里的「移除」按钮（**不能全页找「移除」**，会点到菜单项） |
+
+⚠️ 移除成功后**帖子详情页还能打开**，只有版块列表里没有了 ——
+所以核验看「点到确认按钮 + 成功提示」，别拿标题当依据。
+想确认真被移除了：`node scripts/post-admin.mjs check-removed <id>`。
+
+### 命令与配置
+
+```bash
+node scripts/mod-task.mjs --dry-run      # 只判定，看看会动哪些帖子
+node scripts/mod-task.mjs --only <id>    # 只处理某一条
+```
+
+```json
+"modTasks": { "enabled": true,
+  "friendRequest": { "topN": 10, "cooldownMs": 1000, "reply": "（统一话术，可改）" } }
+```
+
+守护循环每轮答疑后自动跑一次。`state.posts[id].modTask` 记 `repliedAt/removedAt` ——
+**回复发出就立刻落盘**，中途失败重跑不会重复回同一段话。
+
+```bash
+node scripts/test-mod-task.mjs   # 33 条断言：用现场真实标题验命中/放过
+```
+
 ## 四类标记
 
 每条帖子只会落在其中之一，`reports/questions.md` 与 `.csv` 按这四类分区：
@@ -505,8 +559,10 @@ node scripts/test-praise.mjs        # 34 条断言（含口吻护栏），改夸
 | `scripts/test-qa-health.mjs` | **答疑库体检回归测试**（35 条断言）：标签识别、只认正文、默认不写、移动不删除、24h 频率 |
 | `scripts/test-summon.mjs` | **签名识别 + 喊话互动回归测试**（122 条断言）：我们回过 vs 玩家喊我们、语义分桶、口吻护栏、答疑库作答 |
 | `scripts/report-gaps.mjs` | **答疑库缺口报表** → `reports/gaps.md`：没命中库的提问 + 高频主题词，告诉你该补什么 |
-| `scripts/qa-admin.mjs` | **答疑库管理 CLI**：`show/append/keywords/register/rebuild/backup` + **`purge-tag`（剔除携带自己标签的条目）** |
-| `scripts/post-admin.mjs` | **帖子工具 CLI**：`fetch/mark-replied/reset-praised/reset-share/cleanup/diag` |
+| `scripts/qa-admin.mjs` | **答疑库管理 CLI**：`show/append/keywords/register/rebuild/backup` + **`purge-tag`（剔除携带自己标签的条目）** + **`purge-junk`（剔除广告/灌水等垃圾条目）** |
+| `scripts/post-admin.mjs` | **帖子工具 CLI**：`fetch/mark-replied/reset-praised/reset-share/cleanup/diag/recheck` + **`check-removed`（查帖子还在不在版块里）** |
+| `scripts/mod-task.mjs` | **版主管理任务**：检查最新 10 条 → 命中「加好友行为」→ 回固定文案 → 移除 |
+| `scripts/publish-repo.mjs` | **脱敏发布**：把运行中的 skill 同步到 GitHub 仓库（config 脱敏 + 个人信息扫描） |
 | `scripts/probe-dom.mjs` | **DOM 探针**：`comment/editor/emoji/watch/eval`（TapTap 改版时校准选择器用） |
 | `scripts/restore-qa.mjs` | **答疑库还原**：`--restore` 用备份回退（每轮自动备份） |
 | `scripts/schedule.ps1` | **计划任务管理**：`-Action install/doctor/status/start/stop/uninstall` |
@@ -525,6 +581,9 @@ node scripts/test-praise.mjs        # 34 条断言（含口吻护栏），改夸
 | `signature.mjs` | **签名识别**：我们回过没 / 玩家在喊我们（括号空格 @ 全归一化） |
 | `summon.mjs` | **喊话互动**：8 个语义桶 + 文案池 + 护栏 `assertKind` + 去称呼匹配答疑库 |
 | `summon-send.mjs` | 发送喊话楼中楼回复（复用 `reply-nested.mjs`）+ 记账防重复 |
+| `mod-task.mjs` | **版主管理判定**：强/弱/排除词表 + 邀请码识别（`detectFriendRequest`） |
+| `remove-post.mjs` | **「论坛管理 → 移除」执行器**：点管理 → 点移除 → 自动点确认框 → 核验 |
+| `qa-junk.mjs` | **答疑库垃圾条目剔除**（广告/灌水/分享帖误收成问答） |
 | `reply-nested.mjs` | **楼中楼回复执行器**（点「回复」→ 填文 → 插表情 → 发送 → 核验） |
 | `usage.mjs` | 引用统计（`cited`/`lastCitedAt`/`createdAt`）+ 归档时机判断 |
 | `archive.mjs` | 30 天未引用归档到冷数据 + 主库重排 |
@@ -707,5 +766,6 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 | `references/question-detect.md` | **提问判定规则**：判定顺序、NOT_ASK/ASK 词表、35 条用例、3 个历史 bug 成因、改词表注意事项 |
 | `references/praise.md` | **夸答题玩家**：有效回答的门槛、表情挑法、楼中楼操作流程与踩坑 |
 | `references/summon.md` | **签名识别 + 玩家喊我们**：判定表、8 个语义桶、护栏清单、答疑库匹配去称呼 |
+| `references/mod-task.md` | **版主管理任务**：判定规则（强/弱/排除词）、「管理→移除」选择器、确认框、记账幂等 |
 | `references/admin.md` | **管理工具速查**：答疑库/帖子两个 CLI 的用法与典型流程 |
 | `references/ops.md` | 定时部署、开机自启、多游戏复用、扩展到其他论坛 |

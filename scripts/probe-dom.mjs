@@ -205,12 +205,99 @@ function cmdEval(file) {
   console.log(ev(js, 60000));
 }
 
+/**
+ * 扫最新 N 条帖子的评论，找出「玩家在喊我们」的（只读，不发送任何东西）
+ *
+ * 用法：node scripts/probe-dom.mjs summon [条数]
+ * 用途：验证签名识别/喊话判定在真实数据上是否命中（改判定规则后跑一次）
+ */
+async function cmdSummon(count = 10) {
+  const { loadConfig } = await import('./lib/paths.mjs');
+  const { listFeed, listComments } = await import('./lib/http.mjs');
+  const { isSummonText, isOurComment, commentText, teamUserIdsOf } = await import('./lib/signature.mjs');
+
+  const config = await loadConfig();
+  const teamIds = teamUserIdsOf(config);
+  const data = await listFeed({
+    groupId: config.groupId,
+    from: 0,
+    limit: Math.min(10, Number(count) || 10),
+    sort: config.collect.sort || 'created',
+    type: config.collect.type,
+  });
+
+  let scanned = 0;
+  for (const item of data.list || []) {
+    const m = item.moment || {};
+    const id = String(m.id_str || '');
+    const n = Number(item.comment_count ?? m.stat?.comments ?? 0);
+    if (!id || !n) continue;
+    let cs;
+    try {
+      cs = await listComments({ momentId: id, from: 0, limit: 30 });
+    } catch (e) {
+      console.log(`  ! 读评论失败 ${id}: ${e.message}`);
+      continue;
+    }
+    scanned++;
+    const flat = [];
+    for (const c of cs.list || []) {
+      flat.push(c);
+      for (const ch of c.child_posts || []) flat.push(ch);
+    }
+    for (const c of flat) {
+      const t = commentText(c);
+      if (!t) continue;
+      const hit = isSummonText(t, config);
+      const ours = isOurComment(c, { config, teamIds });
+      if (hit.summon || ours) {
+        console.log(
+          `  ${hit.summon ? '【喊话】' : '【我们自己】'} ${c.author?.name || '?'}：${t.slice(0, 60)}` +
+            `  (${hit.why || 'signature-tail'})`
+        );
+      }
+    }
+  }
+  console.log(`\n已扫 ${scanned} 个有评论的帖子。`);
+}
+
+/**
+ * 展开帖子详情页右上角「管理」菜单，dump 里面有哪些项（只读，不点任何项）
+ *
+ * 用法：node scripts/probe-dom.mjs manage <momentId>
+ * 用途：TapTap 改版后确认「移除」入口还在不在
+ */
+async function cmdManage(momentId) {
+  await openPost(momentId);
+  const clicked = ev(`(()=>{
+    const b=document.querySelector('button[aria-label="管理"]');
+    if(!b) return 'NO_MANAGE_BTN';
+    const t=b.querySelector('[class*=trigger]')||b.querySelector('svg')||b;
+    t.scrollIntoView({block:'center'});
+    ['mousedown','mouseup','click'].forEach(ty=>t.dispatchEvent(new MouseEvent(ty,{bubbles:true,cancelable:true,view:window})));
+    return 'CLICKED';
+  })()`);
+  console.log('点「管理」：' + clicked);
+  await sleep(1800);
+  console.log(
+    ev(`(()=>{
+      const ok=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0;};
+      const items=[...document.querySelectorAll('*')].filter(e=>ok(e) && e.children.length===0)
+        .map(e=>(e.textContent||'').trim())
+        .filter(t=>/移除|置顶|加精|沉底|移动|管理|删除/.test(t));
+      return JSON.stringify([...new Set(items)].slice(0,15),null,1);
+    })()`)
+  );
+}
+
 const CMDS = {
   comment: (a) => cmdComment(a[0], a[1]),
   editor: () => cmdEditor(),
   emoji: () => cmdEmoji(),
   watch: (a) => cmdWatch(a[0], a[1]),
   eval: (a) => cmdEval(a[0]),
+  summon: (a) => cmdSummon(a[0]),
+  manage: (a) => cmdManage(a[0]),
 };
 
 if (!cmd || !CMDS[cmd]) {
@@ -220,6 +307,8 @@ if (!cmd || !CMDS[cmd]) {
   console.log('  emoji                          dump 表情面板');
   console.log('  watch <momentId> [秒]          记录用户手动点击');
   console.log('  eval <js文件>                  跑一段 JS');
+  console.log('  summon [条数]                  扫最新帖子，找「玩家喊我们」的评论（只读）');
+  console.log('  manage <momentId>              展开「管理」菜单并列出有哪些项（只读，不点）');
   console.log('  详细说明见 references/admin.md');
   process.exit(cmd ? 1 : 0);
 }
