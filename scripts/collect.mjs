@@ -9,6 +9,9 @@
 
 import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { listFeed, listComments, extractText, MOMENT_URL, WafBlocked } from './lib/http.mjs';
+import { isOurComment, isSummonText, teamUserIdsOf, commentText } from './lib/signature.mjs';
+import { buildSummonReply, assertKind } from './lib/summon.mjs';
+import { sendSummonReply } from './lib/summon-send.mjs';
 import { loadQaLibrary, looksLikeQuestion, looksLikeShare } from './lib/qa.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
 import { classify, composeReply } from './lib/classify.mjs';
@@ -27,6 +30,55 @@ import { shouldHealthCheck, purgeTagged, tagsFromConfig } from './lib/qa-health.
 const argv = process.argv.slice(2);
 const { has, argOf } = argvOf(argv);
 
+/**
+ * 摊平评论树（含楼中楼），保留父评论 id
+ * @returns {Array<{c:object, parentId:string|null}>}
+ */
+function flattenAll(list) {
+  const out = [];
+  for (const c of list || []) {
+    out.push({ c, parentId: null });
+    for (const ch of c.child_posts || []) out.push({ c: ch, parentId: String(c.id_str || '') });
+  }
+  return out;
+}
+
+/**
+ * 从摊平的评论里挑出「玩家在喊我们」的几条（已回过的不算）
+ *
+ * 优先序：① 明确点了签名 ② 只是喊「版主」 ③ 时间新的优先
+ * 单帖上限 config.summon.maxPerPost（默认 1）—— 一帖里被喊好几次只回一次，别刷屏。
+ */
+function pickSummons(flat, { config, teamIds, prev }) {
+  const done = new Set((prev?.summonReplied || []).map(String));
+  const perPost = Math.max(1, Number(config.summon?.maxPerPost ?? 1));
+  const out = [];
+
+  for (const { c, parentId } of flat) {
+    const commentId = String(c.id_str || '');
+    if (!commentId || done.has(commentId)) continue;
+    if (isOurComment(c, { config, teamIds })) continue; // 自己/队友发的不算
+    const text = commentText(c);
+    if (!text) continue;
+    const hit = isSummonText(text, config);
+    if (!hit.summon) continue;
+    out.push({
+      commentId,
+      parentId,
+      author: c.author?.name || '',
+      authorId: String(c.author?.id || ''),
+      text,
+      why: hit.why || '',
+      alias: hit.alias || null,
+      time: Number(c.created_time || 0),
+      prio: hit.why === 'signature' ? 1 : 0,
+    });
+  }
+
+  out.sort((a, b) => b.prio - a.prio || b.time - a.time);
+  return out.slice(0, perPost);
+}
+
 export async function runOnce({ doReply = false, dryRun = true, top = null, quiet = false } = {}) {
   const config = await loadConfig();
   const qa = await loadQaLibrary(config.paths.qaFile);
@@ -34,6 +86,10 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
   const state = await loadState(config.paths.stateFile);
   const TOP = Number(top ?? config.collect.topN ?? 8);
   const log = (...a) => (quiet ? null : console.log(...a));
+  /** 我们这边的人（我的 + config.teamUserIds 里列的其他成员） */
+  const TEAM_IDS = teamUserIdsOf(config);
+  /** 「玩家喊我们」互动开关 */
+  const summonOn = config.summon?.enabled !== false;
 
   log(`\n== ${new Date().toLocaleString('zh-CN')} 本轮开始（答疑库 ${qa.length} 条，目标最新 ${TOP} 条）`);
 
@@ -154,24 +210,40 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
       replyCount: commentCount,
     };
 
-    // 2a. 读评论：判断我回过没 / 别人回过没
+    // 2a. 读评论：判断「我们回过没 / 别人回过没 / 有谁在喊我们」
+    //
+    // ⚠️ 「回过没」改成**按签名识别**（用户 2026-10-29 要求）：
+    //    答疑组是多人协作，同一个签名「版主助手-小鲸鱼」会出现在几个账号的回复里，
+    //    只看 myUserId 会漏掉队友的回复 → 同一个问题被两个人各回一遍。
+    //    反过来，玩家拿签名喊我们（「小鲸鱼在吗」）**不算**「回过」，见 lib/signature.mjs。
     const isNew = !prev;
     const looksQ = looksLikeQuestion(text);
-    const needComments = looksQ && commentCount > 0 && (isNew || !(prev?.replied && prev.reason === REASON.ALREADY_REPLIED));
+    const commentsChanged = prev?.scannedComments !== commentCount;
+    // 非提问帖以前不读评论；为了抓「喊话」也要读，但只在评论数变了/上次没回完时才读，别每轮白打接口
+    const needComments =
+      commentCount > 0 &&
+      (looksQ
+        ? isNew || !(prev?.replied && prev.reason === REASON.ALREADY_REPLIED) || commentsChanged
+        : summonOn && (commentsChanged || prev?.summonPending === true));
     let comments = null;
 
     if (needComments) {
       try {
         const c = await listComments({ momentId: id, from: 0, limit: 30 });
         comments = c.list || [];
-        const uid = String(config.myUserId || '__none__');
-        const mine =
-          comments.some((x) => String(x.author?.id || '') === uid) ||
-          comments.some((x) => (x.child_posts || []).some((ch) => String(ch.author?.id || '') === uid));
-        const others = comments.some((x) => String(x.author?.id || '') !== uid);
-        post.iReplied = mine;
-        post.othersReplied = others && !mine;
+        const flat = flattenAll(comments);
+        // 以前只看 author.id；现在用统一判定（团队成员 id + 签名结尾）
+        const ours = flat.filter((x) => isOurComment(x.c, { config, teamIds: TEAM_IDS }));
+        // ⚠️ 只有**提问帖**才用「回过没有」判定状态和沉淀。
+        //    非提问帖（加好友广告、分享帖）读评论只是为了抓「喊话」——
+        //    要是也拿去判「他人已回复 → 沉淀」，就会把「加好友呀」这种垃圾写进答疑库。
+        post.iReplied = looksQ && ours.length > 0;
+        post.othersReplied = looksQ && flat.length > ours.length && !post.iReplied;
         post.replyCount = comments.length;
+        post.scannedComments = commentCount;
+        post.summonCandidates = summonOn
+          ? pickSummons(flat, { config, teamIds: TEAM_IDS, prev })
+          : [];
         await sleep(config.collect.commentDelayMs ?? 1500);
       } catch (e) {
         post.commentError = e.message;
@@ -201,8 +273,9 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
     }
 
     // 2c. 他人已回复 → 自动总结并沉淀进答疑库（每帖只做一次）
+    //     ⚠️ 必须是**提问帖**：广告/分享帖的评论不是答案，沉淀进去就是污染答疑库
     let learnedNow = false;
-    if (finalReason === REASON.OTHERS_REPLIED && comments && !prev?.learnedQa) {
+    if (finalReason === REASON.OTHERS_REPLIED && looksQ && comments && !prev?.learnedQa) {
       try {
         const entry = buildQaEntry({
           post,
@@ -294,6 +367,42 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
       }
     }
 
+    // 2f. 玩家喊我们 → 按语义准备一句互动（真正发送在 3e）
+    //
+    // 规则（用户 2026-10-29）：
+    //   敏感（退款/客服/封号/充值/外挂/账号交易…）→ 礼貌拒绝
+    //   问了具体问题 → 先用答疑库答；答不上来 → 安慰 + 鼓励
+    //   其余 → 按语气鼓励 / 赞扬 / 欣赏 / 同情
+    // 护栏：不贬低、不辱骂、不替官方承诺（assertKind）+ 泄露自检 + 文案必须单行（楼中楼限制）
+    let summonPlans = [];
+    if (summonOn && post.summonCandidates?.length) {
+      const usedForSummon = Object.values(state.recentReplies || {})
+        .filter((r) => r && r.text)
+        .map((r) => r.text);
+      for (const s of post.summonCandidates) {
+        try {
+          const r = buildSummonReply({
+            text: s.text,
+            author: s.author,
+            // 散列带上评论 ID：同一帖里对不同人说的话也不会撞成同一句
+            postId: `${id}:${s.commentId}`,
+            config,
+            qa,
+            usedTexts: usedForSummon,
+          });
+          const kind = assertKind(r.text);
+          const safe = assertNoLeak(r.text);
+          const blocked = !kind.ok ? kind.hit : !safe.ok ? `泄露自检命中「${safe.hit}」` : null;
+          if (blocked) log(`  [拦截] 《${post.title}》的喊话回复被护栏拦下（${blocked}）→ 转人工`);
+          // r.text 是**我们的回复**，会覆盖 s.text（玩家原话）→ 另存 origin
+          summonPlans.push({ ...s, ...r, origin: s.text, blocked });
+          if (!blocked) usedForSummon.push(r.text);
+        } catch (e) {
+          summonPlans.push({ ...s, origin: s.text, text: null, mood: 'other', blocked: `生成失败: ${e.message}` });
+        }
+      }
+    }
+
     const rec = {
       ...post,
       status: leak ? STATUS.MANUAL : finalStatus,
@@ -308,6 +417,7 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
       replyVariant: composed ? { opener: composed.opener, closer: composed.closer } : null,
       learnedNow,
       praise: praisePlan,
+      summons: summonPlans,
       emojis: draft ? parseEmojiSegments(draft).marks.map((x) => x.name) : [],
       firstSeen: prev?.firstSeen || new Date().toISOString(),
       lastSeen: new Date().toISOString(),
@@ -335,6 +445,11 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
       praisedAt: prev?.praisedAt || null,
       shareCommented: prev?.shareCommented || false,
       shareAt: prev?.shareAt || null,
+      // 签名识别 / 喊话互动的状态
+      scannedComments: post.scannedComments ?? prev?.scannedComments ?? null,
+      summonReplied: prev?.summonReplied || [],
+      summonAt: prev?.summonAt || null,
+      summonPending: false,
     };
   }
 
@@ -598,7 +713,78 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
     }
   }
 
+  // ---------- 3e. 玩家喊我们 → 按语义互动 ----------
+  // 用户要求：「如果发现玩家喊你，过去，根据语义互动一下玩家」。
+  //   敏感（退款/客服/补偿/封号/举报/充值/外挂/账号交易…）→ 礼貌拒绝，不替官方表态
+  //   问了具体问题 → 先用答疑库答（事实只来自库），答不上来 → 安慰 + 鼓励
+  //   其余 → 按语气鼓励 / 赞扬 / 欣赏 / 同情
+  // 硬护栏：不贬低不辱骂不越权承诺（assertKind）、泄露自检、必须单行（楼中楼 fill 限制）
+  if (summonOn) {
+    const all = results.flatMap((r) => (r.summons || []).map((s) => ({ r, s })));
+    if (all.length) {
+      const cap = Number(config.summon?.maxPerRun ?? 3);
+      const live = all.filter((x) => !x.s.blocked && x.s.text);
+      log(
+        `\n  -> 玩家喊话 ${all.length} 条（可回 ${live.length}，上限 ${cap}）` +
+          `${dryRun ? '（dry-run，不发送）' : ''}`
+      );
+
+      if (dryRun) {
+        for (const { r, s } of live.slice(0, cap)) {
+          log(`\n  -- [dry-run] 回应 ${s.author || '玩家'}（${s.mood}${s.fromQa ? '，引用答疑库' : ''}）：${r.title}`);
+          log(`    对方说：${String(s.origin || '').slice(0, 60)}`);
+          log(`      | ${s.text}`);
+        }
+      } else if (!doReply) {
+        log('    （未开 --reply，只记录不发送）');
+      } else {
+        const xrunner = makeRunner({
+          opencliMain: config.reply.opencliMain,
+          session: config.reply.session,
+        });
+        const xd = doctorOk(xrunner);
+        if (!xd.ok) {
+          log(`  [FAIL] opencli 不可用：${xd.text.split('\n')[0]}`);
+        } else {
+          let n = 0;
+          for (let i = 0; i < live.length; i++) {
+            const { r, s } = live[i];
+            if (i >= cap) {
+              // 超上限：标记待办，下一轮接着处理（评论没变也会因为 summonPending 重新读）
+              if (state.posts[r.id]) state.posts[r.id].summonPending = true;
+              log(`    [跳过] 超出本轮喊话上限 ${cap}，留到下一轮`);
+              continue;
+            }
+            log(`\n  -- 回应 ${s.author || '玩家'}（${s.mood}${s.fromQa ? '，引用答疑库' : ''}）：${r.title}`);
+            log(`    对方说：${String(s.origin || '').slice(0, 60)}`);
+            const res = await sendSummonReply({
+              state,
+              postId: r.id,
+              commentId: s.commentId,
+              url: r.url,
+              text: s.text,
+              runner: xrunner,
+              log,
+            });
+            if (res.ok) {
+              n++;
+              s.sent = true;
+            } else {
+              if (state.posts[r.id]) state.posts[r.id].summonPending = true;
+              log(
+                `    [FAIL] 失败（${res.stage}）` +
+                  (res.detail ? '：' + JSON.stringify(res.detail).slice(0, 140) : '')
+              );
+            }
+            await sleep(config.reply.delayMs ?? 6000);
+          }
+        }
+      }
+    }
+  }
+
   // ---------- 4. 落盘 + 报表 ----------
+  const summoned = results.reduce((n, r) => n + (r.summons || []).filter((s) => s.sent).length, 0);
   state.runs = (state.runs || []).slice(-199);
   state.runs.push({
     at: new Date().toISOString(),
@@ -607,6 +793,7 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
     replied: results.filter((r) => r.status === STATUS.REPLIED).length,
     noNeed: results.filter((r) => r.status === STATUS.NO_NEED).length,
     manual: results.filter((r) => r.status === STATUS.MANUAL).length,
+    summoned,
     learned,
   });
   await saveState(config.paths.stateFile, state);
@@ -627,6 +814,7 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
   log(
     `  结果：待回复 ${c(STATUS.PENDING)}  已回复 ${c(STATUS.REPLIED)}  ` +
       `无需回复 ${c(STATUS.NO_NEED)}  需人工 ${c(STATUS.MANUAL)}` +
+      (summoned ? `  回应喊话 ${summoned}` : '') +
       (learned ? `  新沉淀 ${learned} 条` : '')
   );
 

@@ -13,6 +13,19 @@ const fmtTime = (v) => {
 
 const esc = (s) => String(s ?? '').replace(/\|/g, '\\|').replace(/\n/g, ' ');
 
+/** 喊话语气的可读名（对应 lib/summon.mjs 的分桶） */
+const MOOD_LABEL = {
+  qa: '答疑回答',
+  sensitive: '敏感·婉拒',
+  praiseMe: '夸我们',
+  thanks: '道谢',
+  complain: '吐槽·共情',
+  celebrate: '晒成绩·夸',
+  help: '真诚说不懂',
+  greet: '打招呼',
+  other: '通用回应',
+};
+
 export async function renderReport({ results = [], config, qa, root, state, usage = null, learned = 0 }) {
   const dir = config.paths.reportsDir || resolve(root, 'reports');
   await mkdir(dir, { recursive: true });
@@ -84,6 +97,23 @@ export async function renderReport({ results = [], config, qa, root, state, usag
         md += `**${r.title}** — ${r.url}\n\n\`\`\`\n${r.replyDraft}\n\`\`\`\n\n`;
       }
       md += `</details>\n`;
+    }
+
+    // 玩家喊我们 → 我们回的那句（含被护栏拦下的）
+    const shoutouts = results.flatMap((r) =>
+      (r.summons || []).map((s) => ({ ...s, postTitle: r.title, postUrl: r.url }))
+    );
+    if (shoutouts.length) {
+      md += `\n### 玩家喊话互动（${shoutouts.length} 条）\n\n`;
+      md += `> 敏感问题一律婉拒；问了具体问题的先用答疑库答；答不上来就安慰鼓励。\n\n`;
+      md += `| 帖子 | 玩家 | 语气 | 对方说的 | 我们的回应 |\n|---|---|---|---|---|\n`;
+      for (const s of shoutouts) {
+        const mood = s.blocked ? `🛑 ${s.blocked}` : MOOD_LABEL[s.mood] || s.mood || '-';
+        const body = s.blocked ? '（未发送，转人工）' : s.text || '-';
+        md += `| [${esc(s.postTitle)}](${s.postUrl}) | ${esc(s.author || '')} | ${esc(mood)} | ${esc(
+          String(s.origin || '').slice(0, 40)
+        )} | ${esc(body)} |\n`;
+      }
     }
   }
 

@@ -3,14 +3,12 @@
   "groupId": 40173,
   "appName": "植物大战僵尸2",
   "forumUrl": "https://www.taptap.cn/app/54031/topic",
-
   "myUserId": "63****64",
   "myUserName": "",
-
+  "teamUserIds": [],
   "watch": {
     "intervalSeconds": 600
   },
-
   "collect": {
     "topN": 8,
     "sortBy": "publish_time",
@@ -18,14 +16,12 @@
     "type": "feed",
     "commentDelayMs": 1500
   },
-
   "match": {
     "autoReplyScore": 0.65,
     "suggestScore": 0.45,
     "maxAutoReplyPerRun": 8,
     "minPostAgeMinutes": 10
   },
-
   "reply": {
     "channel": "opencli",
     "session": "tap",
@@ -33,7 +29,16 @@
     "dryRun": false,
     "delayMs": 6000,
     "signature": "「版主助手-小鲸鱼」",
-    "blacklistWords": ["客服", "申诉", "退款", "充值失败", "封号", "举报", "官方补偿", "版号"],
+    "blacklistWords": [
+      "客服",
+      "申诉",
+      "退款",
+      "充值失败",
+      "封号",
+      "举报",
+      "官方补偿",
+      "版号"
+    ],
     "allowCloser": true,
     "refuseOnUnknown": false,
     "emoji": {
@@ -43,7 +48,6 @@
     },
     "note": "allowCloser=回复末尾是否随机加一句收尾；refuseOnUnknown=库里没答案时是否回一句婉拒（false=不理会，转人工）"
   },
-
   "praise": {
     "enabled": true,
     "signature": true,
@@ -51,27 +55,37 @@
     "maxPerRun": 3,
     "note": "提问帖里已有其他玩家给出有效回答 → 在那条评论下盖楼夸一句 + 1 个表情（表情按语境自动挑）"
   },
-
   "share": {
     "enabled": true,
     "signature": false,
     "maxPerRun": 2,
     "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值"
   },
-
+  "summon": {
+    "enabled": true,
+    "aliases": [
+      "大******鱼",
+      "吃******的"
+    ],
+    "matchRoles": true,
+    "signature": true,
+    "answerFromQa": true,
+    "qaScore": 0.6,
+    "maxPerRun": 3,
+    "maxPerPost": 1,
+    "note": "玩家喊我们（签名/别名，或「版主+呼叫语气」）→ 过去互动一次：敏感问题礼貌拒绝；问了具体问题先用答疑库答，答不上来给安慰鼓励；其余按语气鼓励/赞扬/共情。aliases=自己的其它马甲（不用带括号，带不带「」都能认）；signature=回应时是否带签名；answerFromQa=是否允许用答疑库作答；qaScore=喊话场景的答疑库匹配阈值（比常规略低，因为点名问我们的短问句本就该放宽）"
+  },
   "archive": {
     "enabled": true,
     "staleDays": 30,
     "note": "每月 1~5 号首次运行时，把超过 30 天未被引用的条目归档到 qa/归档/，主库重排"
   },
-
   "qaHealth": {
     "enabled": true,
     "everyHours": 24,
     "autoPurge": true,
     "note": "每 24 小时体检一次答疑库：剔除正文里带自己签名（reply.signature）的条目 → 移到 qa/归档/。频率别调高（用户要求「每天就行」）；autoPurge=false 则只报警不剔除"
   },
-
   "paths": {
     "dataDir": "{{SKILL}}/data",
     "qaFile": "{{SKILL}}/qa/答疑库.md",

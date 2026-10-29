@@ -15,19 +15,11 @@
 // 清理方式沿用归档策略：**只移动不删除**。
 
 import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises';
+// 标签推导统一放在 lib/signature.mjs（签名识别、答疑库体检、喊话判定共用一套，
+// 免得「签名改了但体检还用老规则」这类漂移）。这里只是转出去，保持老调用点不变。
+import { FALLBACK_TAGS, tagsFromConfig } from './signature.mjs';
 
-/** 兜底关键词：签名将来改了，也还能认出自己的东西 */
-export const FALLBACK_TAGS = ['版主助手', '小鲸鱼'];
-
-/**
- * 从 config 推出要匹配的标签集合
- * 完整签名 + 去掉书名号的内文 + 兜底关键词
- */
-export function tagsFromConfig(config) {
-  const sig = String(config?.reply?.signature || '').trim();
-  const inner = sig.replace(/^[「『\[【(（]+|[」』\]】)）]+$/g, '').trim();
-  return [...new Set([sig, inner, ...FALLBACK_TAGS].filter((x) => x && String(x).trim()))];
-}
+export { FALLBACK_TAGS, tagsFromConfig };
 
 /**
  * 扫描答疑库原文，分出「命中标签」的块和「保留」的块

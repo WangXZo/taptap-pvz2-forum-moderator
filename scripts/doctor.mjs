@@ -95,6 +95,28 @@ if (config) {
   else warn1('没配签名', 'reply.signature 建议填成 「版主助手-你的名字」');
   if (config.reply?.dryRun === false) warn1('当前是「真发」模式', '想先看效果就把它改成 true');
   if (config.reply?.refuseOnUnknown === true) warn1('库里没答案时会自动婉拒', '不想自动说话就改成 false');
+
+  // 多人协作：签名识别（队友的 id 填了就能更准）
+  const team = (config.teamUserIds || []).filter((x) => String(x || '').trim());
+  if (team.length) ok(`团队成员 ${team.length} 个（签名之外的第二道判据）`);
+  else
+    warn1(
+      '没填 teamUserIds',
+      '不影响运行（靠签名识别），但填上队友的 user_id 更准 —— config.json 的 teamUserIds'
+    );
+
+  // 玩家喊我们 → 过去互动
+  if (config.summon?.enabled !== false) {
+    const aliases = (config.summon?.aliases || []).map((x) => String(x || '').trim()).filter(Boolean);
+    const masked = aliases.filter((a) => a.includes('*'));
+    if (masked.length)
+      warn1(
+        `summon.aliases 里有脱敏占位：${masked.join('、')}`,
+        '仓库里的脱敏值永远匹配不到 —— 换成你自己的昵称（别带括号，带不带「」都能认）'
+      );
+    if (aliases.length) ok(`喊话别名 ${aliases.length} 个：${aliases.join('、')}`);
+    else warn1('没配 summon.aliases', '只认签名的话，玩家用你的其它昵称喊你就会漏掉');
+  }
 }
 
 // ---------- 4. 浏览器桥接 ----------

@@ -89,6 +89,20 @@ set('reply.signature', arg('signature'));
 if (!arg('app-id')) set('appId', cfg.appId ?? 54031);
 if (!arg('group-id')) set('groupId', cfg.groupId ?? 40173);
 if (!cfg.reply?.signature) set('reply.signature', cfg.reply?.signature ?? '「版主助手-小鲸鱼」');
+// 多人协作：队友的 user_id（可留空，靠签名识别）
+if (!Array.isArray(cfg.teamUserIds)) set('teamUserIds', cfg.teamUserIds ?? []);
+// 玩家喊我们 → 过去互动（aliases 留空，自己按需填自己的其它昵称）
+if (!cfg.summon || typeof cfg.summon !== 'object')
+  set('summon', cfg.summon ?? {
+    enabled: true,
+    aliases: [],
+    matchRoles: true,
+    signature: true,
+    answerFromQa: true,
+    qaScore: 0.6,
+    maxPerRun: 3,
+    maxPerPost: 1,
+  });
 
 if (changes.length) {
   say('  将要写入：');
