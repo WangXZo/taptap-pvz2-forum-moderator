@@ -103,8 +103,13 @@ function dice(a, b) {
  *   - 被引用次数多的 → 权重更高（weightOf 里每次 +0.03，封顶 +0.15）
  *   - 最近被引用过的 → 权重更高（7 天内 +0.05，30 天内 +0.02）
  *   - 人工维护的条目 → 比社区自动沉淀的高（无 source 额外 +0.03；有 source 的 ×0.9）
+ *
+ * @param opts.vecScore 该条目的**向量相似度**（0~1，来自 lib/qa-vector.mjs）。
+ *   相似度项取「旧 bigram dice」与「向量余弦」的**较大者** —— 只加不减，不会让原本能匹配的条目掉下去。
+ *   ⚠️ 向量最多只能贡献 0.4 的那部分，**光靠向量永远够不到 autoReplyScore**（阈值 ≥0.6），
+ *      所以不会因为向量误召回就自动发一条错答案。
  */
-export function scoreEntry(postText, entry, { usage = null, now = Date.now() } = {}) {
+export function scoreEntry(postText, entry, { usage = null, now = Date.now(), vecScore = 0 } = {}) {
   const text = normalize(postText);
   // 相似度只跟「问法」比，不跟关键词拼起来比 ——
   // 把关键词也算进去会把分母撑大，词越多相似度越低（实测过）
@@ -132,7 +137,10 @@ export function scoreEntry(postText, entry, { usage = null, now = Date.now() } =
   const kwScore = total ? Math.min(1, strength / 2) : 0;
 
   const sim = dice(bigrams(text), bigrams(entryText));
-  let base = 0.6 * kwScore + 0.4 * Math.min(1, sim * 2.2);
+  // 相似度项：旧 dice 与向量相似度取大者（向量只加分不扣分）
+  // 向量上限 0.85：宁可少拿一点分，也别让「语义相近但答的不是这一问」直接冲过自动回复线
+  const simTerm = Math.max(Math.min(1, sim * 2.2), Math.min(0.85, (Number(vecScore) || 0) * 3));
+  let base = 0.6 * kwScore + 0.4 * simTerm;
 
   // 社区自动沉淀的条目打折，避免未经人工复核的答案直接触发自动回复
   if (entry.auto) base *= 0.9;
@@ -157,11 +165,15 @@ export function scoreEntry(postText, entry, { usage = null, now = Date.now() } =
   return { score, base, weight, kwScore, sim, hits: hit, keywordsTotal: total, auto: !!entry.auto };
 }
 
-/** 返回 top-N 候选 */
+/**
+ * 返回 top-N 候选
+ * @param opts.vecScores {entryId: 余弦相似度}（可选，来自 lib/qa-vector.mjs）
+ */
 export function matchPost(postText, entries, topN = 3, opts = {}) {
+  const vecScores = opts.vecScores || {};
   const scored = entries
     .filter((e) => !opts.usage?.items?.[e.id]?.archived)
-    .map((e) => ({ entry: e, ...scoreEntry(postText, e, opts) }))
+    .map((e) => ({ entry: e, ...scoreEntry(postText, e, { ...opts, vecScore: vecScores[e.id] || 0 }) }))
     .filter((x) => x.score > 0.05)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, topN);

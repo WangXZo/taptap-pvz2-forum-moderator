@@ -7,12 +7,15 @@
 //   node scripts/collect.mjs --reply       # 采集 + 真发
 //   node scripts/collect.mjs --top 20      # 覆盖配置里的 N
 
-import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
+import { loadConfig, argvOf, sleep, SKILL_ROOT } from './lib/paths.mjs';
 import { listFeed, listComments, extractText, MOMENT_URL, WafBlocked } from './lib/http.mjs';
 import { isOurComment, isSummonText, teamUserIdsOf, commentText } from './lib/signature.mjs';
 import { buildSummonReply, assertKind } from './lib/summon.mjs';
 import { sendSummonReply } from './lib/summon-send.mjs';
 import { loadQaLibrary, looksLikeQuestion, looksLikeShare } from './lib/qa.mjs';
+import { openDb } from './lib/db.mjs';
+import { openPostDb, archiveOldPosts, recordScanned, recordStatus } from './lib/post-records.mjs';
+import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
 import { classify, composeReply } from './lib/classify.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
@@ -92,6 +95,50 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
   const summonOn = config.summon?.enabled !== false;
 
   log(`\n== ${new Date().toLocaleString('zh-CN')} 本轮开始（答疑库 ${qa.length} 条，目标最新 ${TOP} 条）`);
+
+  // ---------- 0z. 向量索引（答疑库改了自动重建） ----------
+  //   相似度项 = max(旧 bigram dice, 向量余弦)；向量只加分不扣分。
+  //   记录**实际用了哪条路径**（char-tfidf / dense / fallback），出问题好回溯。
+  let vecDb = null;
+  let vecDense = null;
+  let matchPath = null;
+  try {
+    const { stat } = await import('node:fs/promises');
+    const idxFile = config.paths.qaIndexFile || resolve(SKILL_ROOT, 'data/qa-index.sqlite');
+    vecDb = openDb(idxFile);
+    const qaStat = await stat(config.paths.qaFile).catch(() => null);
+    const idxStat = await stat(idxFile).catch(() => null);
+    // 索引过期有两种：答疑库改了（mtime 变新）、向量格式变了（版本号对不上）
+    const stale =
+      !idxStat || (qaStat && qaStat.mtimeMs > idxStat.mtimeMs) || indexVersion(vecDb) !== VEC_VERSION;
+    if (stale) {
+      const r = buildIndex(vecDb, qa);
+      log(`  [向量] 索引已重建（${r.entries} 条 / ${r.tokens} 特征词）`);
+    }
+    const vcfg = config.qa?.vector || {};
+    vecDense = vcfg.backend === 'http' ? makeHttpDense(vcfg) : null;
+    matchPath = vecDense ? 'dense' : 'char-tfidf';
+  } catch (e) {
+    vecDb = null;
+    matchPath = null;
+    log(`  [向量] 索引不可用（${e.message}）→ 本轮只用原有关键词匹配`);
+  }
+
+  // ---------- 0y. 帖子记录库：老记录搬进 SQLite，state.json 只留热数据 ----------
+  //   解决「记录太多」：state.json 每次都要整份重写，几百条就几百 KB。
+  //   搬走的是「已判定完、不再参与判定」的老记录；待回复/需人工的留在 state.json（判重要用）。
+  let postDb = null;
+  try {
+    postDb = openPostDb(config);
+    const arch = archiveOldPosts(state, postDb, { olderThanDays: Number(config.archive?.olderThanDays ?? 45) });
+    if (arch.moved) {
+      log(`  [记录] 老记录搬进 SQLite：${arch.moved} 条（state.json 保留 ${arch.kept} 条）`);
+      await saveState(config.paths.stateFile, state);
+    }
+  } catch (e) {
+    postDb = null;
+    log(`  [记录] SQLite 不可用（${e.message}）→ 只用 state.json 记账`);
+  }
 
   // ---------- 0. 答疑库备份（每轮一份，防误覆盖） ----------
   // 教训：曾用「构建源」的旧副本覆盖运行中的答疑库，一夜沉淀的 10 条全丢。
@@ -253,8 +300,22 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
       post.othersReplied = prev.reason === REASON.OTHERS_REPLIED;
     }
 
-    // 2b. 判定
-    const verdict = classify(post, { qa, config, state });
+    // 2b. 判定（相似度 = max(旧 dice, 向量余弦)；向量只加分不扣分）
+    let vecScores = null;
+    if (vecDb) {
+      try {
+        const vr = await search(vecDb, `${post.title || ''} ${post.text || ''}`, {
+          topN: 5,
+          dense: vecDense,
+          minScore: 0.02,
+        });
+        vecScores = Object.fromEntries(vr.results.map((r) => [r.entryId, r.score]));
+        if (vr.path && vr.path !== matchPath) matchPath = vr.path;
+      } catch {
+        vecScores = null;
+      }
+    }
+    const verdict = classify(post, { qa, config, state, vecScores, matchPath });
     let finalStatus = verdict.status;
     let finalReason = verdict.reason;
 
@@ -270,6 +331,23 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
     }
     if (prev && prev.status === STATUS.NO_NEED && verdict.status !== STATUS.NO_NEED) {
       log(`  [翻案] 《${post.title}》从「无需回复」重新判为 ${verdict.status}`);
+    }
+
+    // 2b-2. 记进帖子记录库（逐行写；state.json 里的老记录会被搬到这儿）
+    if (postDb) {
+      try {
+        recordScanned(postDb, post, {
+          // board 传 null：管理任务写的板块更精确（40173:feed），别被这里覆盖掉
+          board: null,
+          qaStatus: finalStatus,
+          detail: {
+            reason: finalReason,
+            score: verdict.score,
+            matchPath: verdict.matchPath || matchPath,
+            candidates: (verdict.candidates || []).slice(0, 3).map((c) => ({ q: c.question, s: c.score })),
+          },
+        });
+      } catch {}
     }
 
     // 2c. 他人已回复 → 自动总结并沉淀进答疑库（每帖只做一次）
@@ -764,6 +842,7 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
               url: r.url,
               text: s.text,
               runner: xrunner,
+              via: config?.reply?.nestedVia || 'ui',
               log,
             });
             if (res.ok) {
@@ -815,7 +894,8 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, quie
     `  结果：待回复 ${c(STATUS.PENDING)}  已回复 ${c(STATUS.REPLIED)}  ` +
       `无需回复 ${c(STATUS.NO_NEED)}  需人工 ${c(STATUS.MANUAL)}` +
       (summoned ? `  回应喊话 ${summoned}` : '') +
-      (learned ? `  新沉淀 ${learned} 条` : '')
+      (learned ? `  新沉淀 ${learned} 条` : '') +
+      (matchPath ? `  匹配路径 ${matchPath}` : '')
   );
 
   return { results, config };

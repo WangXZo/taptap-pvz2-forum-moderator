@@ -41,10 +41,11 @@ node scripts/whoami.mjs
 
 # 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
 
-# 4) 全部自检（改规则前后都要跑，9 套）
+# 4) 全部自检（改规则前后都要跑，12 套）
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs
+node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
+node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run
@@ -387,9 +388,27 @@ node scripts/test-summon.mjs   # 122 条断言：签名识别 + 分桶 + 护栏 
 确认弹窗要**自动点掉**（弹窗按钮就叫「移除」，不是「确定」）。
 
 ```
-扫「活动报名 + 讨论区」→ 只取今天 00:00 之后的 → 判定加好友意图
-  → 命中的：回固定文案 → 确认发出 → 管理→移除 → 自动点确认 → 等 1s 下一个
+扫「讨论区」（活动报名板整块跳过）→ 只取今天 00:00 之后的 → 判定加好友意图
+  → 命中的：回固定文案（带签名）→ 确认发出 → unlink 移除 → 等 1s 下一个
 ```
+
+### 走接口，不点 UI（2026-10-30 起）
+
+写操作改成**直接打 TapTap 写接口**，比点 UI 快（一条 ~2s vs ~15s）也不受页面改版影响；
+点 UI 保留为**兜底**（接口失败自动退回）。
+
+| 动作 | 接口 |
+|---|---|
+| 回复 | `POST /webapiv2/moment-comment/v1/create`（`moment_id` + `contents`） |
+| 移除 | `POST /webapiv2/moment/v3/unlink-group`（`id` + `group_id`） |
+
+鉴权**零落盘**：在已登录页面里 `fetch`，浏览器自动带 HttpOnly Cookie。
+细节（multipart、XSRF、表情节点、错误语义）见 `references/api.md` 第 8 节。
+
+- 固定话术**自动追加签名**「版主助手-小鲸鱼」，且签名**独立成段**（一个字节点里的 `\n` 在时间线上不换行）。
+- 楼中楼（夸奖/喊话）**仍走 UI** —— `create-child` 的参数名还没实测确认，
+  猜错会在帖子里多出一条**顶层评论**（玩家可见），比慢 15 秒严重得多。
+  拿到真实 cURL 后改 `reply.nestedVia = "api"` 即可。
 
 ### 判定：只认「加好友意图」，宁可漏不可错
 
@@ -446,6 +465,39 @@ node scripts/mod-watch.mjs --once --dry-run  # 只跑一轮看看
 
 ```bash
 node scripts/test-mod-task.mjs   # 63 条断言：现场真实标题（正例16 / 负例22 / 官方跳过6）
+```
+
+## 答疑库检索：从关键词匹配 → 向量检索
+
+2026-10-30 起，相似度不再只靠「关键词命中 + bigram dice」两把尺子。
+
+- 相似度项 = **max(旧 dice, 向量相似度)** —— 只加分不扣分，原本能匹配的条目不会掉下去。
+- 向量最多只贡献 0.4 那部分，且上限 0.85 → **光靠向量永远够不到自动回复线**(0.65)，
+  不会因为向量误召回就自动发一条错答案。
+- 三条路径，**会记录实际用了哪条**（`char-tfidf` / `dense` / `fallback`）：
+  - `char-tfidf`（默认，零依赖）：中文 2/3-gram + TF-IDF + 余弦/覆盖率，纯本地、可离线。
+  - `dense`：配 `qa.vector.endpoint`（OpenAI 兼容的 embeddings 接口，如本地 BGE），
+    请求 `{model, input:[...]}` → `{data:[{embedding}]}`；失败自动退回 char。
+  - 索引存在 `data/qa-index.sqlite`，**答疑库文件一改就自动重建**。
+
+```bash
+node scripts/qa-index.mjs build              # 重建索引
+node scripts/qa-index.mjs query "无尽卡波"    # 试检索，看召回对不对
+```
+
+## 帖子记录：state.json → SQLite
+
+`state.json` 是整份重写，记多了既慢又容易互相覆盖（踩过：QA 守护把管理任务的记账冲掉 172 条）。
+
+- 帖子记录逐行写进 `data/post-records.sqlite`（`post_record` 当前状态 / `post_event` 事件流水）。
+- 多进程各写各的行，**不再互相覆盖**；幂等判断同时看 state.json 和库。
+- `state.json` 里的老记录（已判定完的）会**搬进库**（搬，不是丢），state.json 只留热数据。
+- 待回复 / 需人工的**留在 state.json** —— 判重还要用它们。
+
+```bash
+node scripts/post-records.mjs stats          # 统计
+node scripts/post-records.mjs list           # 最近 30 条
+node scripts/post-records.mjs archive --days 45   # 手动搬一次
 ```
 
 ## 四类标记
@@ -577,7 +629,14 @@ node scripts/test-praise.mjs        # 34 条断言（含口吻护栏），改夸
 | `scripts/report-gaps.mjs` | **答疑库缺口报表** → `reports/gaps.md`：没命中库的提问 + 高频主题词，告诉你该补什么 |
 | `scripts/qa-admin.mjs` | **答疑库管理 CLI**：`show/append/keywords/register/rebuild/backup` + **`purge-tag`（剔除携带自己标签的条目）** + **`purge-junk`（剔除广告/灌水等垃圾条目）** |
 | `scripts/post-admin.mjs` | **帖子工具 CLI**：`fetch/mark-replied/reset-praised/reset-share/cleanup/diag/recheck` + **`check-removed`（查帖子还在不在版块里）** |
-| `scripts/mod-task.mjs` | **版主管理任务**：检查最新 10 条 → 命中「加好友行为」→ 回固定文案 → 移除 |
+| `scripts/mod-task.mjs` | **版主管理任务**：检查最新 10 条 → 命中「加好友行为」→ 回固定文案（带签名）→ 移除（走接口） |
+| `scripts/api-write.mjs` | **写接口手动工具**：`probe`（连通性自检，无副作用）/ `comments` / `feed-has` / `has-text` / `reply` / `child` / `remove`（写操作要加 `--yes` 才真发） |
+| `scripts/emoji-map.mjs` | **表情 id 表采集**：把表情面板里的 `表情名 → id` 采成 `data/emoji-map.json`（接口发带表情回复要用） |
+| `scripts/qa-index.mjs` | **答疑库向量索引**：`build`（建/重建）/ `stats` / `query "..."`（试检索；`--dense` 用配置的稠密后端） |
+| `scripts/post-records.mjs` | **帖子记录库（SQLite）**：`stats` / `list` / `events <id>` / `archive --days N` / `prune --days N` |
+| `scripts/test-api-contents.mjs` | **接口内容格式回归测试**（27 条断言）：段落拆分、表情节点、去标记、momentId 提取 |
+| `scripts/test-qa-vector.mjs` | **向量检索回归测试**（20 条断言）：召回、不相关问题低分、dense 失败自动退回 |
+| `scripts/test-post-records.mjs` | **记录层回归测试**（20 条断言）：逐行 upsert、幂等、搬库不误伤待回复/需人工 |
 | `scripts/publish-repo.mjs` | **脱敏发布**：把运行中的 skill 同步到 GitHub 仓库（config 脱敏 + 个人信息扫描） |
 | `scripts/probe-dom.mjs` | **DOM 探针**：`comment/editor/emoji/watch/eval`（TapTap 改版时校准选择器用） |
 | `scripts/restore-qa.mjs` | **答疑库还原**：`--restore` 用备份回退（每轮自动备份） |
@@ -589,7 +648,11 @@ node scripts/test-praise.mjs        # 34 条断言（含口吻护栏），改夸
 | 模块 | 职责 |
 |---|---|
 | `http.mjs` | 接口封装 + WAF 退避 + `limit` 上限约束 |
-| `qa.mjs` | 答疑库解析（含 `来源`/`总结时间` 元数据）+ 打分加权 |
+| `taptap-api.mjs` | **写接口直连**（页面内 fetch，自带 Cookie）：`reply/childComment/remove/comments/feedHas` + 表情节点 + 1s 节流 |
+| `db.mjs` | **SQLite 底座**（node:sqlite）：`post_record` / `post_event` / `qa_vec` 三张表 |
+| `post-records.mjs` | 帖子记录读写 + **老记录搬库**（state.json → SQLite）+ 幂等判断 |
+| `qa-vector.mjs` | **向量检索**：分词 / TF-IDF / 余弦 + 覆盖率 / dense 后端（OpenAI 兼容） |
+| `qa.mjs` | 答疑库解析（含 `来源`/`总结时间` 元数据）+ 打分加权（含向量相似度项） |
 | `classify.mjs` | 四类判定 + 组装回复文本 |
 | `summarize.mjs` | **他人已答 → 自动总结成 QA 条目**（含「有效回答」门槛 `isUsefulAnswer`） |
 | `variants.mjs` | **回复变体**（不重样）+ **泄露自检** + 婉拒文案 |

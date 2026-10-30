@@ -97,7 +97,44 @@
 
 跨天自动重扫（游标里存了日期）。补处理历史用 `--reset-cursor`。
 
-## 四、页面操作（2026-10-29 实测）
+## 四、执行方式：接口直连优先（2026-10-30 起）
+
+**默认走接口**（`friendRequest.via = "api"`），不再点 UI：
+
+| 步骤 | 接口 | 说明 |
+|---|---|---|
+| 回复固定话术 | `POST /webapiv2/moment-comment/v1/create` | `moment_id` + `contents`（富文本 JSON 字符串） |
+| 校验真的发出去了 | `GET /webapiv2/moment-comment/v1/by-moment` | 按正文前几个字匹配 |
+| 移除 | `POST /webapiv2/moment/v3/unlink-group` | `id` + `group_id`；= 论坛管理→移除，**不是删帖** |
+| 校验真的移除了 | `GET /webapiv2/feed/v7/by-group` | 板块列表里查不到（要翻到比它发布更早的帖才算确定） |
+
+细节（鉴权怎么带、multipart、XSRF、表情节点）见 `references/api.md` 第 8 节。
+
+要点：
+
+- **鉴权不落盘**：在已登录页面里 `fetch`，靠浏览器自动带 HttpOnly Cookie。
+- **接口间隔 1s**（`cooldownMs`），比点 UI 稳得多、快得多（原来一条 15s+，现在 ~2s）。
+- **失败自动退回点 UI**：接口改版/被拦也不会让流水线停摆。
+- 移除成功后**板块列表有几秒缓存** → 校验要「查不到一次再等 2s 复核」，否则会刷出一堆假「待确认」。
+- 活动报名板（`activity_signup`）**整块跳过**：不回复、不移除（用户 2026-10-30 定），
+  实现是 `targets` 里给该目标加 `"enabled": false`。
+
+### 回复文案带签名
+
+固定话术末尾会自动追加 `config.reply.signature`（= 「版主助手-小鲸鱼」），
+在 `processQueueHead` 里拼，**不在话术字符串里写死** —— 改签名一处生效。
+接口回复里签名必须是**独立段落**（一个字节点里的 `\n` 在时间线上不换行）。
+
+### 楼中楼（夸奖 / 喊话）：仍走 UI
+
+`create-child` 的 body 参数名**还没实测确认**（目前猜的是 `parent_post_id`）。
+风险不对称：万一服务端忽略未知参数，就会在帖子里**多出一条顶层评论**（玩家可见、还能被回复），
+比「多花 15 秒点 UI」严重得多 → 所以默认 `reply.nestedVia = "ui"`。
+
+拿到真实 cURL 后只需把它改 `api`，并核对两处参数名：
+`api.childComment()`（`lib/taptap-api.mjs`）与 `reply.nestedVia` 的接线。
+
+## 五、回退：点 UI 的页面操作（保留作兜底）
 
 帖子详情页右上角三个图标：**盾(反馈) / 剪刀(管理) / ⋯(更多)**。
 
@@ -117,7 +154,7 @@
 
 想确认真被移除了：`node scripts/post-admin.mjs check-removed <momentId>`。
 
-## 五、命令
+## 六、命令
 
 ```bash
 node scripts/mod-watch.mjs                 # 常驻（默认 120s 一轮）
@@ -129,9 +166,16 @@ node scripts/mod-task.mjs --dry-run         # 单轮，只判定
 node scripts/mod-task.mjs --only <id>       # 只处理某一条
 node scripts/mod-task.mjs --target activity_signup   # 只查某个子版块
 node scripts/mod-task.mjs --sweep           # 强制全量重扫（无视游标）
+
+# 接口手动核实（写操作默认只预览，加 --yes 才真发）
+node scripts/api-write.mjs probe                       # 连通性自检（假 id，无副作用）
+node scripts/api-write.mjs comments <momentId>         # 看评论区
+node scripts/api-write.mjs feed-has <momentId> --group 40173
+node scripts/api-write.mjs reply  <momentId> --text "..." --yes
+node scripts/api-write.mjs remove <momentId> --group 40173 --yes
 ```
 
-## 六、配置
+## 七、配置
 
 ```json
 "modTasks": {
@@ -139,11 +183,12 @@ node scripts/mod-task.mjs --sweep           # 强制全量重扫（无视游标�
   "intervalSeconds": 120,
   "session": "tapmod",
   "targets": [
-    { "groupId": 40173, "type": "activity_signup", "label": "活动报名" },
+    { "groupId": 40173, "type": "activity_signup", "label": "活动报名", "enabled": false },
     { "groupId": 40173, "type": "feed", "label": "讨论区" }
   ],
   "friendRequest": {
     "enabled": true,
+    "via": "api",
     "scope": "today",
     "cooldownMs": 1000,
     "maxPerRound": 20,
@@ -159,17 +204,18 @@ node scripts/mod-task.mjs --sweep           # 强制全量重扫（无视游标�
 `type=activity_signup` 就是 `?sub_type=activity_signup` 那个「活动报名」子版块
 （同一个 group_id，换 `type` 参数）。
 
-## 七、记账与幂等
+## 八、记账与幂等
 
 `state.posts[id].modTask`：`repliedAt`（有值就跳过回复）/ `removedAt` / `keyword` / `inviteCode` / `failed` / `stage`。
 
 回完**立刻落盘**（不等移除），这样即使移除那步炸了，重跑也不会重复发同一段话。
 移除没生效也不怕：帖子还在版块里，下一轮会被重新检出并重试移除（回复会跳过）。
 
-## 八、测试
+## 九、测试
 
 ```bash
-node scripts/test-mod-task.mjs   # 63 条断言
+node scripts/test-mod-task.mjs       # 63 条断言：意图判定
+node scripts/test-api-contents.mjs   # 27 条断言：段落/表情节点/去标记
 ```
 
 用例全部来自**现场真实标题**（2026-10-29 抓的两个子版块 60+ 条）：正例 16 条、负例 22 条、

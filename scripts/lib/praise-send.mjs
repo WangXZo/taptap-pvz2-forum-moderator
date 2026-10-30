@@ -28,6 +28,8 @@ export async function sendPraise({ config, state, postId, commentId, url, text, 
     commentId: String(commentId),
     text,
     dryRun: false,
+    // 楼中楼默认仍点 UI（接口 create-child 参数未实测确认，见 reply-nested.mjs 注释）
+    via: config?.reply?.nestedVia || 'ui',
     log,
   });
 

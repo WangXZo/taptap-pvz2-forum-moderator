@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parseEmojiSegments, applyEmojis } from './emoji.mjs';
+import { getTapApi, momentIdFromUrl, stripEmojiMarks } from './taptap-api.mjs';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -152,6 +153,28 @@ export async function replyOne({
   }
   if (!runner?.available) {
     return { ok: false, stage: 'opencli_missing', detail: runner?.reason };
+  }
+
+  // ---- 接口直连优先（用户 2026-10-30：答疑也直接打接口）----
+  //   比点 UI 快得多、不受 DOM 改版影响；失败自动退回下面的 UI 流程。
+  //   接口回复是纯文本 → 表情标记先剥掉（tap_emoji 节点格式另行验证后再启用）。
+  if (String(config?.reply?.via || 'api').toLowerCase() !== 'ui') {
+    const api = getTapApi({ runner, log, intervalMs: Number(config?.reply?.apiIntervalMs ?? 6000) });
+    const momentId = momentIdFromUrl(url);
+    if (momentId && api.ensureOrigin().ok) {
+      // 文案原样传进去：接口层会把 [表情_xx] 转成 tap_emoji 节点（查表 data/emoji-map.json）
+      const ar = await api.reply({ momentId, text });
+      if (ar.ok) {
+        const plain = stripEmojiMarks(text).trim();
+        const v = await api.hasReplyText({ momentId, text: plain });
+        log(
+          `      [接口] 已回复（表情 ${ar.emojiHit || 0} 个）` +
+            (v.found ? '（已校验落库）' : '（未校验到，按成功处理）')
+        );
+        return { ok: true, stage: 'api_sent', detail: { verified: v.found, body: plain, marks, emoji: ar.emojiHit } };
+      }
+      log(`      [接口] 回复失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);
+    }
   }
 
   const S = runner.session;

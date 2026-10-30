@@ -29,6 +29,8 @@ import { loadState, saveState } from './lib/state.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { detectFriendRequest, checkAuthor, DEFAULT_FIXED_REPLY, startOfToday, todayKey } from './lib/mod-task.mjs';
 import { removePost } from './lib/remove-post.mjs';
+import { makeTapApi } from './lib/taptap-api.mjs';
+import { openPostDb, recordModScanned, recordStatus, isHandled } from './lib/post-records.mjs';
 import { liteHash } from './lib/util.mjs';
 
 const argv = process.argv.slice(2);
@@ -94,6 +96,7 @@ async function scanTarget({ config, target, scope, maxPages, cursor, log }) {
         authorId: String(m.author?.user?.id || ''),
         publishTime,
         commentCount: Number(it.comment_count ?? m.stat?.comments ?? 0),
+        groupId: String(target.groupId ?? config.groupId ?? ''),
         moment: m,
       });
       scanned++;
@@ -108,6 +111,55 @@ async function scanTarget({ config, target, scope, maxPages, cursor, log }) {
 }
 
 /**
+ * 管理任务的状态文件 —— **独立于答疑守护的 state.json**
+ *
+ * 为什么要独立（2026-10-29 踩到）：
+ *   两个进程共用一个 state.json、各自持有内存副本 → **后写的把先写的覆盖掉**。
+ *   实测：答疑守护（10 分钟一轮）把管理任务的记账整个冲掉了，
+ *   队列/游标/「已回过」记录全丢 → 帖子被重复回复、重复处理。
+ *   拆成两个文件后，两边各写各的，互不干扰。
+ */
+export function modStateFile(config) {
+  return config?.paths?.modStateFile || config?.paths?.stateFile;
+}
+
+/**
+ * 读管理任务的状态：**主文件坏了就用备份**
+ *
+ * 为什么要有备份：状态文件写坏了 → loadState 静默返回空状态 →
+ * 队列/游标/「已回过」全丢 → 那些帖会被**重复回复一遍**。
+ * 所以：保存时先留一份 .bak，读取时主文件空就回退。
+ */
+export async function loadModState(config) {
+  const file = modStateFile(config);
+  const s = await loadState(file);
+  if (Object.keys(s.posts || {}).length || !s.modTask?.backlog?.length) return s;
+  try {
+    const { readFile } = await import('node:fs/promises');
+    const bak = JSON.parse(await readFile(`${file}.bak`, 'utf8'));
+    if (Object.keys(bak.posts || {}).length) {
+      console.warn('  [状态] 主状态文件是空的，已回退到备份 .bak');
+      return bak;
+    }
+  } catch {}
+  return s;
+}
+
+/**
+ * 原子写 + 留备份
+ */
+export async function saveModState(config, state) {
+  const file = modStateFile(config);
+  const { copyFile, rename, writeFile } = await import('node:fs/promises');
+  try {
+    await copyFile(file, `${file}.bak`).catch(() => {});
+  } catch {}
+  const tmp = `${file}.tmp`;
+  await writeFile(tmp, JSON.stringify(state, null, 2), 'utf8');
+  await rename(tmp, file); // 同一分区 rename 是原子的 → 不会写出半截 JSON
+}
+
+/**
  * 检查一轮：扫子版块 → 判定 → 并进待办队列 → **按发布时间倒序重排** → 落盘
  *
  * 用户 2026-10-29：「只是重排队列，检查还是2分钟」——
@@ -119,6 +171,7 @@ export async function checkAndEnqueue({
   config,
   cfg,
   state,
+  db = null,
   scope = null,
   targetFilter = null,
   only = null,
@@ -127,7 +180,10 @@ export async function checkAndEnqueue({
   log = console.log,
 } = {}) {
   const SCOPE = scope || cfg.scope || 'today';
-  const targets = (config.modTasks?.targets || []).filter((t) => !targetFilter || t.type === targetFilter);
+  // targets 里 enabled:false 的整块跳过（用户 2026-10-30：活动报名板「跳过，不回复，不移除」）
+  const targets = (config.modTasks?.targets || [])
+    .filter((t) => t.enabled !== false)
+    .filter((t) => !targetFilter || t.type === targetFilter);
 
   if (resetCursor) {
     state.modTask.cursors = {};
@@ -177,10 +233,24 @@ export async function checkAndEnqueue({
       text: p.text,
       bareCodeIsIntent: cfg.bareCodeIsIntent !== false,
     });
-    const done = state.posts[p.id]?.modTask?.removedAt;
+    // 幂等判断：state.json 里有终态 **或** SQLite 里有终态 → 都算处理过
+    // （库里那份是「搬走老记录」后的真相来源，state.json 丢了也不会重复处理）
+    const done =
+      state.posts[p.id]?.modTask?.removedAt ||
+      state.posts[p.id]?.modTask?.manualOnly ||
+      isHandled(db, state, p.id);
     if (hit.hit && !done) {
       hits.push({ ...p, keyword: hit.keyword, inviteCode: hit.inviteCode, reason: hit.reason });
     }
+    // 扫到的帖子逐行记进库（含未命中的，便于回看「为什么没处理」）
+    // ⚠️ 用 recordModScanned：已移除的帖子再被扫到时，状态**不会**被覆盖回 'scanned'
+    recordModScanned(db, p, {
+      board: p.targetKey,
+      keyword: hit.hit ? hit.keyword : null,
+      inviteCode: hit.hit ? hit.inviteCode : null,
+      status: hit.hit ? 'detected' : 'scanned',
+      detail: hit.hit ? { reason: hit.reason } : null,
+    });
   }
 
   if (skipped.length) {
@@ -192,7 +262,7 @@ export async function checkAndEnqueue({
   const BACKLOG_MAX = Number(cfg.backlogMax ?? 500);
   const doneIds = new Set(
     Object.entries(state.posts)
-      .filter(([, p]) => p?.modTask?.removedAt)
+      .filter(([, p]) => p?.modTask?.removedAt || p?.modTask?.manualOnly)
       .map(([id]) => String(id))
   );
   const byId = new Map();
@@ -210,6 +280,8 @@ export async function checkAndEnqueue({
       publishTime: Number(b.publishTime) || 0,
       // 记下属于哪个子版块：activity_signup 板网页端没有移除入口，只能回复
       targetKey: b.targetKey || b.targetLabel || '',
+      // 接口直连移除需要 group_id（= 该帖所在板块），扫帖时就带上，避免二次查询
+      groupId: b.groupId || '',
     });
   }
   state.modTask.backlog = [...byId.values()]
@@ -223,7 +295,7 @@ export async function checkAndEnqueue({
 
   // 游标落盘（队列已经把待处理的都记下了，推进游标不会丢帖）
   for (const c of pendingCursors) state.modTask.cursors[c.key] = { ...c, at: new Date().toISOString() };
-  await saveState(config.paths.stateFile, state);
+  await saveState(modStateFile(config), state);
 
   const head = state.modTask.backlog[0];
   log(
@@ -239,8 +311,14 @@ export async function checkAndEnqueue({
  * 队列空就返回 {processed:false}。
  * @returns {Promise<{processed:boolean, ok?:boolean, id?:string, stage?:string, left:number}>}
  */
-export async function processQueueHead({ config, cfg, state, runner, log = console.log }) {
-  const REPLY_TEXT = String(cfg.reply || DEFAULT_FIXED_REPLY);
+export async function processQueueHead({ config, cfg, state, runner, db = null, log = console.log }) {
+  // 固定话术 + 签名（用户 2026-10-30：「移除前回复的固定话术，也加上你的签名」）
+  //   签名统一取 config.reply.signature，改一处全局生效；话术里已含签名就不重复加。
+  const SIGN = String(config?.reply?.signature || '').trim();
+  let REPLY_TEXT = String(cfg.reply || DEFAULT_FIXED_REPLY).trim();
+  if (SIGN && !REPLY_TEXT.includes(SIGN.replace(/[「」]/g, ''))) {
+    REPLY_TEXT = `${REPLY_TEXT}\n\n${SIGN}`;
+  }
   const COOLDOWN = Number(cfg.cooldownMs ?? 1000);
   const backlog = state.modTask.backlog || [];
   const t = backlog[0];
@@ -248,19 +326,44 @@ export async function processQueueHead({ config, cfg, state, runner, log = conso
 
   log(`\n    -- 《${String(t.title).slice(0, 28)}》 ${t.author || ''}`);
 
+  // 接口直连（默认走这条，见 lib/taptap-api.mjs）。UI 点击保留为兜底：
+  //   接口一旦改版/被拦，自动退回点 UI，不至于整条流水线停摆。
+  const VIA = String(cfg.via || 'api').toLowerCase();
+  const api = makeTapApi({ runner, log, intervalMs: Math.max(1000, COOLDOWN) });
+  const groupId = String(
+    t.groupId || (t.targetKey ? String(t.targetKey).split(':')[0] : '') || config.groupId || ''
+  );
+
   // 3a. 回固定文本（已回过就跳过 —— 中途失败重跑不重复回）
   if (state.posts[t.id]?.modTask?.repliedAt) {
     log('      [跳过] 之前已经回过固定文案，跳过回复');
   } else {
-    const r = await replyOne({ runner, url: t.url, text: REPLY_TEXT, config, dryRun: false, log });
+    let r = null;
+    if (VIA !== 'ui') {
+      const o = api.ensureOrigin();
+      if (o.ok) {
+        const ar = await api.reply({ momentId: t.id, text: REPLY_TEXT });
+        if (ar.ok) {
+          const v = await api.hasReplyText({ momentId: t.id, text: REPLY_TEXT });
+          log(`      [接口] 固定文案已发送${v.found ? '（已校验落库）' : '（未校验到，按成功处理）'}`);
+          r = { ok: true, stage: 'api_ok' };
+        } else {
+          log(`      [接口] 发送失败（status=${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);
+        }
+      } else {
+        log('      [接口] 页面不在 taptap 站内 → 退回 UI 流程');
+      }
+    }
+    if (!r) r = await replyOne({ runner, url: t.url, text: REPLY_TEXT, config, dryRun: false, log });
     if (!r.ok) {
       log(`      [跳过] 回复失败（${r.stage}）→ 不移除，转人工（出队）`);
       state.posts[t.id] = {
         ...(state.posts[t.id] || {}),
         modTask: { type: 'friend_request', keyword: t.keyword, inviteCode: t.inviteCode, repliedAt: null, removedAt: null, failed: r.stage },
       };
+      recordStatus(db, t.id, 'failed', { stage: r.stage, keyword: t.keyword, kind: 'reply_failed' });
       state.modTask.backlog = backlog.filter((b) => String(b.id) !== String(t.id));
-      await saveState(config.paths.stateFile, state);
+      await saveState(modStateFile(config), state);
       await sleep(COOLDOWN);
       return { processed: true, ok: false, id: t.id, stage: r.stage, left: state.modTask.backlog.length };
     }
@@ -272,7 +375,13 @@ export async function processQueueHead({ config, cfg, state, runner, log = conso
       url: t.url,
       author: t.author,
     };
-    await saveState(config.paths.stateFile, state);
+    recordStatus(db, t.id, 'replied', {
+      stage: 'replied',
+      keyword: t.keyword,
+      kind: 'replied',
+      detail: { replyText: REPLY_TEXT, via: VIA },
+    });
+    await saveState(modStateFile(config), state);
   }
 
   // 3b. 移除
@@ -280,23 +389,79 @@ export async function processQueueHead({ config, cfg, state, runner, log = conso
   //    列表卡片 ⋯ 只有 转发/分享/投诉）→ 那个板只回复，移除留给人工在 App 里做。
   //    用户 2026-10-29 确认：「只回复 + 报表列待人工移除」。
   const boardType = t.targetKey ? String(t.targetKey).split(':')[1] : '';
-  const removable = boardType !== 'activity_signup';
+  // ⚠️ 以前活动报名板「只能人工移除」，原因是**网页端没有「管理」入口**（实测）。
+  //    接口直连不依赖网页入口：只要 group_id 对了就能 unlink。
+  //    所以这里加开关 cfg.removeActivityBoard（默认 false = 保持原行为，先只回复）。
+  const removable = boardType !== 'activity_signup' || cfg.removeActivityBoard === true;
 
   let ok = false;
   let stage = '';
   if (!removable) {
-    log('      [留人工] 活动报名板网页端没有移除入口 → 只回复，记入待人工移除清单');
+    log('      [留人工] 活动报名板按配置不自动移除（removeActivityBoard=false）→ 只回复，记入待人工移除清单');
     state.posts[t.id].modTask.stage = 'manual_remove_needed';
     state.posts[t.id].modTask.board = boardType;
     ok = false;
     stage = 'manual_remove_needed';
   } else {
-    const rm = await removePost({ runner, url: t.url, log });
-    log(rm.ok ? '      [OK] 已移除' : `      [注意] 移除结果待确认（${rm.stage}）`);
-    state.posts[t.id].modTask.removedAt = rm.ok ? new Date().toISOString() : null;
-    state.posts[t.id].modTask.stage = rm.ok ? 'removed' : rm.stage;
-    ok = !!rm.ok;
-    stage = rm.stage;
+    let rm = null;
+    if (VIA !== 'ui' && groupId) {
+      const rr = await api.remove({ momentId: t.id, groupId });
+      if (rr.ok) {
+        // ⚠️ 刚 unlink 完，板块列表还有几秒缓存（实测：紧接着查能查到，2 秒后就没了）
+        //    → 查不到一次不算数，等 2s 再确认一次，避免假警报刷「待确认」
+        let v = await api.feedHas({
+          groupId,
+          momentId: t.id,
+          type: boardType || 'feed',
+          maxPages: 3,
+          untilTs: Number(t.publishTime) || 0,
+        });
+        if (v.has) {
+          await sleep(2000);
+          v = await api.feedHas({
+            groupId,
+            momentId: t.id,
+            type: boardType || 'feed',
+            maxPages: 3,
+            untilTs: Number(t.publishTime) || 0,
+          });
+        }
+        if (!v.has) {
+          log('      [接口] 已移除（板块列表已看不到该帖）');
+          rm = { ok: true, stage: 'removed' };
+        } else {
+          // 接口返回成功但列表还能看到：可能是缓存/最终一致，也可能没生效 → 不重复操作，交人工确认
+          log(`      [接口] 已发送移除，但板块列表仍能看到该帖（扫描 ${v.scanned} 条）→ 待确认`);
+          rm = { ok: false, stage: 'removed_unverified' };
+        }
+      } else {
+        log(`      [接口] 移除失败（status=${rr.status}${rr.error ? ' ' + rr.error : ''}）→ 退回 UI 流程`);
+      }
+    }
+    if (!rm) rm = await removePost({ runner, url: t.url, log });
+    if (rm.ok) {
+      log('      [OK] 已移除');
+      state.posts[t.id].modTask.removedAt = new Date().toISOString();
+      state.posts[t.id].modTask.stage = 'removed';
+      recordStatus(db, t.id, 'removed', { stage: 'removed', keyword: t.keyword, kind: 'removed' });
+      ok = true;
+      stage = 'removed';
+    } else if (rm.stage === 'no_manage_btn') {
+      // 这个版块网页端没有「管理」入口（实测：活动报名板）→ 只能人工移除，
+      // 标成 manualOnly，**不再重复入队**（不然每轮都会重试，白耗时间）
+      log('      [留人工] 该帖所在页面没有管理入口（无「管理」按钮）→ 记入待人工移除清单');
+      state.posts[t.id].modTask.stage = 'manual_remove_needed';
+      state.posts[t.id].modTask.manualOnly = true;
+      recordStatus(db, t.id, 'manual_remove', { stage: 'manual_remove_needed', keyword: t.keyword, kind: 'manual_remove' });
+      ok = false;
+      stage = 'manual_remove_needed';
+    } else {
+      log(`      [注意] 移除结果待确认（${rm.stage}）`);
+      state.posts[t.id].modTask.stage = rm.stage;
+      recordStatus(db, t.id, 'failed', { stage: rm.stage, keyword: t.keyword, kind: 'remove_unverified' });
+      ok = false;
+      stage = rm.stage;
+    }
   }
 
   // 出队（不管成功没成功都摘掉，避免无限重试；失败的已记在 state.posts）
@@ -310,7 +475,7 @@ export async function processQueueHead({ config, cfg, state, runner, log = conso
     count: (state.recentReplies[h]?.count || 0) + 1,
     postId: t.id,
   };
-  await saveState(config.paths.stateFile, state);
+  await saveState(modStateFile(config), state);
   await sleep(COOLDOWN); // 短冷却：处理完等 1s 立刻下一个
 
   return { processed: true, ok, id: t.id, stage, left: state.modTask.backlog.length };
@@ -337,11 +502,18 @@ export async function runModTask({
     return { skipped: true };
   }
 
-  const state = await loadState(config.paths.stateFile);
+  const state = await loadState(modStateFile(config));
   state.modTask = state.modTask || { cursors: {}, backlog: [] };
+  // 帖子记录库（逐行写，和 state.json 并存；state.json 丢了也能凭库幂等）
+  let db = null;
+  try {
+    db = openPostDb(config);
+  } catch (e) {
+    log(`  [记录] SQLite 不可用（${e.message}）→ 只用 state.json 记账`);
+  }
 
   log(`\n  [管理任务] 检查中（范围：${(scope || cfg.scope || 'today') === 'today' ? '今天' : '全部'}）`);
-  const q = await checkAndEnqueue({ config, cfg, state, scope, targetFilter, only, sweep, resetCursor, log });
+  const q = await checkAndEnqueue({ config, cfg, state, db, scope, targetFilter, only, sweep, resetCursor, log });
 
   if (dryRun) {
     log('  [管理任务] dry-run：只检查不处理');
@@ -363,7 +535,7 @@ export async function runModTask({
   let n = 0;
   while (state.modTask.backlog?.length) {
     if (cap > 0 && n >= cap) break;
-    const r = await processQueueHead({ config, cfg, state, runner, log });
+    const r = await processQueueHead({ config, cfg, state, runner, db, log });
     if (!r.processed) break;
     n++;
     if (r.ok) handled++;

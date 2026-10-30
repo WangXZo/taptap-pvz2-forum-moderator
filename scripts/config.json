@@ -46,7 +46,9 @@
       "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。",
       "allowNames": []
     },
-    "note": "allowCloser=回复末尾是否随机加一句收尾；refuseOnUnknown=库里没答案时是否回一句婉拒（false=不理会，转人工）"
+    "note": "via=一级回复走接口直连（已实测）；nestedVia=楼中楼（夸奖/喊话）默认仍点 UI —— create-child 的 body 参数名未实测确认，猜错会错发顶层评论",
+    "via": "api",
+    "nestedVia": "ui"
   },
   "praise": {
     "enabled": true,
@@ -83,7 +85,9 @@
       {
         "groupId": 40173,
         "type": "activity_signup",
-        "label": "活动报名"
+        "label": "活动报名",
+        "enabled": false,
+        "note": "用户 2026-10-30：活动报名板整块跳过，不回复、不移除"
       },
       {
         "groupId": 40173,
@@ -101,7 +105,9 @@
       "maxSweepPages": 30,
       "bareCodeIsIntent": true,
       "reply": "你好呀～好友码集中贴已经置顶啦，单开帖很容易被刷下去反而没人看到。麻烦把内容按格式盖到这栋楼 👉 https://www.taptap.cn/moment/864806259805654695，能被更多人找到～",
-      "note": "版主管理任务：只处理**明确存在加好友意图**的帖（加好友/扩列/互赞好友/好友位/好友码/加群/加V…）；活动组队（十月同游/组队/一起玩）、活动邀请码互填、游戏功能里的「好友宝箱」一律放过。先回固定文案（确认发出）→ 再「论坛管理→移除」（不是删帖，可恢复）。cooldownMs=处理完等多久再下一个"
+      "note": "版主管理任务：只处理**明确存在加好友意图**的帖（加好友/扩列/互赞好友/好友位/好友码/加群/加V…）；活动组队（十月同游/组队/一起玩）、活动邀请码互填、游戏功能里的「好友宝箱」一律放过；活动报名板整块跳过。走接口直连（via=api）：先 POST moment-comment/v1/create 回复并校验落库 → 再 POST moment/v3/unlink-group 移除（不是删帖，可恢复），接口 1s 间隔；接口失败自动退回点 UI。",
+      "via": "api",
+      "removeActivityBoard": false
     },
     "note": "常驻用 scripts/mod-watch.mjs（默认 2 分钟一轮，独立 opencli session，不跟答疑守护抢标签页）。targets=要管的子版块（type=activity_signup 是活动报名板，type=feed 是讨论区）"
   },
@@ -122,6 +128,18 @@
     "usageFile": "{{SKILL}}/data/qa-usage.json",
     "archiveDir": "{{SKILL}}/qa/归档",
     "stateFile": "{{SKILL}}/data/state.json",
-    "reportsDir": "{{SKILL}}/reports"
+    "modStateFile": "{{SKILL}}/data/mod-state.json",
+    "reportsDir": "{{SKILL}}/reports",
+    "qaIndexFile": "{{SKILL}}/data/qa-index.sqlite",
+    "postDbFile": "{{SKILL}}/data/post-records.sqlite"
+  },
+  "qa": {
+    "vector": {
+      "backend": "char",
+      "endpoint": "",
+      "model": "",
+      "note": "char=字符n-gram TF-IDF（默认，零依赖）；http=接本地 embeddings 服务（OpenAI 兼容接口），失败自动退回 char"
+    },
+    "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
   }
 }

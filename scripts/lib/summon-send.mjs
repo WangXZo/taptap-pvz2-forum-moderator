@@ -19,13 +19,24 @@ import { liteHash } from './util.mjs';
  * @param {Function} [o.log]
  * @returns {Promise<{ok:boolean, stage?:string, verified?:boolean, emoji?:string, detail?:any}>}
  */
-export async function sendSummonReply({ state, postId, commentId, url, text, runner, log = () => {} }) {
+export async function sendSummonReply({
+  state,
+  postId,
+  commentId,
+  url,
+  text,
+  runner,
+  via = 'ui',
+  log = () => {},
+}) {
   const r = await replyToComment({
     runner,
     url,
     commentId: String(commentId),
     text,
     dryRun: false,
+    // 楼中楼默认仍点 UI（接口 create-child 参数未实测确认，见 reply-nested.mjs 注释）
+    via,
     log,
   });
 

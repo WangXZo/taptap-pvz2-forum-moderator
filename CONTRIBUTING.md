@@ -44,7 +44,8 @@
 ```bash
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
-node scripts/test-qa-health.mjs
+node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
+node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs
 
 node scripts/collect.mjs --dry-run   # 看新条目能不能被命中
 node scripts/qa-admin.mjs purge-tag  # 确认没写进脏数据
@@ -57,8 +58,12 @@ node scripts/qa-admin.mjs purge-tag  # 确认没写进脏数据
 ```
 scripts/            入口脚本（CLI）
 scripts/lib/        核心模块
-  http.mjs          接口
-  qa.mjs            答疑库解析 + 提问判定
+  http.mjs          读接口
+  taptap-api.mjs    写接口直连（回复/移除，页面内 fetch）
+  db.mjs            SQLite 底座（post_record / post_event / qa_vec）
+  post-records.mjs  帖子记录读写 + 老记录搬库
+  qa-vector.mjs     向量检索（分词 / TF-IDF / 余弦 + 覆盖率）
+  qa.mjs            答疑库解析 + 打分（含向量相似度项）
   classify.mjs      四类判定
   variants.mjs      回复文案（口吻）
   praise.mjs        夸奖文案
@@ -74,7 +79,7 @@ qa/答疑库.md         ★ 协作核心
 
 ### 约定
 
-1. **改行为必须加回归用例**。仓库里有 7 套测试（`test-*.mjs`），改完必须全绿。
+1. **改行为必须加回归用例**。仓库里有 12 套测试（`test-*.mjs`），改完必须全绿。
    判定/打分/文案规则尤其如此 —— 这些规则是靠用例锁住的。
 2. **事实来源只有 `qa/答疑库.md`**。脚本里不许硬编码游戏数值。
 3. **文案改动要过口吻护栏**。测试里有一组断言（「没有客服腔」「没有公文腔」「池子 ≥15 套」
@@ -109,7 +114,7 @@ node scripts/qa-sync.mjs --to-runtime --apply # 仓库的新问答 → 运行中
 
 ## 四、提 PR 前自查
 
-- [ ] 7 套测试全绿
+- [ ] 12 套测试全绿
 - [ ] `node scripts/collect.mjs --dry-run` 正常
 - [ ] `node scripts/qa-admin.mjs purge-tag` 没有脏条目
 - [ ] 改行为的话加了回归用例

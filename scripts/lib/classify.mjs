@@ -14,7 +14,7 @@ import { STATUS, REASON, normKey } from './state.mjs';
 import { matchPost, looksLikeQuestion } from './qa.mjs';
 import { buildReplyText } from './variants.mjs';
 
-export function classify(post, { qa, config, state }) {
+export function classify(post, { qa, config, state, vecScores = null, matchPath = null }) {
   const text = post.text || '';
 
   // 1. 我回复过
@@ -48,7 +48,7 @@ export function classify(post, { qa, config, state }) {
   if (black) return mk(STATUS.MANUAL, REASON.SENSITIVE, { note: `含「${black}」` });
 
   // 6/7. QA 匹配
-  const cands = matchPost(text, qa, 3);
+  const cands = matchPost(text, qa, 3, { vecScores });
   const top = cands[0];
   const candidates = cands.map((c) => ({
     qaId: c.entry.id,
@@ -62,6 +62,7 @@ export function classify(post, { qa, config, state }) {
       matchedEntry: top.entry,
       score: Number(top.score.toFixed(3)),
       candidates,
+      matchPath,
     });
   }
   if (top && top.score >= config.match.suggestScore) {
@@ -69,11 +70,12 @@ export function classify(post, { qa, config, state }) {
       matchedEntry: top.entry,
       score: Number(top.score.toFixed(3)),
       candidates,
+      matchPath,
     });
   }
 
   // 8. 像提问但没命中
-  return mk(STATUS.MANUAL, REASON.NO_QA_MATCH, { candidates });
+  return mk(STATUS.MANUAL, REASON.NO_QA_MATCH, { candidates, matchPath });
 }
 
 function mk(status, reason, extra = {}) {
@@ -85,6 +87,7 @@ function mk(status, reason, extra = {}) {
     candidates: extra.candidates || [],
     note: extra.note || '',
     duplicateOf: extra.duplicateOf || null,
+    matchPath: extra.matchPath || null,
   };
 }
 

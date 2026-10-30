@@ -22,6 +22,7 @@ import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { loadState } from './lib/state.mjs';
 import { makeRunner, doctorOk } from './lib/replier.mjs';
 import { checkAndEnqueue, processQueueHead } from './mod-task.mjs';
+import { openPostDb } from './lib/post-records.mjs';
 import { renderModReport } from './lib/mod-report.mjs';
 
 const argv = process.argv.slice(2);
@@ -34,8 +35,16 @@ const once = has('--once');
 const dryRun = has('--dry-run');
 const resetCursor = has('--reset-cursor');
 
-const state = await loadState(config.paths.stateFile);
+const state = await loadState(config.paths.modStateFile || config.paths.stateFile);
 state.modTask = state.modTask || { cursors: {}, backlog: [] };
+
+// 帖子记录库（逐行写，和 state.json 并存）
+let db = null;
+try {
+  db = openPostDb(config);
+} catch (e) {
+  console.log(`  [记录] SQLite 不可用（${e.message}）→ 只用 state.json 记账`);
+}
 
 const session = config.modTasks?.session || config.reply.session;
 const runner = makeRunner({ opencliMain: config.reply.opencliMain, session });
@@ -73,6 +82,7 @@ for (;;) {
         config,
         cfg,
         state,
+        db,
         resetCursor: resetCursor && firstCheck,
         log: console.log,
       });
@@ -104,7 +114,7 @@ for (;;) {
   }
 
   try {
-    const r = await processQueueHead({ config, cfg, state, runner, log: console.log });
+    const r = await processQueueHead({ config, cfg, state, runner, db, log: console.log });
     if (r.processed) processed++;
   } catch (e) {
     console.error(`  [处理] 异常：${e.message}`);

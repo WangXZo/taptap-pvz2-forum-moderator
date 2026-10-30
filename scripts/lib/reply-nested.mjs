@@ -21,6 +21,7 @@
 //    → 夸奖文案保持单行。
 
 import { parseEmojiSegments } from './emoji.mjs';
+import { getTapApi, momentIdFromUrl, stripEmojiMarks } from './taptap-api.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -51,7 +52,15 @@ const PANEL_PROBE = `(()=>{
  * 在某条评论下回复（含 1 个句尾表情）
  * @returns {{ok:boolean, stage:string, detail?:any}}
  */
-export async function replyToComment({ runner, url, commentId, text, dryRun = false, log = () => {} }) {
+export async function replyToComment({
+  runner,
+  url,
+  commentId,
+  text,
+  dryRun = false,
+  via = 'ui',
+  log = () => {},
+}) {
   const { plainText, marks } = parseEmojiSegments(text);
   const emojiName = marks.length ? marks[marks.length - 1].name : null;
 
@@ -60,6 +69,28 @@ export async function replyToComment({ runner, url, commentId, text, dryRun = fa
   }
   if (!runner?.available) return { ok: false, stage: 'opencli_missing', detail: runner?.reason };
   if (!commentId) return { ok: false, stage: 'no_comment_id' };
+
+  // ---- 楼中楼接口（默认不开，见下方说明）----
+  // ⚠️ create-child 的 body 参数名**还没实测确认**（猜的 parent_post_id）。
+  //    风险不对称：万一服务端忽略未知参数，就会**在帖子里多出一条顶层评论**（玩家可见、还能被回复），
+  //    比「多花 15 秒点 UI」严重得多。所以默认 via='ui'，等拿到真实 cURL 再切。
+  //    要试接口：reply.nestedVia = "api" 或调用时传 via:'api'。
+  if (String(via).toLowerCase() === 'api') {
+    const api = getTapApi({ runner, log });
+    const momentId = momentIdFromUrl(url);
+    if (momentId && api.ensureOrigin().ok) {
+      const ar = await api.childComment({ momentId, parentId: String(commentId), text });
+      if (ar.ok) {
+        log(`      [接口] 楼中楼已发送（表情 ${ar.emojiHit || 0} 个）`);
+        return {
+          ok: true,
+          stage: 'api_sent',
+          detail: { emoji: emojiName, emojiHit: ar.emojiHit, verified: false, body: stripEmojiMarks(text).trim() },
+        };
+      }
+      log(`      [接口] 楼中楼发送失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);
+    }
+  }
   if (/\n/.test(plainText.trim())) {
     return { ok: false, stage: 'multiline_unsupported', detail: '楼中楼 fill 不支持多行，请用单行文案' };
   }
