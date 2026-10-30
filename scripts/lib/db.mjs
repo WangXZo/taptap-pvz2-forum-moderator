@@ -198,11 +198,11 @@ export function getPost(db, id) {
   return r || null;
 }
 
-/** 这条帖子是否已经「处理完」（回复过或已移除或留人工） */
+/** 这条帖子是否已经「处理完」（回复过 / 已移除 / 只回复过 / 留人工） */
 export function isPostDone(db, id) {
   const r = getPost(db, id);
   if (!r) return false;
-  return ['replied', 'removed', 'manual_remove', 'failed'].includes(String(r.status));
+  return ['replied', 'removed', 'manual_remove', 'failed', 'replied_only'].includes(String(r.status));
 }
 
 /** 列出记录（按时间倒序） */

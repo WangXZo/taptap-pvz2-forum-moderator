@@ -39,7 +39,7 @@ export function recordScanned(db, post, extra = {}) {
 }
 
 /** 管理任务的终态（一旦到达就不要再被后续扫描覆盖） */
-const MOD_TERMINAL = new Set(['replied', 'removed', 'manual_remove', 'failed']);
+const MOD_TERMINAL = new Set(['replied', 'removed', 'manual_remove', 'failed', 'replied_only']);
 
 /**
  * 管理任务记一次「扫到了这个帖子」
@@ -81,7 +81,7 @@ export function isHandled(db, state, id) {
   if (db && isPostDone(db, id)) return true;
   const p = state?.posts?.[String(id)];
   if (!p) return false;
-  if (p.modTask?.removedAt || p.modTask?.manualOnly) return true;
+  if (p.modTask?.removedAt || p.modTask?.manualOnly || p.modTask?.replyOnlyAt) return true;
   return p.status === STATUS.REPLIED || p.status === STATUS.PENDING;
 }
 

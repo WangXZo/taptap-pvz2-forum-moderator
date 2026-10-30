@@ -152,9 +152,45 @@ async function buildMaskedConfig() {
   return cfg;
 }
 
+/**
+ * 收集「真实好友码」—— 从运行数据里抽，不靠猜
+ *
+ * 为什么这样做：好友码是**玩家个人数据**（用户 2026-10-30：「好友码，也脱敏」），
+ * 但文档里必须举例说明码长什么样。所以文档里一律写 `and********` 这种掩码，
+ * 这里把**真实出现过的码**当敏感串来扫 —— 一旦有人在文档里贴了真码，发布当场被拦下。
+ */
+async function collectRealCodes() {
+  const codes = new Set();
+  const add = (s) => {
+    const v = String(s || '').trim();
+    if (v.length >= 6) codes.add(v);
+  };
+  // ① 管理任务记账里的 inviteCode
+  try {
+    const st = JSON.parse(await readFile(join(SKILL, 'data/mod-state.json'), 'utf8'));
+    for (const p of Object.values(st.posts || {})) add(p?.modTask?.inviteCode);
+  } catch {}
+  // ② 已移除清单缓存里的正文（含正文里抽出来的码）
+  try {
+    const cache = JSON.parse(await readFile(join(SKILL, 'data/removed-codes.json'), 'utf8'));
+    for (const body of Object.values(cache.body || {})) {
+      for (const m of String(body).matchAll(/[A-Za-z][A-Za-z0-9]{5,19}/g)) {
+        const t = m[0];
+        if (t.length < 6) continue;
+        if (!/[0-9]/.test(t) && !/[A-Z]/.test(t)) continue;
+        if (/^(taptap|android|iphone|moment|comment|https|www)$/i.test(t)) continue;
+        add(t);
+      }
+    }
+  } catch {}
+  return [...codes];
+}
+
 /** 扫一遍个人信息（真值不该出现在发布目录里） */
 async function scanPersonal(dir, secrets) {
   const hits = [];
+  // 这些目录是运行时产物 / 被 .gitignore 忽略，不进版本库，不必扫
+  const SKIP_DIRS = new Set(['.git', 'node_modules', 'data', 'reports', 'logs']);
   const walk = async (d) => {
     const { readdir } = await import('node:fs/promises');
     let entries = [];
@@ -164,7 +200,7 @@ async function scanPersonal(dir, secrets) {
       return;
     }
     for (const e of entries) {
-      if (e.name === '.git' || e.name === 'node_modules') continue;
+      if (SKIP_DIRS.has(e.name)) continue;
       const p = join(d, e.name);
       if (e.isDirectory()) {
         await walk(p);
@@ -206,10 +242,12 @@ async function main() {
 
   // 体检：发布目录里不能有真值
   const runCfg = JSON.parse(await readFile(join(SKILL, 'scripts/config.json'), 'utf8'));
+  const realCodes = await collectRealCodes();
   const secrets = [
     runCfg.myUserId,
     ...(runCfg.summon?.aliases || []),
     ...(runCfg.teamUserIds || []),
+    ...realCodes, // 真实好友码（玩家个人数据，用户 2026-10-30）
   ].filter(Boolean);
   const hits = await scanPersonal(REPO, secrets);
   if (hits.length) {
@@ -218,7 +256,9 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  console.log('\n✓ 个人信息扫描通过（发布目录里没有真值）');
+  console.log(
+    `\n✓ 个人信息扫描通过（扫了 ${secrets.length} 个敏感串：uid / 别名 / 队友 / ${realCodes.length} 个真实好友码）`
+  );
 }
 
 await main();

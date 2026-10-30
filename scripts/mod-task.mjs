@@ -234,13 +234,19 @@ export async function checkAndEnqueue({
       bareCodeIsIntent: cfg.bareCodeIsIntent !== false,
     });
     // 幂等判断：state.json 里有终态 **或** SQLite 里有终态 → 都算处理过
-    // （库里那份是「搬走老记录」后的真相来源，state.json 丢了也不会重复处理）
-    const done =
-      state.posts[p.id]?.modTask?.removedAt ||
-      state.posts[p.id]?.modTask?.manualOnly ||
-      isHandled(db, state, p.id);
+    // （库里那份是「搬走记录」后的真相来源，state.json 丢了也不会重复处理）
+    const st = state.posts[p.id]?.modTask;
+    const done = st?.removedAt || st?.manualOnly || st?.replyOnlyAt || isHandled(db, state, p.id);
     if (hit.hit && !done) {
-      hits.push({ ...p, keyword: hit.keyword, inviteCode: hit.inviteCode, reason: hit.reason });
+      hits.push({
+        ...p,
+        keyword: hit.keyword,
+        inviteCode: hit.inviteCode,
+        reason: hit.reason,
+        confidence: hit.confidence,
+        // remove / reply_only 两档：不确定的只回复（用户 2026-10-30）
+        action: hit.removable ? 'remove' : 'reply_only',
+      });
     }
     // 扫到的帖子逐行记进库（含未命中的，便于回看「为什么没处理」）
     // ⚠️ 用 recordModScanned：已移除的帖子再被扫到时，状态**不会**被覆盖回 'scanned'
@@ -249,7 +255,7 @@ export async function checkAndEnqueue({
       keyword: hit.hit ? hit.keyword : null,
       inviteCode: hit.hit ? hit.inviteCode : null,
       status: hit.hit ? 'detected' : 'scanned',
-      detail: hit.hit ? { reason: hit.reason } : null,
+      detail: hit.hit ? { reason: hit.reason, confidence: hit.confidence, action: hit.removable ? 'remove' : 'reply_only' } : null,
     });
   }
 
@@ -262,7 +268,7 @@ export async function checkAndEnqueue({
   const BACKLOG_MAX = Number(cfg.backlogMax ?? 500);
   const doneIds = new Set(
     Object.entries(state.posts)
-      .filter(([, p]) => p?.modTask?.removedAt || p?.modTask?.manualOnly)
+      .filter(([, p]) => p?.modTask?.removedAt || p?.modTask?.manualOnly || p?.modTask?.replyOnlyAt)
       .map(([id]) => String(id))
   );
   const byId = new Map();
@@ -277,6 +283,9 @@ export async function checkAndEnqueue({
       keyword: b.keyword,
       inviteCode: b.inviteCode || null,
       reason: b.reason,
+      confidence: b.confidence || 'clear',
+      // 'remove' = 回复后移除；'reply_only' = 只回复（不确定的，用户 2026-10-30）
+      action: b.action || 'remove',
       publishTime: Number(b.publishTime) || 0,
       // 记下属于哪个子版块：activity_signup 板网页端没有移除入口，只能回复
       targetKey: b.targetKey || b.targetLabel || '',
@@ -392,11 +401,29 @@ export async function processQueueHead({ config, cfg, state, runner, db = null, 
   // ⚠️ 以前活动报名板「只能人工移除」，原因是**网页端没有「管理」入口**（实测）。
   //    接口直连不依赖网页入口：只要 group_id 对了就能 unlink。
   //    所以这里加开关 cfg.removeActivityBoard（默认 false = 保持原行为，先只回复）。
-  const removable = boardType !== 'activity_signup' || cfg.removeActivityBoard === true;
+  const boardOk = boardType !== 'activity_signup' || cfg.removeActivityBoard === true;
+  // 🔑 分档（用户 2026-10-30）：
+  //   action='remove'      → 回复后移除（明确加好友 / 互刷+好友码）
+  //   action='reply_only'  → 只回复不移除（只识别到像好友码 / 只有互刷没码）
+  const replyOnly = String(t.action || 'remove') === 'reply_only';
+  const removable = boardOk && !replyOnly;
 
   let ok = false;
   let stage = '';
-  if (!removable) {
+  if (replyOnly) {
+    log(`      [只回复] 判定为「不确定」（${t.keyword || '弱信号'}）→ 按规则只回复、不移除`);
+    state.posts[t.id].modTask.stage = 'reply_only';
+    state.posts[t.id].modTask.replyOnlyAt = new Date().toISOString();
+    state.posts[t.id].modTask.confidence = t.confidence || 'uncertain';
+    recordStatus(db, t.id, 'replied_only', {
+      stage: 'reply_only',
+      keyword: t.keyword,
+      kind: 'reply_only',
+      detail: { reason: t.reason, confidence: t.confidence || 'uncertain' },
+    });
+    ok = true;
+    stage = 'reply_only';
+  } else if (!boardOk) {
     log('      [留人工] 活动报名板按配置不自动移除（removeActivityBoard=false）→ 只回复，记入待人工移除清单');
     state.posts[t.id].modTask.stage = 'manual_remove_needed';
     state.posts[t.id].modTask.board = boardType;

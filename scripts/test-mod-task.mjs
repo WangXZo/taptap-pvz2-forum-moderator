@@ -30,17 +30,17 @@ const check = (name, cond, detail = '') => {
 
 console.log('\n[A] 命中：明确在加好友（现场真实标题）');
 const REAL_HITS = [
-  '亲，好友位等你哦and5ZM3TJ2K',
-  '我的好友码andPBGWL4ND',
-  '来加好友and6LCL3S6Q',
+  '亲，好友位等你哦andXXXXXXX2',
+  '我的好友码andXXXXXXX3',
+  '来加好友andXXXXXXX4',
   '加好友啦',
   '加好友，送体力喔',
   '加好友兄弟们',
   '加好友的来',
-  '扩列互赞 andX6SCFRV8',
+  '扩列互赞 andXXXXXXX5',
   '好友，互加',
-  '快来加好友 andFTDH7FYW[表情_大笑]',
-  '有人加不，每日上线 and5NGRCHN4',
+  '快来加好友 andXXXXXXX6[表情_大笑]',
+  '有人加不，每日上线 andXXXXXXX7',
   '有没有好友互赞的呀',
   '好友码集中贴',
   '加个好友',
@@ -85,19 +85,64 @@ for (const t of REAL_MISS) {
   check(`放过：${t}`, !r.hit, r.reason);
 }
 
+console.log('\n[C2] 分档：clear（回复+移除）vs uncertain（只回复）—— 用户 2026-10-30');
+
+// ① 互刷 + 好友码 → clear（明确加好友行为）
+const r_hushua = detectFriendRequest({ title: '好友互刷', text: 'andXXXXXXX8' });
+check('互刷+and码 → 命中', r_hushua.hit, r_hushua.reason);
+check('互刷+and码 → 可移除', r_hushua.removable === true && r_hushua.confidence === 'clear', JSON.stringify(r_hushua));
+check('互刷+and码 → 认出码', r_hushua.inviteCode === 'andXXXXXXX8', String(r_hushua.inviteCode));
+
+const r_hushua_ios = detectFriendRequest({ title: '互刷', text: 'iosXXXXXXX9' });
+check('互刷+iOS码 → 可移除', r_hushua_ios.removable === true, JSON.stringify(r_hushua_ios));
+check('互刷+iOS码 → 认出码', r_hushua_ios.inviteCode === 'iosXXXXXXX9', String(r_hushua_ios.inviteCode));
+
+// ② 只有互刷、没有码 → uncertain（只回复）
+const r_hushua_only = detectFriendRequest({ title: '互刷', text: '' });
+check('只有互刷 → 命中（要回复）', r_hushua_only.hit, r_hushua_only.reason);
+check('只有互刷 → 不可移除', r_hushua_only.removable === false && r_hushua_only.confidence === 'uncertain', JSON.stringify(r_hushua_only));
+
+// ③ 裸好友码 → uncertain（只回复，不移除）
+const r_bare = detectFriendRequest({ title: '', text: 'andXXXXXXX1' });
+check('裸码 → 命中', r_bare.hit);
+check('裸码 → 只回复不移除', r_bare.removable === false && r_bare.confidence === 'uncertain', JSON.stringify(r_bare));
+
+// ④ 好友码 + 只有弱词「好友」 → uncertain
+const r_weak = detectFriendRequest({ title: '好友 andXXXXXXX2', text: '' });
+check('码+弱词好友 → 命中', r_weak.hit, r_weak.reason);
+check('码+弱词好友 → 只回复不移除', r_weak.removable === false, JSON.stringify(r_weak));
+
+// ⑤ 好友码 + 强意图词（互加/扩列/互赞） → clear
+const r_strong = detectFriendRequest({ title: '互加好友', text: 'andXXXXXXX2' });
+check('互加+码 → 可移除', r_strong.removable === true, JSON.stringify(r_strong));
+
+// ⑥ 明确意图词 → clear（回复+移除）
+const r_clear = detectFriendRequest({ title: '加好友', text: '' });
+check('加好友 → 可移除', r_clear.removable === true && r_clear.confidence === 'clear', JSON.stringify(r_clear));
+
+// ⑦ 标题只有「好友」→ clear
+const r_friendonly = detectFriendRequest({ title: '好友', text: '' });
+check('标题只有好友 → 可移除', r_friendonly.removable === true, JSON.stringify(r_friendonly));
+
+// ⑧ 排除仍然优先：互刷 + 组队 → 放过
+check(
+  '互刷+组队 → 放过（排除优先）',
+  !detectFriendRequest({ title: '互刷组队', text: 'andXXXXXXX8' }).hit
+);
+
 console.log('\n[C] 边界');
 check('标题只有「好友」→ 命中', detectFriendRequest({ title: '好友', text: '' }).hit);
 check(
   '正文里的加好友也算',
-  detectFriendRequest({ title: '随便写个标题', text: '有人加我好友吗 and5ZM3TJ2K' }).hit
+  detectFriendRequest({ title: '随便写个标题', text: '有人加我好友吗 andXXXXXXX2' }).hit
 );
 check(
   '裸好友码帖 → 命中',
-  detectFriendRequest({ title: '', text: 'and5JSA48WW' }).hit
+  detectFriendRequest({ title: '', text: 'andXXXXXXX1' }).hit
 );
 check(
   '裸码帖可配置为不命中',
-  !detectFriendRequest({ title: '', text: 'and5JSA48WW', bareCodeIsIntent: false }).hit
+  !detectFriendRequest({ title: '', text: 'andXXXXXXX1', bareCodeIsIntent: false }).hit
 );
 check(
   '带别字的裸码（只有活动码）→ 放过',
@@ -148,7 +193,7 @@ check('标题整体词表非空', FRIEND_ONLY_TITLE_RE.source.length > 0);
 check('固定文案含集中贴链接', /https:\/\/www\.taptap\.cn\/moment\/864806259805654695/.test(DEFAULT_FIXED_REPLY));
 check('固定文案提到集中贴', /集中贴/.test(DEFAULT_FIXED_REPLY));
 check('固定文案单行', !DEFAULT_FIXED_REPLY.includes('\n'));
-check('邀请码正则能取到码', 'and5ZM3TJ2K'.match(INVITE_CODE_RE)?.[0] === 'and5ZM3TJ2K');
+check('邀请码正则能取到码', 'andXXXXXXX2'.match(INVITE_CODE_RE)?.[0] === 'andXXXXXXX2');
 check('邀请码正则不吃普通单词', !('android'.match(INVITE_CODE_RE) || []).length);
 check('关键词全表非空', ALL_KEYWORDS.length > 0);
 

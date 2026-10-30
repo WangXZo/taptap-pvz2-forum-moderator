@@ -65,61 +65,172 @@ export const FRIEND_ONLY_TITLE_RE =
 /** TapTap 分享码：and + 6~12 位字母数字（好友码就长这样） */
 export const INVITE_CODE_RE = /\band[A-Za-z0-9]{6,12}\b/g;
 
+/**
+ * 「像好友码」的通用形态：字母开头、6~20 位、且**含数字或含大写**
+ *
+ * 为什么要放宽（2026-10-30）：实测好友码不止 `and` 前缀 ——
+ *   Android 端 `andXXXXXXX2`、iOS 端 `iosXXXXXXX3`、还有裸码 `XXXXXXXX`。
+ * 只认 `and` 会把 iOS 帖全漏掉。
+ * 「含数字或含大写」是为了挡住普通小写英文词（taptap / android / moment 之类）。
+ */
+export const FRIEND_CODE_RE = /\b[A-Za-z][A-Za-z0-9]{5,19}\b/g;
+
+/** 这些普通英文词不是好友码 */
+export const CODE_STOPWORDS = new Set([
+  'taptap', 'moment', 'comment', 'android', 'iphone', 'google', 'wechat',
+  'weixin', 'bilibili', 'douyin', 'kuaishou', 'zhihu', 'taobao', 'friend',
+  'friends', 'hello', 'admin', 'group', 'momentid', 'https', 'www',
+]);
+
+/** 取文本里所有像好友码的串（已按大小写去重，保留首次出现的写法） */
+export function findFriendCodes(text) {
+  const out = [];
+  const seen = new Set();
+  for (const m of String(text || '').matchAll(FRIEND_CODE_RE)) {
+    const token = m[0];
+    const low = token.toLowerCase();
+    if (CODE_STOPWORDS.has(low)) continue;
+    if (!/[0-9]/.test(token) && !/[A-Z]/.test(token)) continue;
+    if (seen.has(low)) continue;
+    seen.add(low);
+    out.push(token);
+  }
+  return out;
+}
+
 /** 整篇只有一个邀请码（裸码帖） */
-const ONLY_CODE_RE = /^\s*and[A-Za-z0-9]{6,12}\s*$/;
+const ONLY_CODE_RE = /^\s*(?:[A-Za-z][A-Za-z0-9]{5,19})\s*$/;
 
 /**
- * 判定一个帖子是不是「加好友意图」
+ * 判定一个帖子是不是「加好友意图」——**分两档**（用户 2026-10-30）
+ *
+ *   clear     ：明确加好友 → **回复 + 移除**
+ *   uncertain ：只识别到「像好友码」或只有弱信号 → **只回复，不移除**
+ *
+ * 分档规则：
+ *   clear   ← 明确意图词（加好友/好友位/好友码/扩列/互加/加群/加V…）
+ *           ← 标题整体就是好友类词（好友 / 加好友 / 互加 …）
+ *           ← **「互刷」+ 好友码**（用户 2026-10-30 新增：这就是加好友行为）
+ *           ← 好友码 + 强意图词（扩列 / 互加 / 互赞）
+ *   uncertain ← 裸好友码（整篇只有一串码）
+ *             ← 好友码 + 只有弱词「好友」（好友宝箱那类误判就是栽在这）
+ *             ← 只有「互刷」没有码
  *
  * @param {object} o
  * @param {string} o.title
  * @param {string} o.text
- * @param {boolean} [o.bareCodeIsIntent] 裸邀请码帖算不算（默认算）
- * @returns {{hit:boolean, keyword?:string, inviteCode?:string|null, reason:string}}
+ * @param {boolean} [o.bareCodeIsIntent] 裸码帖要不要处理（默认要，但只回复不移除）
+ * @returns {{hit:boolean, confidence:'clear'|'uncertain'|null, removable:boolean, keyword?:string, inviteCode?:string|null, reason:string}}
  */
 export function detectFriendRequest({ title = '', text = '', bareCodeIsIntent = true } = {}) {
   const t = String(title || '').trim();
   const body = String(text || '');
   const flat = `${t}\n${body}`.replace(/\s+/g, ' ').trim();
+  const codes = findFriendCodes(flat);
+  const code = codes[0] || null;
 
   // ① 排除优先
   const ex = EXCLUDE_PATTERNS.find((re) => re.test(flat));
   if (ex) {
     const m = flat.match(ex);
-    return { hit: false, reason: `含「${m?.[0] ?? ex.source}」（活动组队/活动邀请码/游戏功能），不是加好友` };
-  }
-
-  // ② 意图模式
-  const intent = INTENT_PATTERNS.find((re) => re.test(flat));
-  if (intent) {
-    const m = flat.match(intent);
-    const code = (flat.match(INVITE_CODE_RE) || [])[0] || null;
     return {
-      hit: true,
-      keyword: m?.[0] ?? intent.source,
-      inviteCode: code,
-      reason: `加好友意图「${m?.[0] ?? intent.source}」${code ? ` + 邀请码 ${code}` : ''}`,
+      hit: false,
+      confidence: null,
+      removable: false,
+      reason: `含「${m?.[0] ?? ex.source}」（活动组队/活动邀请码/游戏功能），不是加好友`,
     };
   }
 
-  // ③ 标题整体就是好友类词
+  // ② 明确意图词 → clear
+  const intent = INTENT_PATTERNS.find((re) => re.test(flat));
+  if (intent) {
+    const m = flat.match(intent);
+    return {
+      hit: true,
+      confidence: 'clear',
+      removable: true,
+      keyword: m?.[0] ?? intent.source,
+      inviteCode: code,
+      reason: `加好友意图「${m?.[0] ?? intent.source}」${code ? ` + 好友码 ${code}` : ''}`,
+    };
+  }
+
+  // ②b 互刷 + 好友码 → clear（用户 2026-10-30 明确要求）
+  if (/互刷/.test(flat)) {
+    if (code) {
+      return {
+        hit: true,
+        confidence: 'clear',
+        removable: true,
+        keyword: '互刷+好友码',
+        inviteCode: code,
+        reason: `含「互刷」且带好友码 ${code}`,
+      };
+    }
+    return {
+      hit: true,
+      confidence: 'uncertain',
+      removable: false,
+      keyword: '互刷',
+      inviteCode: null,
+      reason: '只有「互刷」没有好友码 → 不确定，只回复不移除',
+    };
+  }
+
+  // ③ 标题整体就是好友类词 → clear
   if (t && FRIEND_ONLY_TITLE_RE.test(t)) {
-    const code = (flat.match(INVITE_CODE_RE) || [])[0] || null;
-    return { hit: true, keyword: t, inviteCode: code, reason: `标题就是「${t}」` };
+    return {
+      hit: true,
+      confidence: 'clear',
+      removable: true,
+      keyword: t,
+      inviteCode: code,
+      reason: `标题就是「${t}」`,
+    };
   }
 
-  // ④ 裸邀请码帖（整篇只有一个 and 码 —— 那就是好友码分享）
-  const code = (flat.match(INVITE_CODE_RE) || [])[0] || null;
-  if (bareCodeIsIntent && !t && ONLY_CODE_RE.test(body.trim())) {
-    return { hit: true, keyword: '裸邀请码', inviteCode: code, reason: `整篇只有一个好友码 ${code}` };
+  // ④ 好友码 + 强意图词（扩列/互加/互赞）→ clear
+  if (code && /扩列|互加|互赞/.test(flat)) {
+    return {
+      hit: true,
+      confidence: 'clear',
+      removable: true,
+      keyword: '好友码+强意图',
+      inviteCode: code,
+      reason: `含好友码 ${code} 且带扩列/互加/互赞`,
+    };
   }
 
-  // ⑤ 只有邀请码但还有别的字 → 看有没有「好友」类词
-  if (code && /好友|扩列|互加|互赞/.test(flat)) {
-    return { hit: true, keyword: '好友码', inviteCode: code, reason: `含好友码 ${code}` };
+  // ⑤ 裸好友码（整篇只有串码）→ uncertain
+  if (bareCodeIsIntent && !t && ONLY_CODE_RE.test(String(body).trim())) {
+    return {
+      hit: true,
+      confidence: 'uncertain',
+      removable: false,
+      keyword: '裸好友码',
+      inviteCode: code,
+      reason: `整篇只有一个好友码 ${code} → 只识别到码，只回复不移除`,
+    };
   }
 
-  return { hit: false, reason: code ? `只有活动邀请码 ${code}，没有加好友意图` : '没有加好友意图' };
+  // ⑥ 好友码 + 只有弱词「好友」→ uncertain
+  if (code && /好友/.test(flat)) {
+    return {
+      hit: true,
+      confidence: 'uncertain',
+      removable: false,
+      keyword: '好友码',
+      inviteCode: code,
+      reason: `含好友码 ${code} 但意图不明确 → 只回复不移除`,
+    };
+  }
+
+  return {
+    hit: false,
+    confidence: null,
+    removable: false,
+    reason: code ? `只有活动邀请码 ${code}，没有加好友意图` : '没有加好友意图',
+  };
 }
 
 /**

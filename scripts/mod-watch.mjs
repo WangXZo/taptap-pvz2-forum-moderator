@@ -53,7 +53,14 @@ console.log('══════════════════════�
 console.log(
   `  TapTap 版主管理任务  |  检查每 ${intervalSec}s  |  处理：一直跑  |  范围 ${cfg.scope || 'today'}  |  session ${session}`
 );
-console.log(`  目标：${(config.modTasks?.targets || []).map((t) => t.label || t.type).join('、') || '(未配置)'}`);
+// 只列**启用中**的板块；停用的单独标注（避免看标题以为活动板也在处理）
+const onTargets = (config.modTasks?.targets || []).filter((t) => t.enabled !== false);
+const offTargets = (config.modTasks?.targets || []).filter((t) => t.enabled === false);
+console.log(
+  `  目标：${onTargets.map((t) => t.label || t.type).join('、') || '(未配置)'}` +
+    (offTargets.length ? `　|　已停用：${offTargets.map((t) => t.label || t.type).join('、')}（不回复、不移除）` : '')
+);
+console.log(`  处置：clear → 回复+移除　|　uncertain（只识别到好友码）→ 只回复`);
 console.log(`  ${dryRun ? 'dry-run（只检查不处理）' : '真执行（回复 + 移除）'}　停止：Ctrl+C`);
 console.log('═══════════════════════════════════════');
 

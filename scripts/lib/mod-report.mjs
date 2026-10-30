@@ -32,33 +32,56 @@ export async function renderModReport({ config, state, now = new Date() }) {
 
   const posts = Object.entries(state.posts || {})
     .map(([id, p]) => ({ id, ...p, mt: p.modTask || null }))
-    .filter((p) => p.mt && (isToday(p.mt.repliedAt) || isToday(p.mt.removedAt)));
+    .filter((p) => p.mt && (isToday(p.mt.repliedAt) || isToday(p.mt.removedAt) || isToday(p.mt.replyOnlyAt)));
 
   const removed = posts.filter((p) => isToday(p.mt.removedAt));
   const needManual = posts.filter((p) => p.mt.stage === 'manual_remove_needed');
+  const replyOnly = posts.filter((p) => isToday(p.mt.replyOnlyAt));
   const failed = posts.filter((p) => p.mt.failed);
 
   const backlog = state.modTask?.backlog || [];
 
+  // ⚠️ 这段是模板字符串：正文里不能再出现反引号（会把字符串提前截断），
+  //    要用行内代码就写成「」或纯文字。
   let md = `# 版主管理任务 · 今日进度
 
 > 更新时间：${fmt(now)}
 > 范围：只处理**今天 00:00 之后**的帖（加好友功能今天上线，历史帖不碰）
-> 规则：**只认「加好友意图」**（加好友/扩列/互赞好友/好友位/好友码/加群/加V…）；
-> 　　　活动组队（十月同游/组队/一起玩）、活动邀请码、游戏功能里的「好友」一律放过；
-> 　　　**官方/版主/自己发的帖直接跳过**。
-> 流程：先回固定文案 → 确认发出 → 再「论坛管理 → 移除」（自动点确认）
+> 规则（**分两档**）：
+> 　　**clear** = 明确加好友 → **回复 + 移除**：加好友/好友位/好友码/扩列/互加/加群/加V…、
+> 　　　　标题整体就是好友类词、**「互刷」+ 好友码**、好友码 + 强意图词（扩列/互加/互赞）
+> 　　**uncertain** = 只识别到弱信号 → **只回复，不移除**：裸码帖、码 + 只有弱词「好友」、只有「互刷」没码
+> 　　好友码不限前缀：andXXXXXXX2 / iosXXXXXXX3 / 裸码 XXXXXXXX
+> 　　**排除**：活动组队（十月同游/组队/一起玩）、活动邀请码、游戏功能里的「好友」；
+> 　　　　**官方/版主/自己发的帖直接跳过**；活动报名板整块跳过。
+> 流程：先回固定文案 → 确认发出 → 再调接口移除（moment/v3/unlink-group，= 移出版块，不是删帖）
 
 ## 总览
 
 | 项 | 数量 |
 |---|---|
 | 已移除（今天） | ${removed.length} |
+| 只回复·未移除（今天） | ${replyOnly.length} |
 | **待人工移除（今天）** | ${needManual.length} |
 | 回复失败转人工 | ${failed.length} |
 | 队列待处理 | ${backlog.length} |
 
 `;
+
+  if (replyOnly.length) {
+    md += `## 💬 只回复·未移除（${replyOnly.length}）
+
+> 判定属于 **uncertain**（只识别到「像好友码」或只有「互刷」没码）——
+> 按用户 2026-10-30 的规则：**只回固定文案，不动帖子**。
+
+| 帖子 | 作者 | 命中 | 原因 | 链接 |
+|---|---|---|---|---|
+`;
+    for (const p of replyOnly.sort((a, b) => String(b.mt.replyOnlyAt || '').localeCompare(String(a.mt.replyOnlyAt || ''))).slice(0, 50)) {
+      md += `| ${esc(String(p.title || '').slice(0, 30))} | ${esc(p.author || '')} | ${esc(p.mt.keyword || '-')} | ${esc(p.mt.stage || 'reply_only')} | ${p.url || `https://www.taptap.cn/moment/${p.id}`} |\n`;
+    }
+    md += '\n';
+  }
 
   if (needManual.length) {
     md += `## 🖐 待人工移除（${needManual.length}）
