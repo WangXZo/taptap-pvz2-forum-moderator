@@ -625,7 +625,6 @@ node scripts/test-praise.mjs        # 34 条断言（含口吻护栏），改夸
 | `scripts/reply.mjs` | 补发历史上卡在「待回复」的条目 |
 | `scripts/report-offline.mjs` | 不联网，从状态库重建报表 |
 | `scripts/whoami.mjs` | 读当前 Chrome 的 TapTap `user_id` |
-
 | `scripts/test-question.mjs` | **提问判定回归测试**（35 条用例），改判定规则前后必跑 |
 | `scripts/test-praise.mjs` | **夸奖逻辑回归测试**（34 条断言，含口吻护栏），改夸奖/有效回答规则前后必跑 |
 | `scripts/test-variants.mjs` | **回复变体 + 泄露自检 + 分享识别回归测试**（60 条断言，含口吻护栏），改文案规则前后必跑 |
