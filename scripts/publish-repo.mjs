@@ -81,6 +81,7 @@ const DEFAULT_FILES = [
   'scripts/test-archive.mjs',
   'scripts/test-api-contents.mjs',
   'scripts/test-cold-store.mjs',
+  'scripts/test-publish-mask.mjs',
   'scripts/test-interact.mjs',
   'scripts/test-limits-codes.mjs',
   'scripts/test-match.mjs',
@@ -267,6 +268,44 @@ export function maskEvidence(text, { secrets = [] } = {}) {
 }
 
 /**
+ * 覆盖度校验：skill 里有、但发布清单里没列的文件
+ *
+ * 为什么需要：DEFAULT_FILES 是**手写白名单** —— 新增脚本忘了加进去，
+ * 仓库里就会少一个文件，而发布过程不会报错（就是「多版本并存」的老毛病）。
+ * 2026-11-05 真踩到一次：`test-publish-mask.mjs` 漏了，直到三方比对才发现。
+ */
+async function findUnlisted(files) {
+  const { readdir } = await import('node:fs/promises');
+  const { sep } = await import('node:path');
+  const listed = new Set(files);
+  const SPECIAL = new Set(['scripts/config.json', QA_FILE, EVIDENCE_FILE]); // 单独脱敏写入
+  const SKIP_DIRS = new Set(['data', 'reports', 'qa', 'logs', 'node_modules', '.git']);
+  const missing = [];
+  const walk = async (dir) => {
+    let entries = [];
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (SKIP_DIRS.has(e.name)) continue;
+      const p = join(dir, e.name);
+      if (e.isDirectory()) {
+        await walk(p);
+        continue;
+      }
+      const rel = relative(SKILL, p).split(sep).join('/');
+      if (!/\.(mjs|md|json|ps1|cmd|txt)$/i.test(rel)) continue;
+      if (listed.has(rel) || SPECIAL.has(rel)) continue;
+      missing.push(rel);
+    }
+  };
+  await walk(SKILL);
+  return missing.sort();
+}
+
+/**
  * 收集「真实好友码」—— 从运行数据里抽，不靠猜
  *
  * 为什么这样做：好友码是**玩家个人数据**（用户 2026-10-30：「好友码，也脱敏」），
@@ -389,7 +428,15 @@ async function main() {
     }
   }
 
-  // 体检：发布目录里不能有真值
+  // 体检①：发布清单覆盖度（防手写白名单漏文件 —— 2026-11-05 真踩到过）
+  const unlisted = await findUnlisted(DEFAULT_FILES);
+  if (unlisted.length) {
+    console.log('\n⚠️ 这些文件在 skill 里存在、但发布清单没列（不会进仓库）：');
+    for (const f of unlisted) console.log(`   ${f}`);
+    console.log('   → 要发就加进 publish-repo.mjs 的 DEFAULT_FILES');
+  }
+
+  // 体检②：发布目录里不能有真值
   const runCfg = JSON.parse(await readFile(join(SKILL, 'scripts/config.json'), 'utf8'));
   const realCodes = await collectRealCodes();
   const secrets = [
