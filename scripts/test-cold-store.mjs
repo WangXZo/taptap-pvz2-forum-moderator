@@ -212,7 +212,7 @@ ok('配置里没写的类别也有默认值', coldTtlDays('unknown-cat', {}) > 0
   ok('解析出评论 id', p.commentId === '404364961', p.commentId);
   ok('解析出发信人', p.senderName === '萝卜');
   ok('解析出被回复的内容', p.quoted.includes('版主助手-小鲸鱼'));
-  ok('回复我的 → 是关于我', isAboutMe(p, { myUserName: '枫******Zo' }) === true);
+  ok('回复我的 → 是关于我', isAboutMe(p, { ourNames: ['枫******Zo'] }) === true);
   const like = parseNotification({ ...raw, data: { ...raw.data, title: '赞了你的帖子', content: '好厉害' } });
   ok('点赞 → 不是「要我回话」', isAboutMe(like, {}) === false);
 }

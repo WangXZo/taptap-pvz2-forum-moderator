@@ -13,7 +13,6 @@
 // 输出：reports/gaps.md
 
 import { writeFile, mkdir } from 'node:fs/promises';
-import { dirname } from 'node:path';
 import { loadConfig, argvOf } from './lib/paths.mjs';
 import { loadQaLibrary, matchPost, looksLikeQuestion } from './lib/qa.mjs';
 import { loadState, STATUS, REASON } from './lib/state.mjs';

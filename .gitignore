@@ -4,6 +4,12 @@ reports/
 logs/
 scripts/node-path.txt
 
+# 答疑库：**不随仓库分发**（每个运行目录里各自一份，见 README「答疑库在哪」）
+#   这里忽略掉，防止有人把运行中的库（可能含未打码的玩家昵称）误提交进来
+qa/答疑库.md
+qa/待补充问题.md
+qa/归档/
+
 # 答疑库的临时/备份文件
 qa/答疑库.md.backup.md
 qa/答疑库.md.before-*

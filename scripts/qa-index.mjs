@@ -9,7 +9,6 @@
 //
 // 索引存在 data/qa-index.sqlite（和答疑库正文分开，改库不影响索引）
 
-import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/paths.mjs';

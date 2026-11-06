@@ -145,6 +145,8 @@ const DEFAULT_FILES = [
   'references/question-detect.md',
   'references/selectors.md',
   'references/summon.md',
+  'docs/方案.md',
+  'docs/github-survey.md',
 ];
 
 /** 脱敏：保留首尾各 1~3 位，中间用 * 补到 8 位（保留 ≤50%） */
@@ -172,7 +174,7 @@ const PUBLIC_ALIASES = ['大肥鱼', '吃白米饭的'];
 async function buildMaskedConfig() {
   const cfg = JSON.parse(await readFile(join(SKILL, 'scripts/config.json'), 'utf8'));
   if (cfg.myUserId) cfg.myUserId = maskValue(cfg.myUserId);
-  cfg.myUserName = '';
+  if (cfg.myUserName) delete cfg.myUserName; // 旧版本残留字段（有就删）
   if (cfg.teamUserIds) cfg.teamUserIds = [];
   if (cfg.summon?.aliases?.length) {
     // 助手别称保持原样（公开称呼），其它马甲照常脱敏

@@ -1,6 +1,6 @@
 // 答疑库归档：超过 30 天未被引用的条目 → 冷数据，主库重新整理
 //
-// 触发时机：每月 1~5 号，且本月还没整理过（见 usage.shouldArchive）
+// 触发时机：**每天一次**，且当天还没整理过（见 usage.shouldArchive，2026-11-02 从「每月 1~5 号」改的）
 // 归档去向：qa/归档/答疑库-冷数据-YYYY-MM.md（仍是 Markdown，人能看）
 // 主库处理：删除已归档条目，重排为统一格式
 //
@@ -10,7 +10,7 @@
 //   - 可以手动把条目从冷数据拷回主库，下次运行会重新纳入统计
 
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 const DAY = 86400000;
 

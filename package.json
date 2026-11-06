@@ -1,7 +1,7 @@
 {
   "name": "taptap-pvz2-forum-moderator",
-  "version": "1.0.0",
-  "description": "TapTap 论坛版主/答疑组自动化助手：定时扫帖、按答疑库自动回复并带 TapTap 表情、社区答案自动沉淀、缺口报表",
+  "version": "1.1.0",
+  "description": "TapTap 论坛版主/答疑组自动化助手：2 分钟守护队列、LLM 按三层上下文生成回复、按类别 TTL 冷热分离、玩家回信后继续互动、社区答案自动沉淀、缺口报表",
   "type": "module",
   "license": "MIT",
   "engines": {
@@ -19,7 +19,8 @@
     "dry-run": "node scripts/watch.mjs --dry-run",
     "once": "node scripts/collect.mjs --dry-run",
     "report": "node scripts/report-gaps.mjs",
-    "test": "node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && node scripts/test-qa-health.mjs"
+    "cold-stats": "node scripts/cold-store.mjs stats",
+    "test": "node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && node scripts/test-thread-context.mjs && node scripts/test-interact.mjs"
   },
   "keywords": [
     "taptap",
@@ -27,15 +28,18 @@
     "forum",
     "moderator",
     "bot",
-    "qa"
+    "qa",
+    "llm"
   ],
   "files": [
     "scripts/",
     "references/",
     "assets/",
-    "qa/答疑库.md",
+    "docs/",
     "SKILL.md",
-    "README.md"
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE"
   ],
   "repository": {
     "type": "git",

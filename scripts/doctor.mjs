@@ -10,7 +10,6 @@
 
 import { readFile, access, stat } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { loadConfig, SKILL_ROOT } from './lib/paths.mjs';
 import { loadQaLibrary } from './lib/qa.mjs';
 import { scanTagged, tagsFromConfig } from './lib/qa-health.mjs';

@@ -20,7 +20,6 @@
 //   ⚠️ 真正生效的是 config.archive.coldDays（config 优先），这里的只是兜底默认值。
 
 import { tokenize, cosine } from './qa-vector.mjs';
-import { liteHash } from './util.mjs';
 
 const DAY = 86400000;
 

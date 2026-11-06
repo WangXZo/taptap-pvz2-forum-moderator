@@ -19,7 +19,7 @@ import { chat } from './llm.mjs';
 import { renderContext, contextForNode } from './thread-context.mjs';
 import { assertKind } from './summon.mjs';
 import { assertNoLeak } from './variants.mjs';
-import { clampReply, LIMITS } from './limits.mjs';
+import { clampReply } from './limits.mjs';
 import { loadEmojiMap } from './taptap-api.mjs';
 
 /** 各任务类型的写法指引（不是模板，是"让模型知道自己在干嘛"） */

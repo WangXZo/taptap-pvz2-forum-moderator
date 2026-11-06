@@ -92,17 +92,8 @@ export function isTianGongCode(token) {
   return TIAN_GONG_STRICT_RE.test(String(token || '').trim());
 }
 
-/** 归一化成大写（同一串码的大小写写法要能对上） */
-export function normalizeCode(token) {
-  return String(token || '').trim().toUpperCase();
-}
-
-// ------------------------------------------------------------
-// 天宫码（JFA…）分享 → 该夸「无私分享」
-// ------------------------------------------------------------
-
 /**
- * 天宫码：JFA + 7 位（实测 JFAABCDEFG / JFAABCDEFG / JFAABCDEFG，长度都是 JFA+7）
+ * 天宫码：JFA + 7 位（实测长度都是 JFA+7）
  *
  * ⚠️ 这份是**带 g** 的（给 matchAll 用）。**不要**直接拿它 .test() ——
  *    带 g 的正则 test() 是有状态的（lastIndex 会残留），第二次调用就会漏判。
@@ -129,7 +120,3 @@ export function findTianGongCodes(text) {
   }
   return out;
 }
-
-// ------------------------------------------------------------
-// 有人**发**天宫码 → 夸「无私分享」
-// ------------------------------------------------------------

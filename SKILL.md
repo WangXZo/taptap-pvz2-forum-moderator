@@ -1028,7 +1028,7 @@ node scripts/test-question.mjs      # 期望 ✓ 38/38 全部通过
 同一条回答只夸一次 —— 已夸过的评论 ID 记在 `data/state.json` 的 `posts[id].praisedComments` 里。
 
 ```bash
-node scripts/test-praise.mjs        # 37 条断言（含口吻/长度护栏），改夸奖规则前后各跑一次
+node scripts/test-praise.mjs        # 9 条断言（挑对象 + 口吻/长度护栏），改夸奖规则前后各跑一次
 ```
 
 ## TapTap 表情（可用）
@@ -1070,7 +1070,7 @@ node scripts/test-praise.mjs        # 37 条断言（含口吻/长度护栏）�
 | `scripts/test-summarize.mjs` | **沉淀/有效回答回归测试**（27 条断言，含「不能把我自己的评论沉淀成答案」） |
 | `scripts/test-archive.mjs` | **归档回归测试**（17 条断言） |
 | `scripts/test-qa-health.mjs` | **答疑库体检回归测试**（35 条断言）：标签识别、只认正文、默认不写、移动不删除、24h 频率 |
-| `scripts/test-summon.mjs` | **签名识别 + 喊话互动回归测试**（122 条断言）：我们回过 vs 玩家喊我们、语义分桶、口吻护栏、答疑库作答 |
+| `scripts/test-summon.mjs` | **签名识别 + 喊话互动回归测试**（21 条断言）：我们回过 vs 玩家喊我们、喊话判定、护栏 |
 | `scripts/report-gaps.mjs` | **答疑库缺口报表** → `reports/gaps.md`：没命中库的提问 + 高频主题词，告诉你该补什么 |
 | `scripts/qa-admin.mjs` | **答疑库管理 CLI**：`show/append/keywords/register/rebuild/backup` + **`purge-tag`（剔除携带自己标签的条目）** + **`purge-junk`（剔除广告/灌水等垃圾条目）** |
 | `scripts/post-admin.mjs` | **帖子工具 CLI**：`fetch/mark-replied/reset-praised/reset-share/cleanup/diag/recheck` + **`check-removed`（查帖子还在不在版块里）** |
@@ -1332,9 +1332,9 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 | `references/api.md` | 接口路径、参数、限制、group_id 探测方法、字段结构 |
 | `references/emojis.md` | TapTap 表情全表（61 个）+ 点选实现要点 |
 | `references/selectors.md` | 回复框选择器校准手册（opencli state/find 用法） |
-| `references/question-detect.md` | **提问判定规则**：判定顺序、NOT_ASK/ASK 词表、35 条用例、3 个历史 bug 成因、改词表注意事项 |
+| `references/question-detect.md` | **提问判定规则**：判定顺序、NOT_ASK/ASK 词表、38 条用例、3 个历史 bug 成因、改词表注意事项 |
 | `references/praise.md` | **夸答题玩家**：有效回答的门槛、表情挑法、楼中楼操作流程与踩坑 |
-| `references/summon.md` | **签名识别 + 玩家喊我们**：判定表、8 个语义桶、护栏清单、答疑库匹配去称呼 |
+| `references/summon.md` | **签名识别 + 玩家喊我们**：判定表、语义分档（refuse/summon）、护栏清单、答疑库匹配去称呼 |
 | `references/mod-task.md` | **版主管理任务**：判定规则（强/弱/排除词）、「管理→移除」选择器、确认框、记账幂等 |
 | `references/admin.md` | **管理工具速查**：答疑库/帖子两个 CLI 的用法与典型流程 |
 | `references/ops.md` | 定时部署、开机自启、多游戏复用、扩展到其他论坛 |

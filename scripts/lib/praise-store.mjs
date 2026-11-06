@@ -6,15 +6,14 @@
 // 做法：
 //   每次夸完，把「被夸的那条回答 ↔ 我们说的夸奖」成对存进 SQLite（praise_reply 表），
 //   并记一份字符 n-gram 的稀疏向量（和答疑库向量检索同一套算法，见 lib/qa-vector.mjs）。
-//   下次再夸之前先查相似的历史夸奖：
-//     ① 一字不差说过的 → 直接避开（跨天、跨帖都不重复）
-//     ② 很相似的（同一句式的变体）→ 记为「最近说过这种口气」，优先换一种说法
+//   下次再夸之前，用 `recentPraiseTexts()` 取最近夸过的话，直接喂进 LLM 提示词
+//   让模型避开同样的说法（2026-11-04 起文案由 LLM 生成，不再做向量相似检索）。
 //
 // 为什么不用现成的 qa_vec 表：那张表是答疑库条目的检索索引，语义和生命周期都不一样；
 // 混在一起会让「答疑库重建索引」把夸奖记录清掉。
 
 import { openDb } from './db.mjs';
-import { tokenize, cosine } from './qa-vector.mjs';
+import { tokenize } from './qa-vector.mjs';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS praise_reply (
@@ -79,48 +78,5 @@ export function recentPraiseTexts(db, limit = 500) {
       .filter(Boolean);
   } catch {
     return [];
-  }
-}
-
-/**
- * 找与「本次要夸的回答」相似的历史夸奖
- *
- * ⚠️ 目前**没有调用方**（2026-11-04：夸奖改由 LLM 生成，历史文本通过 `recentPraiseTexts`
- *    直接喂进提示词让模型避开，不再做向量相似检索）。
- *    留着是因为「以后要按相似度挑不重复的说法」时它正好能用 —— 不用再写一遍。
- * @returns {{text:string, author:string, score:number}[]} 相似度倒序
- */
-export function similarPraise(db, { commentText = '', topN = 5, minScore = 0.15 } = {}) {
-  if (!db) return [];
-  try {
-    const rows = db.prepare('SELECT praise_text, comment_text, author, vec FROM praise_reply ORDER BY id DESC LIMIT 500').all();
-    const q = vectorize(commentText);
-    const qm = new Map(Object.entries(q));
-    const out = [];
-    for (const r of rows) {
-      let v;
-      try {
-        v = new Map(Object.entries(JSON.parse(r.vec || '{}')));
-      } catch {
-        continue;
-      }
-      const s = cosine(qm, v);
-      if (s >= minScore) out.push({ text: r.praise_text, author: r.author, score: Number(s.toFixed(3)) });
-    }
-    return out.sort((a, b) => b.score - a.score).slice(0, topN);
-  } catch {
-    return [];
-  }
-}
-
-/** 统计（体检用） */
-export function praiseStats(db) {
-  if (!db) return { total: 0, latest: null };
-  try {
-    const total = db.prepare('SELECT COUNT(*) c FROM praise_reply').get()?.c ?? 0;
-    const latest = db.prepare('SELECT praise_text, created_at FROM praise_reply ORDER BY id DESC LIMIT 1').get() || null;
-    return { total, latest };
-  } catch {
-    return { total: 0, latest: null };
   }
 }

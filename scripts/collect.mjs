@@ -16,21 +16,11 @@ import { pickInteractions, decideInteraction, replyTargetFor, playerKey } from '
 import { sendInteractReply } from './lib/interact-send.mjs';
 import { loadQaLibrary, looksLikeQuestion, looksLikeShare } from './lib/qa.mjs';
 import { openDb } from './lib/db.mjs';
-import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, recordStatus } from './lib/post-records.mjs';
+import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned } from './lib/post-records.mjs';
 import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
 import { buildThreadTree } from './lib/thread-context.mjs';
 import { composeReply as composeLlmReply, condenseMaterial } from './lib/compose-reply.mjs';
-import {
-  archiveToCold,
-  coldRows,
-  wakeUp,
-  wakeByNotifications,
-  classifyPost,
-  coldTtlDays,
-  searchCold,
-  coldStats,
-  isCold,
-} from './lib/cold-store.mjs';
+import { archiveToCold, wakeByNotifications, isCold } from './lib/cold-store.mjs';
 import { listNotifications, isAboutMe, ourNames } from './lib/notify.mjs';
 import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
@@ -40,7 +30,6 @@ import { getTapApi } from './lib/taptap-api.mjs';
 import { parseEmojiSegments } from './lib/emoji.mjs';
 import { buildQaEntry, appendQaEntry } from './lib/summarize.mjs';
 import { pickPraiseTarget } from './lib/praise.mjs';
-import { replyToComment } from './lib/reply-nested.mjs';
 import { sendPraise } from './lib/praise-send.mjs';
 import { assertNoLeak } from './lib/variants.mjs';
 import { answerPromisesCode, looksLikeCodeAsk, looksLikeCodeShare } from './lib/code-guard.mjs';

@@ -16,7 +16,7 @@
 
 import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
 import { join } from 'node:path';
-import { loadConfig, SKILL_ROOT, SCRIPTS_DIR } from './lib/paths.mjs';
+import { SKILL_ROOT, SCRIPTS_DIR } from './lib/paths.mjs';
 import { resolveOpencliMain, makeRunner, doctorOk } from './lib/replier.mjs';
 
 const argv = process.argv.slice(2);

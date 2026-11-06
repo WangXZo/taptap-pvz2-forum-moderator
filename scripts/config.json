@@ -182,6 +182,5 @@
     "maxTokens": 600,
     "timeoutMs": 60000,
     "fallbackNote": "渠道按实测快慢排序：volcengine-plan → minimax → kimi → ollama。MiniMax/Kimi 强制 thinking，单次可能 30~90 秒，超时自动切下一个。"
-  },
-  "myUserName": ""
+  }
 }
