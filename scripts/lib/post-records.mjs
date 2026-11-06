@@ -134,5 +134,61 @@ export function archiveOldPosts(state, db, { olderThanDays = 45, now = Date.now(
   return { moved, kept };
 }
 
+/**
+ * 按**数量**裁剪 state.json 里的帖子记录（老记录已经在库里了，这里只把 state.json 瘦身）
+ *
+ * 为什么光靠「按天归档」不够（用户 2026-11-02：「记录太多」）：
+ *   一天能刷出几百条加好友帖，45 天就是上万条 → state.json 几百 KB，
+ *   每次保存都要整份重写，越滚越慢。
+ *
+ * 保留规则：
+ *   · 最近 keepMax 条（判重要用）
+ *   · 全部「待回复 / 需人工」（还没处理完，不能丢）
+ *   其余的搬进 SQLite（本来就在库里），然后从 state.json 删掉。
+ */
+export function pruneStatePosts(state, db, { keepMax = 500 } = {}) {
+  if (!state?.posts) return { moved: 0, kept: 0 };
+  const entries = Object.entries(state.posts);
+  if (entries.length <= keepMax) return { moved: 0, kept: entries.length };
+
+  const keepStatuses = new Set([STATUS.PENDING, STATUS.MANUAL]);
+  const byTime = entries
+    .map(([id, p]) => [id, p, Date.parse(String(p?.lastSeen || p?.updatedAt || '')) || 0])
+    .sort((a, b) => b[2] - a[2]);
+
+  const keep = new Set();
+  // ① 未处理完的一律留
+  for (const [id, p] of byTime) {
+    if (keepStatuses.has(p?.status)) keep.add(id);
+  }
+  // ② 再按时间留到 keepMax
+  for (const [id] of byTime) {
+    if (keep.size >= keepMax) break;
+    keep.add(id);
+  }
+
+  let moved = 0;
+  for (const [id, p] of byTime) {
+    if (keep.has(id)) continue;
+    // 库里没有的补一条（保证搬过去不丢信息）
+    if (db && !getPost(db, id)) {
+      upsertPost(db, {
+        id: String(id),
+        url: p?.url,
+        title: p?.title,
+        author: p?.author,
+        publishTime: p?.publishTime,
+        status: p?.status,
+        stage: p?.modTask?.stage || null,
+        keyword: p?.modTask?.keyword || null,
+        detail: { normKey: p?.normKey || null, reason: p?.reason || null, archivedFrom: 'state.json(cap)' },
+      });
+    }
+    delete state.posts[id];
+    moved++;
+  }
+  return { moved, kept: keep.size };
+}
+
 /** 导出给 CLI/报表用 */
 export { openDb, upsertPost, updatePost, logEvent, getPost, listPosts, listEvents, stats, prunePosts };

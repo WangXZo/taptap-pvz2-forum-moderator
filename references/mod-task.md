@@ -13,6 +13,11 @@
 
 ## 一、每轮做什么
 
+> ⚠️ **「移除」动作当前是关闭的**（用户 2026-11-05）。好友意图的**识别照常、回复照常**，
+> 只是帖子**不移除**（仍留在版块里，只浏览内容）。
+> 开关：`config.modTasks.friendRequest.removeEnabled`（默认 `false`）→ 改成 `true` 立刻恢复「回复 + 移除」。
+> 关着的时候日志打 `[只回复] 移除功能已关闭`，状态记 `modTask.stage='remove_paused'`。
+
 ```
 扫目标子版块（默认：活动报名 + 讨论区）
   → 只取「今天 00:00 之后」的帖（历史帖一律不碰）
@@ -241,11 +246,33 @@ node scripts/api-write.mjs remove <momentId> --group 40173 --yes
 回完**立刻落盘**（不等移除），这样即使移除那步炸了，重跑也不会重复发同一段话。
 移除没生效也不怕：帖子还在版块里，下一轮会被重新检出并重试移除（回复会跳过）。
 
-## 九、测试
+## 九、查「已移除了哪些帖」
+
+**固定脚本 `scripts/removed-list.mjs`，靠参数复用，不要另写新脚本。**
 
 ```bash
-node scripts/test-mod-task.mjs       # 63 条断言：意图判定
+node scripts/removed-list.mjs                                  # 全量清单
+node scripts/removed-list.mjs --since "2026-10-30 13:22:11"    # 某时刻之后移除的（增量）
+node scripts/removed-list.mjs --since "..." --until "..."      # 指定区间
+node scripts/removed-list.mjs --days 3                         # 最近 3 天
+node scripts/removed-list.mjs --out reports/xx.md              # 自定义输出路径
+node scripts/removed-list.mjs --no-fetch                       # 完全不联网（只用已有字段）
+node scripts/removed-list.mjs --refresh                        # 强制重抓正文
+```
+
+产出（Markdown）：① 好友码去重清单（含出现次数与写法变体）② 逐帖明细（玩家 / 好友码 / 一句话总结 /
+移除时间 / 链接）③ 没提取到好友码的帖子（图片帖单独列出）。
+
+- 数据源：`data/mod-state.json`（管理任务记账）+ `data/post-records.sqlite`（记录库）
+- 标题里没有好友码的 → 调只读接口 `/webapiv2/moment/v3/detail` 取正文补码（移除只是移出版块，详情页照常能开）
+- 带时间窗时输出到 `reports/removed-friend-posts-<from>_<to>.md`，**不覆盖**全量清单
+
+## 十、测试
+
+```bash
+node scripts/test-mod-task.mjs       # 78 条断言：意图判定 + 两档处置
 node scripts/test-api-contents.mjs   # 27 条断言：段落/表情节点/去标记
+node scripts/test-removed-list.mjs   # 20 条断言：时间窗解析与过滤、好友码提取与去重
 ```
 
 用例全部来自**现场真实标题**（2026-10-29 抓的两个子版块 60+ 条）：正例 16 条、负例 22 条、

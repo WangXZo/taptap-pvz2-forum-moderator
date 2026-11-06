@@ -69,7 +69,7 @@ export function isNoise(r) {
 const JUNK_PATTERNS =
   /客服|找官方|私聊|私信|关注我|加我|找我|互赞|互换|交换|兑换码|退款|举报|充值|封号|加群|滴滴|联系方式|留个?号/;
 
-// 兑换码特征：一段 ≥6 位、含字母的纯字母数字串（如 JFA6Ds3Jcl）
+// 兑换码特征：一段 ≥6 位、含字母的纯字母数字串（如 JFAABCDEFG）
 const CODE_RE = /[A-Za-z][A-Za-z0-9]{5,}/;
 
 export function isUsefulAnswer(r) {
@@ -177,7 +177,7 @@ export function extractKeywords(title, text) {
 
   // 数字、英文、版本号优先
   // ⚠️ 滤掉「活动编号 / UID / 兑换码」噪音：
-  //   纯数字 ≥6 位（1234567890）、以字母开头的长码（JFA6Ds3Jcl / JFAMcG6Ne7）
+  //   纯数字 ≥6 位（1234567890）、以字母开头的长码（JFAABCDEFG / JFAMcG6Ne7）
   //   留着它们会让沉淀条目的关键词变成一串数字，对别的问法毫无匹配价值
   const nums = [];
   for (const m of src.match(/[a-zA-Z][a-zA-Z0-9]{1,}|\d+(?:\.\d+)?[a-zA-Z]?/g) || []) {

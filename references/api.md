@@ -176,7 +176,42 @@ form: moment_id=<19位字符串>
 
 ⚠️ **换行必须靠多个 paragraph 节点**：一个节点里的 `\n` 在时间线上不换行（`buildContents()` 已按行拆分）。
 
-楼中楼（回复某条评论）：`/moment-comment/v1/create-child`，多一个 `parent_post_id=<被回复的评论 id>`。
+### 8.2b 楼中楼（回复某条评论）—— 2026-11-03 用真实 cURL 校准 ✅
+
+```
+POST /webapiv2/moment-comment/v1/create-child?X-UA=<urlencoded>
+form: moment_id=<19位字符串>          帖子 id
+      parent_id=<被回复的一级评论 id>   ← 不是 parent_post_id！
+      reply_to_id=                     传空串
+      contents=<JSON 字符串>           富文本节点数组，和一级评论同格式
+```
+
+真实 cURL 的表单部分（**凭据已脱敏**，实际由页面 Cookie 提供）：
+
+```bash
+curl --location 'https://www.taptap.cn/webapiv2/moment-comment/v1/create-child?X-UA=...' \
+  --header 'x-xsrf-token: <取自 document.cookie>' \
+  --header 'Cookie: <浏览器会话自带 TAPTAP_SESSION>' \
+  --form 'moment_id="866690162791288619"' \
+  --form 'parent_id="404297404"' \
+  --form 'reply_to_id=""' \
+  --form 'contents="[{\"type\":\"paragraph\",\"children\":[{\"text\":\"至少可自己想想\"}]}]"'
+```
+
+⚠️ **参数名是 `parent_id`** —— 之前猜的 `parent_post_id` 是错的。
+服务端会**忽略未知参数**：用错名字时回复会**变成顶层评论**（玩家可见、还能被回复），
+所以在拿到真实 cURL 之前一直没敢用接口，一直走 UI 点选。
+
+**实测结论**（2026-11-03，两个帖子各验一次）：
+
+| 检查项 | 结果 |
+|---|---|
+| 接口返回 | `ok=true`，`emojiHit=1`（表情节点被接受） |
+| 落点 | 在**楼中楼**（`child_posts` 里能看到），**没有**变成顶层评论 |
+| 一级评论数 | 发完后不变（顶层还是原来那几条） |
+
+已把 `reply.nestedVia` 设为 `api`（原来默认 `ui`）。UI 流程仍保留为兜底：
+接口失败时自动退回点 UI。
 
 ### 8.3 表情节点
 
@@ -202,7 +237,45 @@ form: id=<moment_id>
 - 成功后**板块列表有几秒缓存**：紧接着查还能查到，等 2s 再查就没了 → 校验要重试一次，别急着判失败。
 - 老帖校验别只翻前 3 页：要翻到**比目标帖发布时间更早**的帖子，才能确定它真的不在列表里（`feedHas({untilTs})`）。
 
-### 8.5 错误语义
+### 8.7 通知：回复和@我收到的（2026-11-04 实测）
+
+```
+GET /webapiv2/notification/v2/by-me?type=7&X-UA=<urlencoded>
+referer: https://www.taptap.cn/notifications?show_type=7&reply_type=gets
+```
+
+⚠️ **这个接口要鉴权** —— 和 feed/评论不一样，那些是公开接口，`lib/http.mjs` 的 `ttGet`
+（裸 fetch，不带 Cookie）能调通；通知接口用裸 fetch 会返回「**未认证**」。
+
+**必须走页面上下文**（`lib/taptap-api.mjs` 的 `api.notifications({type:7})`，
+页面内 `fetch(..., {credentials:'include'})`）。
+
+返回（实测）：
+
+```jsonc
+{
+  "id": 92716301981,
+  "action": "comment",                     // 评论/回复类
+  "sender": { "type": "user", "user": { "id": 791105472, "name": "萝卜" } },
+  "data": {
+    "title": "回复了你的评论",              // 或「@了你」
+    "content": "@枫******Zo: 给你看看我的",   // ← 昵称已脱敏（真实昵称不进仓库）
+    "uri": "https://www.taptap.cn/moment/866300950728409356#comment-id=404364961"
+  },
+  "extend": { "contents": { "content": "被回复的那条（我们的评论原文）" } },
+  "created_time": 1793766294
+}
+```
+
+**为什么它重要**：冷帖唤醒要判断「有没有人回复我 / @我」。
+靠「评论数变了 → 去读评论 → 猜」既慢又不准（还得逐条读评论）；
+通知接口**一次请求**就给出：谁、在哪个帖子的哪条评论下、说了什么、@没@我。
+
+- `data.uri` → 正则 `/moment/(\d+)` 取帖子 id、`comment-id=(\d+)` 取评论 id
+- `data.title` → 「回复了你的评论」「@了你」= 值得唤醒；「赞了你的帖子」= 不用回，排除
+- `extend.contents.content` → 被回复的那条（我们的评论原文），带签名就能确认「回的是我」
+
+### 8.8 错误语义
 
 | 现象 | 含义 |
 |---|---|

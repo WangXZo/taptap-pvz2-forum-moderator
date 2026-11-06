@@ -22,6 +22,7 @@
 
 import { parseEmojiSegments } from './emoji.mjs';
 import { getTapApi, momentIdFromUrl, stripEmojiMarks } from './taptap-api.mjs';
+import { clampReply } from './limits.mjs';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -59,6 +60,7 @@ export async function replyToComment({
   text,
   dryRun = false,
   via = 'ui',
+  config = {},
   log = () => {},
 }) {
   const { plainText, marks } = parseEmojiSegments(text);
@@ -70,22 +72,26 @@ export async function replyToComment({
   if (!runner?.available) return { ok: false, stage: 'opencli_missing', detail: runner?.reason };
   if (!commentId) return { ok: false, stage: 'no_comment_id' };
 
-  // ---- 楼中楼接口（默认不开，见下方说明）----
-  // ⚠️ create-child 的 body 参数名**还没实测确认**（猜的 parent_post_id）。
-  //    风险不对称：万一服务端忽略未知参数，就会**在帖子里多出一条顶层评论**（玩家可见、还能被回复），
-  //    比「多花 15 秒点 UI」严重得多。所以默认 via='ui'，等拿到真实 cURL 再切。
-  //    要试接口：reply.nestedVia = "api" 或调用时传 via:'api'。
+  // ---- 楼中楼接口 ----
+  // ✅ 2026-11-02 拿到真实 cURL，参数名校准完毕：
+  //    POST /webapiv2/moment-comment/v1/create-child
+  //      moment_id=<帖子id>   parent_id=<被回复的一级评论id>   reply_to_id=''
+  //      contents=<富文本 JSON，和一级评论同格式>
+  //    （之前猜的 `parent_post_id` 是错的 —— 服务端会忽略未知参数，
+  //      那样回复会变成顶层评论，所以一直默认走 UI。现在可以放心用接口了。）
   if (String(via).toLowerCase() === 'api') {
     const api = getTapApi({ runner, log });
     const momentId = momentIdFromUrl(url);
     if (momentId && api.ensureOrigin().ok) {
-      const ar = await api.childComment({ momentId, parentId: String(commentId), text });
+      // 平台限制：楼中楼回复同样 ≤1000 字符 → 发送前裁一次
+      const capped = clampReply(text, { signature: config?.reply?.signature || '' });
+      const ar = await api.childComment({ momentId, parentId: String(commentId), text: capped });
       if (ar.ok) {
         log(`      [接口] 楼中楼已发送（表情 ${ar.emojiHit || 0} 个）`);
         return {
           ok: true,
           stage: 'api_sent',
-          detail: { emoji: emojiName, emojiHit: ar.emojiHit, verified: false, body: stripEmojiMarks(text).trim() },
+          detail: { emoji: emojiName, emojiHit: ar.emojiHit, verified: false, body: stripEmojiMarks(capped).trim() },
         };
       }
       log(`      [接口] 楼中楼发送失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);

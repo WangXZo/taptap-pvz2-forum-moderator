@@ -69,9 +69,13 @@ export const INVITE_CODE_RE = /\band[A-Za-z0-9]{6,12}\b/g;
  * 「像好友码」的通用形态：字母开头、6~20 位、且**含数字或含大写**
  *
  * 为什么要放宽（2026-10-30）：实测好友码不止 `and` 前缀 ——
- *   Android 端 `andXXXXXXX2`、iOS 端 `iosXXXXXXX3`、还有裸码 `XXXXXXXX`。
+ *   Android 端 `andABCDEFGH`、iOS 端 `iosABCDEFGH`、还有裸码 `ABCDEFGH`。
  * 只认 `and` 会把 iOS 帖全漏掉。
  * 「含数字或含大写」是为了挡住普通小写英文词（taptap / android / moment 之类）。
+ *
+ * ⚠️ **天宫码（JFA + 7 位）必须排除**（用户 2026-11-02）：
+ *   贴天宫码是「无私分享」的好帖，不是加好友广告 —— 混进好友码就会被当成广告帖
+ *   **回复 + 移除**，把好帖误伤掉。两种码对版主的态度完全不同，别弄混。
  */
 export const FRIEND_CODE_RE = /\b[A-Za-z][A-Za-z0-9]{5,19}\b/g;
 
@@ -82,7 +86,10 @@ export const CODE_STOPWORDS = new Set([
   'friends', 'hello', 'admin', 'group', 'momentid', 'https', 'www',
 ]);
 
-/** 取文本里所有像好友码的串（已按大小写去重，保留首次出现的写法） */
+/** 天宫码形态（JFA + 7 位）—— 不是好友码，排除掉 */
+const TIAN_GONG_LIKE_RE = /^JFA[A-Za-z0-9]{7}$/;
+
+/** 取文本里所有像好友码的串（按大小写去重；**天宫码排除在外**） */
 export function findFriendCodes(text) {
   const out = [];
   const seen = new Set();
@@ -91,6 +98,7 @@ export function findFriendCodes(text) {
     const low = token.toLowerCase();
     if (CODE_STOPWORDS.has(low)) continue;
     if (!/[0-9]/.test(token) && !/[A-Z]/.test(token)) continue;
+    if (TIAN_GONG_LIKE_RE.test(token)) continue; // 天宫码不是好友码（贴码分享是好事，不能当广告移除）
     if (seen.has(low)) continue;
     seen.add(low);
     out.push(token);
@@ -98,8 +106,13 @@ export function findFriendCodes(text) {
   return out;
 }
 
-/** 整篇只有一个邀请码（裸码帖） */
-const ONLY_CODE_RE = /^\s*(?:[A-Za-z][A-Za-z0-9]{5,19})\s*$/;
+/**
+ * 整篇只有一个邀请码（裸码帖）
+ *
+ * ⚠️ 天宫码（JFA + 7 位）**不算**裸好友码 —— 贴天宫码是「无私分享」的好帖，
+ *    该做的是去夸它，不是当成加好友广告去回集中贴文案 + 移除。
+ */
+const ONLY_CODE_RE = /^\s*(?!JFA[A-Za-z0-9]{7}\b)(?:[A-Za-z][A-Za-z0-9]{5,19})\s*$/;
 
 /**
  * 判定一个帖子是不是「加好友意图」——**分两档**（用户 2026-10-30）

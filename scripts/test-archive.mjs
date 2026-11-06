@@ -32,15 +32,21 @@ check('3 天前引用过 → 保留', isStale({ cited: 2, lastCitedAt: daysAgo(3
 check('从没引用过（35 天前入库）→ 应归档', isStale({ cited: 0, lastCitedAt: null, createdAt: daysAgo(35) }, { staleDays: 30, now: now.getTime() }) === true);
 check('刚入库没引用 → 保留', isStale({ cited: 0, lastCitedAt: null, createdAt: daysAgo(2) }, { staleDays: 30, now: now.getTime() }) === false);
 
-console.log('\n== shouldArchive：每月 1~5 号 ==');
-check('10-01 触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-01T10:00:00')) === true);
-check('10-03 触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-03T10:00:00')) === true);
-check('10-05 触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-05T10:00:00')) === true);
-check('10-06 不触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-06T10:00:00')) === false);
-check('10-15 不触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-15T10:00:00')) === false);
+console.log('\n== shouldArchive：每天一次（2026-11-02 从「每月 1~5 号」改的）==');
+check('没整理过 → 触发', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-01T10:00:00')) === true);
+check('月中也触发（不再是 1~5 号）', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-06T10:00:00')) === true);
+check('月中也触发（15 号）', shouldArchive({ lastArchiveAt: null }, new Date('2026-10-15T10:00:00')) === true);
 check(
-  '本月已整理过 → 不再触发',
-  shouldArchive({ lastArchiveAt: '2026-10-03T10:00:00' }, new Date('2026-10-05T10:00:00')) === false
+  '今天已整理过 → 当天不再触发',
+  shouldArchive({ lastArchiveAt: '2026-10-05T10:00:00' }, new Date('2026-10-05T18:00:00')) === false
+);
+check(
+  '昨天整理过 → 今天又触发',
+  shouldArchive({ lastArchiveAt: '2026-10-04T23:50:00' }, new Date('2026-10-05T00:10:00')) === true
+);
+check(
+  '跨月 → 触发',
+  shouldArchive({ lastArchiveAt: '2026-09-30T23:00:00' }, new Date('2026-10-01T00:10:00')) === true
 );
 
 console.log('\n== 执行归档 ==');

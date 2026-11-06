@@ -12,7 +12,6 @@
 
 import { STATUS, REASON, normKey } from './state.mjs';
 import { matchPost, looksLikeQuestion } from './qa.mjs';
-import { buildReplyText } from './variants.mjs';
 
 export function classify(post, { qa, config, state, vecScores = null, matchPath = null }) {
   const text = post.text || '';
@@ -92,21 +91,12 @@ function mk(status, reason, extra = {}) {
 }
 
 /**
- * 组装最终回复文本
- * 签名优先级：QA 条目自带「签名:」 > config.reply.signature > 不加
- * 签名单独成段，追加在正文末尾（表情标记若在正文末尾，会排在签名之前）
+ * ⚠️ 模板版组装（2026-11-04 已删）
  *
- * 变体：同一份答案不原样重复发 —— 用不同的「说法外壳」包同一份答案，
- * 并避开已经发过的文本（usedTexts 来自状态库）。事实来源仍然只有答疑库本身。
+ * 原来这里是「答疑库答案 + 变体外壳（6 开头 × 4 收尾）」拼出来的回复。
+ * 用户 2026-11-04 明确要求：**模板不要用了、不可僵硬抽取资料做答**，
+ * 回复改由 LLM 按三层树状上下文生成（lib/compose-reply.mjs），
+ * 答疑库命中只作为「参考资料」喂进去（condenseMaterial 先按话题挑相关句）。
+ *
+ * 所以这个函数已经删掉。需要生成回复 → 用 composeReply()（lib/compose-reply.mjs）。
  */
-export function composeReply(entry, config, { postId = '', usedTexts = [] } = {}) {
-  const sig = (entry.signature ?? config.reply.signature ?? '').trim();
-  const { text, opener, closer, duplicated } = buildReplyText({
-    answer: entry.answer.trim(),
-    postId,
-    usedTexts,
-    signature: sig,
-    allowCloser: config.reply?.allowCloser !== false,
-  });
-  return { text, opener, closer, duplicated };
-}

@@ -14,6 +14,7 @@ import { resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { parseEmojiSegments, applyEmojis } from './emoji.mjs';
 import { getTapApi, momentIdFromUrl, stripEmojiMarks } from './taptap-api.mjs';
+import { clampReply } from './limits.mjs';
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -163,9 +164,11 @@ export async function replyOne({
     const momentId = momentIdFromUrl(url);
     if (momentId && api.ensureOrigin().ok) {
       // 文案原样传进去：接口层会把 [表情_xx] 转成 tap_emoji 节点（查表 data/emoji-map.json）
-      const ar = await api.reply({ momentId, text });
+      // ⚠️ 平台限制：回复 ≤1000 字符（超了会被拒）→ 发送前统一裁一次，签名和表情保住
+      const capped = clampReply(text, { signature: config?.reply?.signature || '' });
+      const ar = await api.reply({ momentId, text: capped });
       if (ar.ok) {
-        const plain = stripEmojiMarks(text).trim();
+        const plain = stripEmojiMarks(capped).trim();
         const v = await api.hasReplyText({ momentId, text: plain });
         log(
           `      [接口] 已回复（表情 ${ar.emojiHit || 0} 个）` +

@@ -406,7 +406,13 @@ export async function processQueueHead({ config, cfg, state, runner, db = null, 
   //   action='remove'      → 回复后移除（明确加好友 / 互刷+好友码）
   //   action='reply_only'  → 只回复不移除（只识别到像好友码 / 只有互刷没码）
   const replyOnly = String(t.action || 'remove') === 'reply_only';
-  const removable = boardOk && !replyOnly;
+  //
+  // ⚠️ 用户 2026-11-05：「移除」这个动作**关闭**（说明的是移除功能，不是识别功能）。
+  //    好友意图的**识别照常、回复照常**，只是帖子**不移除**（仍留在版块里，只浏览内容）。
+  //    开关：config.modTasks.friendRequest.removeEnabled（默认 false = 关闭）
+  //    要恢复移除动作 → 把那个开关改成 true，本分支自动让路。
+  const removeEnabled = cfg.removeEnabled === true;
+  const removable = boardOk && !replyOnly && removeEnabled;
 
   let ok = false;
   let stage = '';
@@ -423,6 +429,22 @@ export async function processQueueHead({ config, cfg, state, runner, db = null, 
     });
     ok = true;
     stage = 'reply_only';
+  } else if (!removeEnabled) {
+    // ⚠️ 移除功能已关闭（用户 2026-11-05）：识别照常、回复照常，帖子**不移除**
+    //    → 只回复，帖子仍留在版块里（只浏览内容），交人工看着。
+    log('      [只回复] 移除功能已关闭（friendRequest.removeEnabled=false）→ 只回复，帖子留在版块');
+    state.posts[t.id].modTask.stage = 'remove_paused';
+    state.posts[t.id].modTask.replyOnlyAt = new Date().toISOString();
+    state.posts[t.id].modTask.removePaused = true;
+    state.posts[t.id].modTask.confidence = t.confidence || 'clear';
+    recordStatus(db, t.id, 'replied_only', {
+      stage: 'remove_paused',
+      keyword: t.keyword,
+      kind: 'remove_paused',
+      detail: { reason: t.reason, confidence: t.confidence || 'clear' },
+    });
+    ok = true;
+    stage = 'remove_paused';
   } else if (!boardOk) {
     log('      [留人工] 活动报名板按配置不自动移除（removeActivityBoard=false）→ 只回复，记入待人工移除清单');
     state.posts[t.id].modTask.stage = 'manual_remove_needed';

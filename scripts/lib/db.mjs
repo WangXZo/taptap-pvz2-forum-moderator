@@ -57,9 +57,33 @@ CREATE TABLE IF NOT EXISTS qa_meta (
   v TEXT
 );
 
+-- 冷数据（帖子维度，2026-11-02）：按类别 TTL 超时的帖子搬到这里，带向量以便检索
+CREATE TABLE IF NOT EXISTS post_cold (
+  id           TEXT PRIMARY KEY,
+  url          TEXT,
+  title        TEXT,
+  author       TEXT,
+  author_id    TEXT,
+  board        TEXT,
+  publish_time INTEGER,
+  category     TEXT,        -- question / friend / share / chat / official / mine
+  qa_status    TEXT,        -- 搬进来时的判定（replied / no_need / manual …）
+  status       TEXT,
+  keyword      TEXT,
+  text         TEXT,        -- 正文（向量化的输入）
+  vec          TEXT,        -- 稀疏向量 JSON（字符 n-gram，和 qa_vec 同一套算法）
+  comment_count INTEGER,    -- 搬进来时的评论数（含楼中楼）→ 用来判断「有没有新回复」
+  last_interaction_at INTEGER, -- 最新互动时间（评论/楼中楼/我们回复）
+  cold_at      INTEGER,     -- 转入冷数据的时间
+  woken_at     INTEGER,     -- 被唤醒回热数据的时间（NULL = 还在冷库里）
+  wake_reason  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_event_post ON post_event(post_id);
 CREATE INDEX IF NOT EXISTS idx_event_ts ON post_event(ts);
 CREATE INDEX IF NOT EXISTS idx_post_status ON post_record(status);
+CREATE INDEX IF NOT EXISTS idx_cold_cat ON post_cold(category, last_interaction_at);
+CREATE INDEX IF NOT EXISTS idx_cold_woken ON post_cold(woken_at);
 `;
 
 /** 打开（并初始化）数据库 */

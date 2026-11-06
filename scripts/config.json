@@ -4,10 +4,10 @@
   "appName": "植物大战僵尸2",
   "forumUrl": "https://www.taptap.cn/app/54031/topic",
   "myUserId": "63****64",
-  "myUserName": "",
   "teamUserIds": [],
   "watch": {
-    "intervalSeconds": 600
+    "intervalSeconds": 120,
+    "note": "守护循环：2 分钟检查一次 + 队列处理（新到旧重排，不打断当前）。想放慢就改 intervalSeconds；检查会打一次列表接口，处理每条再打一次 —— 这是 WAF 边界的代价，被拦会自动退避。"
   },
   "collect": {
     "topN": 8,
@@ -46,9 +46,10 @@
       "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。",
       "allowNames": []
     },
-    "note": "via=一级回复走接口直连（已实测）；nestedVia=楼中楼（夸奖/喊话）默认仍点 UI —— create-child 的 body 参数名未实测确认，猜错会错发顶层评论",
+    "note": "via=一级回复走接口直连（已实测）；nestedVia=楼中楼（夸奖/喊话/互动续聊）走接口 —— create-child 的参数是 parent_id（2026-11-03 真实 cURL 校准），猜错会错发成顶层评论",
     "via": "api",
-    "nestedVia": "ui"
+    "nestedVia": "api",
+    "nestedViaNote": "楼中楼走接口（2026-11-03 用真实 cURL 校准：create-child 的参数是 parent_id，不是 parent_post_id）。已实测：ok=true、表情节点被接受、回复落在楼中楼而不是顶层。"
   },
   "praise": {
     "enabled": true,
@@ -66,8 +67,8 @@
   "summon": {
     "enabled": true,
     "aliases": [
-      "大******鱼",
-      "吃******的"
+      "大肥鱼",
+      "吃白米饭的"
     ],
     "matchRoles": true,
     "signature": true,
@@ -76,6 +77,16 @@
     "maxPerRun": 3,
     "maxPerPost": 1,
     "note": "玩家喊我们（签名/别名，或「版主+呼叫语气」）→ 过去互动一次：敏感问题礼貌拒绝；问了具体问题先用答疑库答，答不上来给安慰鼓励；其余按语气鼓励/赞扬/共情。aliases=自己的其它马甲（不用带括号，带不带「」都能认）；signature=回应时是否带签名；answerFromQa=是否允许用答疑库作答；qaScore=喊话场景的答疑库匹配阈值（比常规略低，因为点名问我们的短问句本就该放宽）"
+  },
+  "interact": {
+    "enabled": true,
+    "maxPerPost": 1,
+    "maxPerRun": 3,
+    "samePlayerLimit": 3,
+    "probabilityAfterLimit": 0.5,
+    "strongTextLen": 40,
+    "checkEveryMinutes": 30,
+    "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 3 次后，回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。"
   },
   "modTasks": {
     "enabled": true,
@@ -105,16 +116,32 @@
       "maxSweepPages": 30,
       "bareCodeIsIntent": true,
       "reply": "你好呀～好友码集中贴已经置顶啦，单开帖很容易被刷下去反而没人看到。麻烦把内容按格式盖到这栋楼 👉 https://www.taptap.cn/moment/864806259805654695，能被更多人找到～",
-      "note": "版主管理任务，判定分两档（用户 2026-10-30）：\n① clear（回复 + 移除）：明确加好友意图（加好友/好友位/好友码/扩列/互加/加群/加V…）、标题整体就是好友类词、**「互刷」+ 好友码**、好友码+强意图词（扩列/互加/互赞）。\n② uncertain（只回复，不移除）：只识别到「像好友码」（裸码帖、码+弱词「好友」）、只有「互刷」没有码。\n好友码识别不限前缀：and******** / ios******** / 裸码 ******** 都认（字母开头、6~20 位、含数字或大写；示例已脱敏）。\n排除优先：活动组队、活动邀请码、游戏功能里的「好友」一律放过；官方/版主/自己的帖跳过；活动报名板整块跳过。",
+      "note": "版主管理任务，判定分两档（用户 2026-10-30）：\n① clear（回复 + 移除）：明确加好友意图（加好友/好友位/好友码/扩列/互加/加群/加V…）、标题整体就是好友类词、**「互刷」+ 好友码**、好友码+强意图词（扩列/互加/互赞）。\n② uncertain（只回复，不移除）：只识别到「像好友码」（裸码帖、码+弱词「好友」）、只有「互刷」没有码。\n好友码识别不限前缀：andABCDEFGH / iosABCDEFGH / 裸码 ABCDEFGH 都认（字母开头、6~20 位、含数字或大写；示例已脱敏）。\n排除优先：活动组队、活动邀请码、游戏功能里的「好友」一律放过；官方/版主/自己的帖跳过；活动报名板整块跳过。",
       "via": "api",
-      "removeActivityBoard": false
+      "removeActivityBoard": false,
+      "removeEnabled": false,
+      "removeNote": "用户 2026-11-05：好友意图的「移除」动作**关闭** —— 识别照常、回复照常，但帖子不移除（仍留在版块里）。要恢复移除动作把这里改成 true。"
     },
     "note": "常驻用 scripts/mod-watch.mjs（默认 2 分钟一轮，独立 opencli session，不跟答疑守护抢标签页）。targets=要管的子版块（type=activity_signup 是活动报名板，type=feed 是讨论区）"
   },
   "archive": {
     "enabled": true,
     "staleDays": 30,
-    "note": "每月 1~5 号首次运行时，把超过 30 天未被引用的条目归档到 qa/归档/，主库重排"
+    "note": "每天整理一次（2026-11-02 起，从「每月1~5号」改的）。两个动作：①答疑库条目30天未引用→冷数据Markdown；②帖子按类别TTL冷藏→冷库(SQLite+向量)，冷帖被@或被呼唤会唤醒回热数据。",
+    "keepStatePosts": 500,
+    "olderThanDays": 45,
+    "coldDays": {
+      "mine": 20,
+      "friend": 1,
+      "official": 60,
+      "share": 30,
+      "question": 10,
+      "chat": 15
+    },
+    "coldDaysNote": "按帖子类别分别设置冷藏天数（单位天）。2026-11-05 按用户要求改为：加好友 1 天、提问 10 天、闲聊 15 天、我的帖 20 天、分享 30 天、官方 60 天。改这里立刻生效（config 优先于代码默认值）。",
+    "wakeEnabled": true,
+    "wakeNote": "唤醒信号改用通知接口 /notification/v2/by-me?type=7（回复和@我收到的）：一次请求就知道谁在哪个帖子的哪条评论下@我或回我，比「评论数变了再读评论猜」准。默认 30 分钟查一次（别太频繁，通知接口也要占请求）。",
+    "wakeEveryMinutes": 30
   },
   "qaHealth": {
     "enabled": true,
@@ -141,5 +168,20 @@
       "note": "char=字符n-gram TF-IDF（默认，零依赖）；http=接本地 embeddings 服务（OpenAI 兼容接口），失败自动退回 char"
     },
     "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
-  }
+  },
+  "llm": {
+    "enabled": true,
+    "note": "回复生成走 LLM（2026-11-04）。两条路子：①不填 apiKey → 复用 DSH 自己的模型配置（~/.dsh/profiles/web/cordis.patch.yml + ~/.dsh/.credentials.yaml），跟着你在 GUI 里切的模型走；②填 apiKey/baseURL/model → 用自己的（给其他成员用）。",
+    "apiKey": "",
+    "baseURL": "",
+    "model": "",
+    "api": "openai-completions",
+    "provider": "",
+    "reuseDsh": true,
+    "temperature": 0.85,
+    "maxTokens": 600,
+    "timeoutMs": 60000,
+    "fallbackNote": "渠道按实测快慢排序：volcengine-plan → minimax → kimi → ollama。MiniMax/Kimi 强制 thinking，单次可能 30~90 秒，超时自动切下一个。"
+  },
+  "myUserName": ""
 }

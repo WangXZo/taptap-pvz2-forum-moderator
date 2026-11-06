@@ -59,6 +59,7 @@ const DEFAULT_FILES = [
   'scripts/emoji-map.mjs',
   'scripts/qa-index.mjs',
   'scripts/post-records.mjs',
+  'scripts/removed-list.mjs',
   'scripts/config.json',
   'scripts/doctor.mjs',
   'scripts/fetch-latest.mjs',
@@ -76,16 +77,22 @@ const DEFAULT_FILES = [
   'scripts/restore-qa.mjs',
   'scripts/test-archive.mjs',
   'scripts/test-api-contents.mjs',
+  'scripts/test-cold-store.mjs',
+  'scripts/test-interact.mjs',
+  'scripts/test-limits-codes.mjs',
   'scripts/test-match.mjs',
   'scripts/test-mod-task.mjs',
   'scripts/test-post-records.mjs',
+  'scripts/test-removed-list.mjs',
   'scripts/test-praise.mjs',
   'scripts/test-qa-health.mjs',
   'scripts/test-qa-vector.mjs',
   'scripts/test-question.mjs',
   'scripts/test-summarize.mjs',
   'scripts/test-summon.mjs',
+  'scripts/test-thread-context.mjs',
   'scripts/test-variants.mjs',
+  'scripts/cold-store.mjs',
   'scripts/watch.mjs',
   'scripts/whoami.mjs',
   'scripts/lib/archive.mjs',
@@ -95,8 +102,20 @@ const DEFAULT_FILES = [
   'scripts/lib/http.mjs',
   'scripts/lib/mod-task.mjs',
   'scripts/lib/mod-report.mjs',
+  'scripts/lib/code-guard.mjs',
+  'scripts/lib/cold-store.mjs',
+  'scripts/lib/compose-reply.mjs',
+  'scripts/lib/db.mjs',
+  'scripts/lib/emoji.mjs',
+  'scripts/lib/http.mjs',
+  'scripts/lib/interact.mjs',
+  'scripts/lib/interact-send.mjs',
+  'scripts/lib/limits.mjs',
+  'scripts/lib/llm.mjs',
+  'scripts/lib/notify.mjs',
   'scripts/lib/post-records.mjs',
   'scripts/lib/praise-send.mjs',
+  'scripts/lib/praise-store.mjs',
   'scripts/lib/praise.mjs',
   'scripts/lib/paths.mjs',
   'scripts/lib/qa-health.mjs',
@@ -113,6 +132,7 @@ const DEFAULT_FILES = [
   'scripts/lib/summon-send.mjs',
   'scripts/lib/summon.mjs',
   'scripts/lib/taptap-api.mjs',
+  'scripts/lib/thread-context.mjs',
   'scripts/lib/usage.mjs',
   'scripts/lib/util.mjs',
   'scripts/lib/variants.mjs',
@@ -140,6 +160,14 @@ export function maskValue(s) {
   return head + '*'.repeat(Math.max(1, 8 - keep * 2)) + tail;
 }
 
+/**
+ * 助手别称（**不是隐私**，用户 2026-11-05 确认）
+ *
+ * 这些是我们自己助手的昵称，公开写在代码和文档里，玩家喊我们时也要认。
+ * 所以它们**不当敏感串扫**，也不脱敏 —— 只有真正的个人隐私（uid / 队友 uid / 真实好友码）才拦。
+ */
+const PUBLIC_ALIASES = ['大肥鱼', '吃白米饭的'];
+
 /** 生成脱敏后的 config.json */
 async function buildMaskedConfig() {
   const cfg = JSON.parse(await readFile(join(SKILL, 'scripts/config.json'), 'utf8'));
@@ -147,7 +175,10 @@ async function buildMaskedConfig() {
   cfg.myUserName = '';
   if (cfg.teamUserIds) cfg.teamUserIds = [];
   if (cfg.summon?.aliases?.length) {
-    cfg.summon.aliases = cfg.summon.aliases.map((a) => maskValue(a));
+    // 助手别称保持原样（公开称呼），其它马甲照常脱敏
+    cfg.summon.aliases = cfg.summon.aliases.map((a) =>
+      PUBLIC_ALIASES.includes(a) ? a : maskValue(a)
+    );
   }
   return cfg;
 }
@@ -156,7 +187,7 @@ async function buildMaskedConfig() {
  * 收集「真实好友码」—— 从运行数据里抽，不靠猜
  *
  * 为什么这样做：好友码是**玩家个人数据**（用户 2026-10-30：「好友码，也脱敏」），
- * 但文档里必须举例说明码长什么样。所以文档里一律写 `and********` 这种掩码，
+ * 但文档里必须举例说明码长什么样。所以文档里一律写 `andABCDEFGH` 这种掩码，
  * 这里把**真实出现过的码**当敏感串来扫 —— 一旦有人在文档里贴了真码，发布当场被拦下。
  */
 async function collectRealCodes() {
@@ -245,7 +276,7 @@ async function main() {
   const realCodes = await collectRealCodes();
   const secrets = [
     runCfg.myUserId,
-    ...(runCfg.summon?.aliases || []),
+    ...(runCfg.summon?.aliases || []).filter((a) => !PUBLIC_ALIASES.includes(a)),
     ...(runCfg.teamUserIds || []),
     ...realCodes, // 真实好友码（玩家个人数据，用户 2026-10-30）
   ].filter(Boolean);
@@ -257,7 +288,7 @@ async function main() {
     return;
   }
   console.log(
-    `\n✓ 个人信息扫描通过（扫了 ${secrets.length} 个敏感串：uid / 别名 / 队友 / ${realCodes.length} 个真实好友码）`
+    `\n✓ 个人信息扫描通过（扫了 ${secrets.length} 个敏感串：uid / 私有马甲 / 队友 / ${realCodes.length} 个真实好友码；助手别称不属隐私，不扫）`
   );
 }
 

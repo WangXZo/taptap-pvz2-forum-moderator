@@ -217,6 +217,140 @@ try {
   console.log(`  ${C.d}(无法比对，跳过)${C.x}`);
 }
 
+// ---------- 8. LLM 渠道（回复生成用） ----------
+head('8. LLM 渠道（回复生成）');
+try {
+  const { describeChannels } = await import('./lib/llm.mjs');
+  const chs = await describeChannels(config);
+  if (!chs.length) {
+    bad1(
+      '没有可用的 LLM 渠道 —— 回复生成不出来',
+      '要么在 scripts/config.json 的 llm 段填 apiKey/baseURL/model，要么确认 ~/.dsh 里有可用凭据'
+    );
+  } else {
+    for (const c of chs) {
+      const tag = c.source === 'config' ? '自带 Key' : 'DSH 复用';
+      ok(`${tag}  ${c.provider}/${c.model}`, C.d + c.api + '  ' + c.baseURL + C.x);
+    }
+    ok(`共 ${chs.length} 条渠道可用`, C.d + '按顺序尝试，失败自动切下一条' + C.x);
+  }
+} catch (e) {
+  bad1('LLM 渠道检查失败：' + e.message);
+}
+
+// ---------- 9. 分层唤醒（冷帖重新变热的规则） ----------
+head('9. 分层唤醒规则');
+try {
+  const { shouldWake } = await import('./lib/cold-store.mjs');
+  const cfg = { ...config, myUserId: config.myUserId || 'ME' };
+  const own = { id: 'x', author_id: cfg.myUserId, comment_count: 2 };
+  const other = { id: 'y', author_id: 'OTHER', comment_count: 1 };
+  const isSummon = (t) => /大肥鱼|小鲸鱼|版主助手/.test(String(t || ''));
+  const isOurs = () => false;
+
+  const w1 = shouldWake({ coldRow: own, comments: [{ text: '新回复' }], config: cfg, isSummon, isOurComment: isOurs });
+  ok('我的帖 · 有人回（含楼中楼）→ 唤醒', w1.wake === true, w1.reason);
+
+  const w2 = shouldWake({
+    coldRow: other,
+    comments: [{ text: '@版主助手-小鲸鱼 看看这个' }],
+    config: cfg,
+    isSummon,
+    isOurComment: isOurs,
+  });
+  ok('别人的帖 · @我 → 唤醒', w2.wake === true, w2.reason);
+
+  const w3 = shouldWake({
+    coldRow: other,
+    comments: [{ text: '大肥鱼出来一下' }],
+    config: cfg,
+    isSummon,
+    isOurComment: isOurs,
+  });
+  ok('别人的帖 · 呼唤我 → 唤醒', w3.wake === true, w3.reason);
+
+  const w4 = shouldWake({
+    coldRow: other,
+    comments: [{ text: '我也卡这一关' }],
+    config: cfg,
+    isSummon,
+    isOurComment: isOurs,
+  });
+  ok('别人的帖 · 普通闲聊 → 不唤醒', w4.wake === false, w4.reason);
+} catch (e) {
+  bad1('分层唤醒规则检查失败：' + e.message);
+}
+
+// ---------- 10. 冷热分类（按类别 TTL 冷藏） ----------
+head('10. 冷热分类与 TTL');
+try {
+  const { classifyPost, coldTtlDays, CATEGORIES } = await import('./lib/cold-store.mjs');
+  const cfg = { myUserId: config.myUserId || 'ME' };
+  const cases = [
+    [{ authorId: cfg.myUserId, title: '随便写写' }, 'mine'],
+    [{ title: '来加好友呀' }, 'friend'],
+    [{ title: '官方公告：版本更新' }, 'official'],
+    [{ title: '分享我的通关阵容' }, 'share'],
+    [{ title: '困难6怎么过' }, 'question'],
+    [{ title: '今天好热' }, 'chat'],
+  ];
+  for (const [post, want] of cases) {
+    const got = classifyPost(post, { config: cfg });
+    ok(`分类「${want}」`, got === want, got === want ? '' : `实际 ${got}`);
+  }
+  const missing = Object.keys(CATEGORIES).filter((k) => !(config.archive?.coldDays || {})[k]);
+  if (missing.length) {
+    warn1(`冷库 TTL 没配全：${missing.join(',')}`, '配 config.archive.coldDays（不配就用默认天数）');
+  } else {
+    ok('各类别 TTL 都配了', C.d + JSON.stringify(config.archive.coldDays) + C.x);
+  }
+  ok('TTL 按类别分别生效', coldTtlDays('friend', config) !== coldTtlDays('official', config));
+} catch (e) {
+  bad1('冷热分类检查失败：' + e.message);
+}
+
+// ---------- 11. 互动续聊（玩家回信 → 接着聊，用户 2026-11-05） ----------
+head('11. 互动续聊规则');
+try {
+  const { pickInteractions, decideInteraction, replyTargetFor } = await import('./lib/interact.mjs');
+  const cfg = { ...config };
+  const cm = (id, name, text, uid) => ({
+    id_str: id,
+    author: { name, id: uid || `u_${name}` },
+    created_time: 1700000000,
+    contents: { json: [{ text }] },
+  });
+  const flat = [
+    { c: cm('C1', '小明', '我按你说的试了，还是打不过'), parentId: 'OUR1' }, // 回复了你
+    { c: cm('C2', '小红', '@版主助手-小鲸鱼 在吗'), parentId: null }, // @你
+    { c: cm('C3', '小强', '哈哈谢谢'), parentId: 'OUR1' }, // 纯客套
+  ];
+  const picked = pickInteractions(flat, { config: cfg, ourCommentIds: new Set(['OUR1']), prev: {} });
+  ok('「回复了你」→ 命中', picked.some((p) => p.commentId === 'C1'));
+  ok('「@你」→ 命中', picked.some((p) => p.commentId === 'C2'));
+  ok('纯客套「哈哈谢谢」→ 不回', !picked.some((p) => p.commentId === 'C3'));
+
+  const d1 = decideInteraction({ commentId: 'C1', authorId: 'u1', text: '在吗' }, { counts: {}, config: cfg });
+  ok('同帖同玩家没回过 → 直接回', d1.reply === true);
+  const d2 = decideInteraction(
+    { commentId: 'C1', authorId: 'u1', text: '在吗' },
+    { counts: { u1: { n: 3 } }, config: cfg, rng: () => 0.9 }
+  );
+  ok('同帖同玩家回过 3 次 → 降到 50%', d2.reply === false && d2.probability === 0.5);
+  const d3 = decideInteraction(
+    { commentId: 'C1', authorId: 'u1', text: '在吗', atUs: true },
+    { counts: { u1: { n: 3 } }, config: cfg, rng: () => 0.99 }
+  );
+  ok('情绪强烈 / 直接点名 → 例外必回', d3.reply === true);
+
+  const t1 = replyTargetFor({ commentId: 'C1', parentId: null, level: 1, author: '小明' });
+  const t2 = replyTargetFor({ commentId: 'C2', parentId: 'C1', level: 2, author: '小红' });
+  ok('贴内回复 → 回它的楼中楼', t1.parentId === 'C1' && t1.mention === '');
+  ok('本身是楼中楼 → 同层并 @ 对方', t2.parentId === 'C1' && t2.mention === '小红');
+} catch (e) {
+  bad1('互动续聊规则检查失败：' + e.message);
+}
+
 // ---------- 结论 ----------
 console.log('');
 if (bad === 0 && warn === 0) {

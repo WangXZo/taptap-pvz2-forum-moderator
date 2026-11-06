@@ -269,15 +269,21 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
         payload = buildContents(stripEmojiMarks(text));
       }
     }
-    const res = await post('/webapiv2/moment-comment/v1/create-child', {
+    // ⚠️ 参数名是 `parent_id`（2026-11-02 用真实 cURL 校准，之前猜的 `parent_post_id` 是错的）
+    //    `reply_to_id` 传空串（真实 cURL 就是空的）
+    const base = {
       moment_id: String(momentId),
-      parent_post_id: String(parentId),
+      parent_id: String(parentId),
+      reply_to_id: '',
       contents: payload,
-    });
+    };
+    const res = await post('/webapiv2/moment-comment/v1/create-child', base);
     if (!res.ok && emojiHit) {
+      // 表情节点可能不被这个接口接受 → 退回纯文本再试一次
       const plain = await post('/webapiv2/moment-comment/v1/create-child', {
         moment_id: String(momentId),
-        parent_post_id: String(parentId),
+        parent_id: String(parentId),
+        reply_to_id: '',
         contents: buildContents(stripEmojiMarks(text)),
       });
       plain.emojiFallback = true;
@@ -285,6 +291,28 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     }
     res.emojiHit = emojiHit;
     return res;
+  }
+
+  /**
+   * 通知列表：「回复和@我收到的」（2026-11-04 用真实 cURL 校准）
+   *
+   *   GET /webapiv2/notification/v2/by-me?type=7
+   *   referer: https://www.taptap.cn/notifications?show_type=7&reply_type=gets
+   *
+   * ⚠️ **必须走页面上下文**（带 Cookie）—— 这个接口要鉴权，
+   *    而 `lib/http.mjs` 的 `ttGet` 是**裸 fetch**（feed/评论是公开接口才没暴露这个问题）。
+   *    用裸 fetch 调它会返回「未认证」。
+   *
+   * @param {object} o
+   * @param {number} [o.type=7]  通知类型：7 = 回复和@我收到的
+   * @returns {{ok:boolean, list:Array, total?:number, error?:string}}
+   */
+  async function notifications({ type = 7 } = {}) {
+    const res = await get('/webapiv2/notification/v2/by-me', { type });
+    if (!res.ok) return { ok: false, list: [], error: res.error || res.status };
+    const d = res.json?.data || res.json || {};
+    const list = d.list || d.items || (Array.isArray(d) ? d : []);
+    return { ok: true, list, total: d.total, raw: d };
   }
 
   /** 移除（= 从板块 unlink，不删帖） */
@@ -391,6 +419,7 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     feedHas,
     hasReplyText,
     emojiMap,
+    notifications,
     sleep,
   };
 }

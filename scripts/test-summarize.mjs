@@ -35,7 +35,7 @@ const cases = [
   ['谢了兄弟下个月找我', false, '私下交换'],
   ['你是不是没有更新？', false, '纯反问'],
   ['不是氪这么多', false, '太短'],
-  ['天宫码 JFA6Ds3Jcl', false, '贴兑换码'],
+  ['天宫码 JFAABCDEFG', false, '贴兑换码'],
   ['HI，方便关注我一下吗，我这边私信你~', false, '私信引流'],
   ['顶', false, '纯噪音'],
 ];
@@ -129,7 +129,7 @@ const noUid = buildQaEntry({
 check('没传 myUserId 也能靠签名挡掉', noUid && !/说得又准又细/.test(noUid.answer), noUid?.answer);
 
 console.log('\n== extractKeywords：滤掉活动编号与兑换码 ==');
-const kws = extractKeywords('十月同游1234567890', '十月同游1234567890 JFA6Ds3Jcl');
+const kws = extractKeywords('十月同游1234567890', '十月同游1234567890 JFAABCDEFG');
 check('不含纯数字长串', !kws.some((k) => /^\d{6,}$/.test(k)), JSON.stringify(kws));
 check('不含字母开头长码', !kws.some((k) => /^[a-zA-Z][a-zA-Z0-9]{5,}$/.test(k)), JSON.stringify(kws));
 check('仍保留中文词', kws.some((k) => /[一-龥]/.test(k)), JSON.stringify(kws));

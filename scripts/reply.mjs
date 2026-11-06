@@ -11,7 +11,10 @@
 import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { loadState, saveState, STATUS, REASON } from './lib/state.mjs';
 import { loadQaLibrary } from './lib/qa.mjs';
-import { composeReply } from './lib/classify.mjs';
+import { listComments } from './lib/http.mjs';
+import { commentText } from './lib/signature.mjs';
+import { buildThreadTree } from './lib/thread-context.mjs';
+import { composeReply } from './lib/compose-reply.mjs';
 import { parseEmojiSegments } from './lib/emoji.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 
@@ -45,11 +48,43 @@ if (!dryRun) {
 
 for (const t of todo) {
   const entry = qa.find((e) => e.id === t.matchedQa);
-  if (!entry) {
-    console.log(`\n── ${t.title}\n   ⚠️ state 记录的 QA 已从库中删除，跳过`);
+  // 2026-11-04：回复走 LLM —— 读这楼的三层结构当上下文，答疑库命中只作参考材料
+  let tree = null;
+  try {
+    const res = await listComments({ momentId: t.id, from: 0, limit: 30 });
+    const withText = (cm) => ({
+      ...cm,
+      __text: commentText(cm),
+      child_posts: (cm.child_posts || []).map(withText),
+    });
+    tree = buildThreadTree(
+      { id: t.id, title: t.title, text: t.text || '', author: t.author, authorId: t.author_id },
+      (res?.list || []).map(withText)
+    );
+  } catch (e) {
+    console.log(`   ⚠️ 读评论失败（${e.message}），只用标题生成`);
+  }
+  if (!tree) {
+    tree = buildThreadTree(
+      { id: t.id, title: t.title, text: t.text || '', author: t.author, authorId: t.author_id },
+      []
+    );
+  }
+  const gen = await composeReply({
+    config,
+    kind: 'answer',
+    tree,
+    targetId: tree.post.id,
+    qaHits: entry ? [entry] : [],
+    log: (m) => console.log('   ' + m),
+  });
+  if (!gen.ok) {
+    console.log(`\n── ${t.title}\n   ⚠️ 生成失败（${gen.reason}）→ 转人工，不退回模板`);
+    state.posts[t.id].status = STATUS.MANUAL;
+    state.posts[t.id].reason = REASON.LOW_CONFIDENCE;
     continue;
   }
-  const text = composeReply(entry, config);
+  const text = gen.text;
   const { plainText, marks } = parseEmojiSegments(text);
 
   console.log(`\n── ${t.title}`);

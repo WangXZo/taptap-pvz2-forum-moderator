@@ -8,6 +8,7 @@
 import { replyToComment } from './reply-nested.mjs';
 import { listComments } from './http.mjs';
 import { liteHash } from './util.mjs';
+import { savePraise } from './praise-store.mjs';
 
 /**
  * @param {object} o
@@ -21,7 +22,19 @@ import { liteHash } from './util.mjs';
  * @param {Function} o.log
  * @returns {Promise<{ok:boolean, stage?:string, emoji?:string, verified?:boolean, detail?:any}>}
  */
-export async function sendPraise({ config, state, postId, commentId, url, text, runner, log = () => {} }) {
+export async function sendPraise({
+  config,
+  state,
+  postId,
+  commentId,
+  url,
+  text,
+  commentText = '',
+  point = '',
+  runner,
+  praiseDb = null,
+  log = () => {},
+}) {
   const r = await replyToComment({
     runner,
     url,
@@ -55,6 +68,23 @@ export async function sendPraise({ config, state, postId, commentId, url, text, 
     count: (state.recentReplies[h]?.count || 0) + 1,
     postId,
   };
+
+  // 🧠 向量沉淀（用户 2026-11-02）：把「被夸的回答 ↔ 我们夸的话」成对存进库里，
+  //    以后夸之前先查历史，避免跨天、跨帖反复用同一句。
+  if (praiseDb) {
+    try {
+      savePraise(praiseDb, {
+        postId,
+        commentId,
+        author: state?.posts?.[postId]?.praisedAuthor || '',
+        commentText,
+        praiseText: text,
+        point,
+      });
+    } catch (e) {
+      log(`    [沉淀] 夸奖记录入库失败：${e.message}`);
+    }
+  }
 
   log(
     `    [OK] 已夸奖（表情 ${r.detail?.emoji || '-'}）` +

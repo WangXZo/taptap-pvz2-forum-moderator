@@ -214,7 +214,8 @@ async function cmdRecheck() {
   const doPraise = argv.includes('--praise');
   const { classify } = await import('./lib/classify.mjs');
   const { buildQaEntry, appendQaEntry } = await import('./lib/summarize.mjs');
-  const { pickPraiseTarget, composePraise } = await import('./lib/praise.mjs');
+  const { pickPraiseTarget } = await import('./lib/praise.mjs');
+  const { commentText } = await import('./lib/signature.mjs');
   const { sendPraise } = await import('./lib/praise-send.mjs');
   const { makeRunner, doctorOk } = await import('./lib/replier.mjs');
   const { statOf, recordCitation } = await import('./lib/usage.mjs');
@@ -345,14 +346,29 @@ async function cmdRecheck() {
         minScore: config.praise?.minScore ?? 1,
       });
       if (target) {
-        const { text: praiseText, emoji } = composePraise({
-          author: target.author,
-          replyText: target.text,
-          signature: config.praise?.signature === false ? '' : config.reply?.signature || '',
-          usedTexts: Object.values(state.recentReplies || {})
-            .filter((x) => x && x.text)
-            .map((x) => x.text),
+        // 夸奖也走 LLM（2026-11-04 起不用模板）：按三层上下文夸到具体点上
+        const { buildThreadTree } = await import('./lib/thread-context.mjs');
+        const { composeReply } = await import('./lib/compose-reply.mjs');
+        const withText = (cm) => ({
+          ...cm,
+          __text: commentText(cm),
+          child_posts: (cm.child_posts || []).map(withText),
         });
+        const tree = buildThreadTree(
+          { id, title: post.title, text: post.text, author: post.author, authorId: post.authorId },
+          comments.map(withText)
+        );
+        const gen = await composeReply({
+          config,
+          kind: 'praise',
+          tree,
+          targetId: String(target.targetCommentId),
+        });
+        if (!gen.ok) {
+          console.log(`  [跳过] 夸奖生成失败（${gen.reason}）`);
+        } else {
+        const praiseText = gen.text;
+        const emoji = gen.emoji;
         if (!runner) {
           runner = makeRunner({ opencliMain: config.reply.opencliMain, session: config.reply.session });
           if (!doctorOk(runner).ok) {
@@ -373,6 +389,7 @@ async function cmdRecheck() {
             log: (m) => console.log('  ' + m),
           });
           if (!r.ok) console.log(`  [FAIL] 夸奖失败（${r.stage}）`);
+        }
         }
       }
     }

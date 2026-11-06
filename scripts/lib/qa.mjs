@@ -251,7 +251,7 @@ export function looksLikeQuestion(text) {
   if (/^[A-Za-z0-9]+$/.test(flat)) return false;
 
   // 3b. 兑换码特征：一段 ≥6 位、且**含字母**的纯字母数字串（UID 是纯数字，不算）
-  //     「JFI2xx0eV9」「JFAMZsJuD5」这类 → 非提问
+  //     「JFI2xx0eV9」「JFAABCDEFG」这类 → 非提问
   //     （纯数字长串如「43****11」不在此列 —— 那可能是一串 UID + 一句求助）
   if (/[A-Za-z]/.test(flat) && /[A-Za-z0-9]{6,}/.test(flat)) return false;
 

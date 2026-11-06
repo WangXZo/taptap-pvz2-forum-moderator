@@ -90,11 +90,18 @@ export function entryKeyOf(question) {
     .slice(0, 40);
 }
 
-/** 距上次归档是否该做（每月 1~5 号，且本月未整理过） */
+/**
+ * 距上次归档是否该做
+ *
+ * ⚠️ 2026-11-02 起从「每月 1~5 号、本月一次」改成**每天一次**：
+ *    归档已经改成**帖子维度**（冷数据进向量库 + 按类别 TTL 冷藏 + 唤醒），
+ *    每天跑才能及时把凉掉的帖收进冷库、也才能及时发现被唤醒的帖。
+ *
+ * @param {object} usage  含 lastArchiveAt
+ * @param {Date}   now
+ */
 export function shouldArchive(usage, now = new Date()) {
-  const day = now.getDate();
-  if (day < 1 || day > 5) return false;
   const last = usage.lastArchiveAt ? new Date(usage.lastArchiveAt) : null;
   if (!last) return true;
-  return last.getFullYear() !== now.getFullYear() || last.getMonth() !== now.getMonth();
+  return last.toDateString() !== now.toDateString();
 }
