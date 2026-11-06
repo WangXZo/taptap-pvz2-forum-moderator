@@ -60,12 +60,24 @@ console.log(
   `  目标：${onTargets.map((t) => t.label || t.type).join('、') || '(未配置)'}` +
     (offTargets.length ? `　|　已停用：${offTargets.map((t) => t.label || t.type).join('、')}（不回复、不移除）` : '')
 );
-console.log(`  处置：clear → 回复+移除　|　uncertain（只识别到好友码）→ 只回复`);
-console.log(`  ${dryRun ? 'dry-run（只检查不处理）' : '真执行（回复 + 移除）'}　停止：Ctrl+C`);
+// ⚠️ 处置文案要跟着开关走（用户 2026-11-05：移除动作关闭）
+const removeOn = cfg.removeEnabled === true;
+console.log(
+  removeOn
+    ? `  处置：clear → 回复+移除　|　uncertain（只识别到好友码）→ 只回复`
+    : `  处置：clear → 只回复（**移除已关闭**：friendRequest.removeEnabled=false）　|　uncertain → 只回复`
+);
+console.log(`  ${dryRun ? 'dry-run（只检查不处理）' : removeOn ? '真执行（回复 + 移除）' : '真执行（只回复，不移除）'}　停止：Ctrl+C`);
 console.log('═══════════════════════════════════════');
 
 if (!dryRun) {
-  const d = doctorOk(runner);
+  // 启动时探测 opencli 桥接：重试 3 次（后台/无 TTY 启动时偶发拿不到完整输出）
+  let d = doctorOk(runner);
+  for (let i = 0; i < 2 && !d.ok; i++) {
+    console.log(`  [重试] opencli 探测失败，2s 后再试（第 ${i + 2}/3 次）…`);
+    await sleep(2000);
+    d = doctorOk(runner);
+  }
   if (!d.ok) {
     console.error(`  [FAIL] opencli 不可用：${d.text.split('\n')[0]}`);
     process.exit(1);

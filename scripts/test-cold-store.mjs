@@ -10,12 +10,14 @@
 //      · 别人的帖 → 只有 @我 或 呼唤我才唤醒（普通闲聊不算）
 
 import { DatabaseSync } from 'node:sqlite';
+import { readFileSync } from 'node:fs';
 import {
   classifyPost,
   coldTtlDays,
   coldStats,
   isCold,
   putCold,
+  coldRows,
   archiveToCold,
   shouldWake,
   wakeUp,
@@ -46,7 +48,10 @@ function openTestDb() {
 }
 
 // ---------- 1) 分类 ----------
-const cfg = { myUserId: '999', archive: { coldDays: { mine: 60, friend: 3, official: 180, share: 90, question: 30, chat: 45 } } };
+// ⚠️ TTL 不再写死在测试里 —— 从 scripts/config.json 读真实配置。
+//    写死过一次，结果大哥改了 TTL 之后测试还在按旧值断言（2026-11-06 修正）。
+const REAL_CFG = JSON.parse(readFileSync(new URL('./config.json', import.meta.url), 'utf8'));
+const cfg = { myUserId: '999', archive: { coldDays: { ...(REAL_CFG.archive?.coldDays || {}) } } };
 ok('自己的帖 → mine', classifyPost({ authorId: '999', title: '随便写写' }, { config: cfg }) === 'mine');
 ok('加好友帖 → friend', classifyPost({ title: '来加好友呀' }, { config: cfg }) === 'friend');
 ok('官方帖 → official', classifyPost({ title: '官方公告：版本更新' }, { config: cfg }) === 'official');
@@ -54,21 +59,25 @@ ok('分享帖 → share', classifyPost({ title: '分享我的通关阵容', text
 ok('提问帖 → question', classifyPost({ title: '困难6怎么过', text: '求助' }, { config: cfg }) === 'question');
 ok('闲聊帖 → chat', classifyPost({ title: '今天好热', text: '随便聊聊' }, { config: cfg }) === 'chat');
 
-// ---------- 2) TTL 按类别 ----------
-ok('friend TTL = 3 天', coldTtlDays('friend', cfg) === 3);
-ok('official TTL = 180 天', coldTtlDays('official', cfg) === 180);
-ok('question TTL = 30 天', coldTtlDays('question', cfg) === 30);
-ok('mine TTL = 60 天', coldTtlDays('mine', cfg) === 60);
+// ---------- 2) TTL 按类别（取自配置，不写死数字） ----------
+ok('friend TTL 取自配置', coldTtlDays('friend', cfg) === REAL_CFG.archive.coldDays.friend);
+ok('official TTL 取自配置', coldTtlDays('official', cfg) === REAL_CFG.archive.coldDays.official);
+ok('question TTL 取自配置', coldTtlDays('question', cfg) === REAL_CFG.archive.coldDays.question);
+ok('mine TTL 取自配置', coldTtlDays('mine', cfg) === REAL_CFG.archive.coldDays.mine);
+ok('六个类别都配了 TTL', Object.keys(CATEGORIES).every((k) => Number(REAL_CFG.archive.coldDays[k]) > 0));
+ok('加好友帖凉得最快（TTL 最小）', coldTtlDays('friend', cfg) === Math.min(...Object.keys(CATEGORIES).map((k) => coldTtlDays(k, cfg))));
 ok('没配的类别用默认值', coldTtlDays('chat', { archive: {} }) === CATEGORIES.chat.coldDays);
 ok('配置里没写的类别也有默认值', coldTtlDays('unknown-cat', {}) > 0);
 
 // ---------- 3) 冷藏：凉够才搬 ----------
 {
   const db = openTestDb();
+  // ⚠️ 时间点按真实 TTL 推算，别写死天数（friend TTL 改过一次，写死的用例就废了）
+  const ttlF = coldTtlDays('friend', cfg);
   const state = {
     posts: {
-      old1: { status: 'replied', title: '加好友广告', publishTime: NOW - 10 * DAY, commentCount: 0 },
-      fresh1: { status: 'replied', title: '加好友广告2', publishTime: NOW - 1 * DAY, commentCount: 0 },
+      old1: { status: 'replied', title: '加好友广告', publishTime: NOW - (ttlF + 1) * DAY, commentCount: 0 },
+      fresh1: { status: 'replied', title: '加好友广告2', publishTime: NOW - Math.floor((ttlF * DAY) / 4), commentCount: 0 },
       pending1: { status: 'pending', title: '还没回', publishTime: NOW - 100 * DAY, commentCount: 0 },
       manual1: { status: 'manual', title: '需人工', publishTime: NOW - 100 * DAY, commentCount: 0 },
     },
@@ -82,6 +91,36 @@ ok('配置里没写的类别也有默认值', coldTtlDays('unknown-cat', {}) > 0
   ok('冷库统计 = 1', coldStats(db).total === 1);
   ok('isCold 认得', isCold(db, 'old1'));
   ok('冷帖带向量（可检索）', searchCold(db, '加好友').length > 0, JSON.stringify(searchCold(db, '加好友')));
+}
+
+// ---------- 3b) 单位陷阱：秒级时间戳也要算对（2026-11-06 真踩到「凉 20743 天」） ----------
+{
+  const db = openTestDb();
+  const NOW_MS = Date.now();
+  const nowSec = Math.floor(NOW_MS / 1000); // TapTap 接口给的就是秒
+  const ttlFriend = coldTtlDays('friend', cfg);
+  const ttlQ = coldTtlDays('question', cfg);
+  const state = {
+    posts: {
+      // 秒级时间戳：比 friend TTL 再多 1 天 → 该冷藏
+      secOld: { status: 'replied', title: '加好友', publishTime: nowSec - (ttlFriend + 1) * 86400 },
+      // 秒级时间戳：10 分钟前 → 绝不能冷藏
+      secFresh: { status: 'replied', title: '加好友新帖', publishTime: nowSec - 600 },
+      // 秒级时间戳：只有 question TTL 的一半 → 不该冷藏
+      secQ5: { status: 'no_need', title: '这个值得买吗', publishTime: nowSec - Math.floor(ttlQ / 2) * 86400 },
+    },
+  };
+  const res = archiveToCold(state, db, { config: cfg, now: NOW_MS });
+  ok('秒级时间戳能算对天数（该搬的搬了）', res.moved === 1, JSON.stringify(res));
+  ok('秒级：超过 TTL 的加好友帖被冷藏', !state.posts.secOld && isCold(db, 'secOld'));
+  ok('秒级：10 分钟前的帖没被误冷藏', !!state.posts.secFresh);
+  ok('秒级：只有半个 TTL 的提问帖没被误冷藏', !!state.posts.secQ5);
+  const row = coldRows(db).find((r) => r.id === 'secOld');
+  ok(
+    '冷库记的时间戳仍是秒级原值（没被 20000 天那种错误污染）',
+    row && Math.abs(Number(row.last_interaction_at) - (nowSec - (ttlFriend + 1) * 86400)) < 5,
+    JSON.stringify(row?.last_interaction_at)
+  );
 }
 
 // ---------- 4) 唤醒：自己的帖 ----------

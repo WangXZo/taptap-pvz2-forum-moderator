@@ -302,12 +302,17 @@ export function archiveToCold(state, db, { config = {}, log = () => {}, now = Da
       { config, myUserId: me }
     );
     const ttl = coldTtlDays(category, config);
-    const lastInteraction = Number(
+    const lastRaw = Number(
       p?.lastInteractionAt || p?.commentedTime || p?.publishTime || p?.firstSeenTs || 0
     );
     // 没有时间锚点的不动它（避免刚进来就被搬走）
-    if (!lastInteraction) continue;
-    const ageDays = (now - lastInteraction) / DAY;
+    if (!lastRaw) continue;
+    // ⚠️ 单位陷阱（2026-11-06 真踩到，日志里出现「凉 20743 天」）：
+    //    TapTap 接口给的是**秒**级时间戳（10 位），而 Date.now() 是**毫秒**（13 位）。
+    //    直接相减 = 毫秒量级的巨大差值 → 所有帖子一律被判「超期」→ 全部误冷藏。
+    //    统一成毫秒再算（> 1e12 视为已经是毫秒，兼容测试与其它调用方）。
+    const lastMs = lastRaw > 1e12 ? lastRaw : lastRaw * 1000;
+    const ageDays = (now - lastMs) / DAY;
     if (ageDays < ttl) {
       out.kept++;
       continue;
@@ -332,7 +337,7 @@ export function archiveToCold(state, db, { config = {}, log = () => {}, now = Da
         category,
         text,
         commentCount: Number(p?.scannedComments ?? p?.commentCount ?? 0),
-        lastInteractionAt: lastInteraction,
+        lastInteractionAt: lastRaw,
         now,
       }
     );
