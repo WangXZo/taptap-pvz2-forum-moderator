@@ -33,7 +33,9 @@ const arg = (name, def = '') => {
 const flag = (name) => argv.includes(`--${name}`);
 
 const REPO = arg('repo');
-if (!REPO) {
+/** 是否「直接运行」（被 import 时（比如回归测试）不校验参数、不执行 main） */
+const IS_MAIN = Boolean(process.argv[1] && /publish-repo\.mjs$/.test(process.argv[1]));
+if (IS_MAIN && !REPO) {
   console.error('用法：node scripts/publish-repo.mjs --repo <仓库目录> [--check] [--files a,b]');
   process.exit(1);
 }
@@ -52,6 +54,7 @@ const DEFAULT_FILES = [
   '.gitattributes',
   'package.json',
   'assets/qa-library.example.md',
+  'qa/答疑库.md',
   'scripts/run-watch.cmd',
   'scripts/schedule.ps1',
   'scripts/api-write.mjs',
@@ -185,6 +188,44 @@ async function buildMaskedConfig() {
   return cfg;
 }
 
+/** 答疑库文件（脱敏后单独写，不走普通复制） */
+const QA_FILE = 'qa/答疑库.md';
+
+/**
+ * 答疑库脱敏（用户 2026-11-05：答疑库**恢复随仓库分发**，但必须脱敏）
+ *
+ * 只遮罩三类东西，正文一个字都不动（答案本身要保留可读性）：
+ *   ① `- 摘自：玩家昵称（徽章）` → 昵称遮罩，徽章保留
+ *   ② 真实好友码（and/ios + 8 位）
+ *   ③ 天宫码（JFA + 7 位）—— 是具体玩家的码，不该进公开仓库
+ *
+ * 不动的：`- 来源：https://...`（可追溯性，不是个人信息）、问题正文、答案正文、
+ *        帖子标题里带的关卡号（公开内容）。
+ *
+ * @returns {{text:string, names:string[]}} names = 抽出来的真实昵称，供后面的扫描当敏感串
+ */
+export function maskQa(text) {
+  const names = new Set();
+  let out = String(text || '');
+
+  // ①「- 摘自：昵称（徽章）」→ 昵称遮罩
+  out = out.replace(/^(\s*-\s*摘自：)(.+)$/gm, (_m, prefix, rest) => {
+    const mm = String(rest).match(/^(.+?)(（[^）]*）)?\s*$/);
+    const name = String(mm ? mm[1] : rest).trim();
+    const badge = mm && mm[2] ? mm[2] : '';
+    if (!name) return prefix + rest;
+    if (name.includes('*')) return prefix + rest; // 已经遮过 → 保持幂等，别二次遮
+    names.add(name);
+    return prefix + maskValue(name) + badge;
+  });
+
+  // ② 好友码 / ③ 天宫码 → 统一遮罩
+  out = out.replace(/\b(?:and|ios)[A-Za-z0-9]{8}\b/g, (m) => maskValue(m));
+  out = out.replace(/\bJFA[A-Za-z0-9]{7}\b/g, (m) => maskValue(m));
+
+  return { text: out, names: [...names] };
+}
+
 /**
  * 收集「真实好友码」—— 从运行数据里抽，不靠猜
  *
@@ -256,7 +297,8 @@ async function main() {
 
   if (!CHECK_ONLY) {
     for (const f of files) {
-      if (f === 'scripts/config.json') continue; // 单独处理
+      if (f === 'scripts/config.json') continue; // 单独处理（脱敏）
+      if (f === QA_FILE) continue; // 单独处理（脱敏）
       const src = join(SKILL, f);
       const dst = join(REPO, f);
       try {
@@ -270,7 +312,22 @@ async function main() {
     const cfg = await buildMaskedConfig();
     await mkdir(join(REPO, 'scripts'), { recursive: true });
     await writeFile(join(REPO, 'scripts/config.json'), JSON.stringify(cfg, null, 2) + '\n', 'utf8');
-    console.log('  写入 scripts/config.json（myUserId / aliases 已脱敏）');
+    console.log('  写入 scripts/config.json（myUserId / 私有马甲 已脱敏；助手别称保留）');
+  }
+
+  // 答疑库：脱敏后写入（名字要在扫描前抽出来）
+  let qaNames = [];
+  if (!CHECK_ONLY) {
+    try {
+      const raw = await readFile(join(SKILL, QA_FILE), 'utf8');
+      const masked = maskQa(raw);
+      qaNames = masked.names;
+      await mkdir(join(REPO, 'qa'), { recursive: true });
+      await writeFile(join(REPO, QA_FILE), masked.text, 'utf8');
+      console.log(`  写入 ${QA_FILE}（摘自昵称遮罩 ${qaNames.length} 个）`);
+    } catch (e) {
+      console.log(`  跳过 ${QA_FILE}（读不到：${e.code || e.message}）`);
+    }
   }
 
   // 体检：发布目录里不能有真值
@@ -281,6 +338,7 @@ async function main() {
     ...(runCfg.summon?.aliases || []).filter((a) => !PUBLIC_ALIASES.includes(a)),
     ...(runCfg.teamUserIds || []),
     ...realCodes, // 真实好友码（玩家个人数据，用户 2026-10-30）
+    ...qaNames, // 答疑库里「摘自」的玩家昵称（脱敏时抽出来的）
   ].filter(Boolean);
   const hits = await scanPersonal(REPO, secrets);
   if (hits.length) {
@@ -294,4 +352,5 @@ async function main() {
   );
 }
 
-await main();
+// 只在**直接运行**时执行（被 import 时不跑 main，方便写回归测试）
+if (IS_MAIN) await main();

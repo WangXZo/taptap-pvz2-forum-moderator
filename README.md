@@ -32,9 +32,12 @@
 | **想用 AI 驱动它** | 看 [SKILL.md](SKILL.md)，让 AI 读它，它就知道该怎么判断、怎么说话 |
 | **想改代码** | [CONTRIBUTING.md](CONTRIBUTING.md) |
 
-## 答疑库在哪（重要）
+## 答疑库在哪
 
-**答疑库不随仓库分发。** 每个人自己的库在**运行目录**里：
+**仓库里有一份脱敏副本**（`qa/答疑库.md`）—— 发布时由 `publish-repo.mjs` 自动脱敏后覆盖：
+「摘自」的玩家昵称、好友码、天宫码都会被遮罩，答案正文保持可读。
+
+你运行时用的是 **运行目录** 里那份：
 
 ```
 ~/.dsh/skills/taptap-pvz2-forum-moderator/qa/答疑库.md
@@ -44,9 +47,12 @@
 - 格式见 [assets/qa-library.example.md](assets/qa-library.example.md)
 - 守护进程会**自动往里沉淀**社区已答的问题（社区沉淀条目匹配分 ×0.9，低于人工条目）
 - 每 24 小时体检一次，剔除「正文里带我们自己签名」的脏条目
+- **想把自己的沉淀分享出去**：`node scripts/publish-repo.mjs --repo <仓库目录>`
+  —— 它脱敏后写进仓库，并扫一遍个人信息（有真值就当场拦下）
+- **想把仓库的新问答拿回运行目录**：`node scripts/qa-sync.mjs --to-runtime --apply`
 
-> 仓库里不放运行中的库，是为了避免**旧版本副本**和**运行中版本**并存、互相覆盖
-> （历史上真出过一次：一夜沉淀的 10 条被旧副本冲没了）。
+> ⚠️ **永远不要手工用仓库副本覆盖运行中的库** ——
+> 历史教训：一夜自动沉淀的 10 条被旧副本冲没了。
 
 ## 它会做什么、不会做什么
 
@@ -131,7 +137,7 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，17 套）
+### 自检（改规则前后必跑，18 套）
 
 ```bash
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
@@ -139,7 +145,7 @@ node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/t
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
 ```
 
 ## LLM 从哪来

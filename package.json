@@ -20,7 +20,8 @@
     "once": "node scripts/collect.mjs --dry-run",
     "report": "node scripts/report-gaps.mjs",
     "cold-stats": "node scripts/cold-store.mjs stats",
-    "test": "node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && node scripts/test-thread-context.mjs && node scripts/test-interact.mjs"
+    "test": "node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs",
+    "publish": "node scripts/publish-repo.mjs"
   },
   "keywords": [
     "taptap",

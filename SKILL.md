@@ -41,13 +41,13 @@ node scripts/whoami.mjs
 
 # 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
 
-# 4) 全部自检（改规则前后都要跑，17 套）
+# 4) 全部自检（改规则前后都要跑，18 套）
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run
@@ -1065,6 +1065,7 @@ node scripts/test-praise.mjs        # 9 条断言（挑对象 + 口吻/长度护
 | `scripts/cold-store.mjs` | **冷库 CLI**（帖子维度冷数据）：`stats` / `list` / `search "关键词"`（向量检索）/ `wake <id>`（手动唤醒） |
 | `scripts/test-cold-store.mjs` | **冷热分离回归测试**（42 条断言）：分类、按类别 TTL、冷藏条件、唤醒规则（自己的帖有人回 / 别人的帖@我或呼唤我 / 普通闲聊不唤醒） |
 | `scripts/test-interact.mjs` | **互动续聊回归测试**（37 条断言）：纯客套排除、情绪强烈例外、候选挑选（@你/回复你/喊你）、同帖同玩家降概率、回复层级、计数累加 |
+| `scripts/test-publish-mask.mjs` | **发布脱敏回归测试**（18 条断言）：遮罩规则（首尾各 1~3 位 + 补足 8 位）、答疑库只遮「摘自昵称/好友码/天宫码」、正文与来源链接不动、幂等 |
 | `scripts/test-variants.mjs` | **回复变体 + 泄露自检 + 分享识别回归测试**（12 条断言），改文案规则前后必跑 |
 | `scripts/test-match.mjs` | **匹配打分回归测试**（18 条断言）：该命中的命中、不该命中的不命中 |
 | `scripts/test-summarize.mjs` | **沉淀/有效回答回归测试**（27 条断言，含「不能把我自己的评论沉淀成答案」） |

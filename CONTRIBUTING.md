@@ -4,7 +4,8 @@
 
 ## 答疑库在哪
 
-**不随仓库分发** —— 每个人自己的库在运行目录：
+**仓库里有一份脱敏副本**（`qa/答疑库.md`，发布时自动脱敏写入）；
+你自己跑的时候用的是 **运行目录** 里那份：
 
 ```
 ~/.dsh/skills/taptap-pvz2-forum-moderator/qa/答疑库.md
@@ -13,13 +14,16 @@
 - 新建：`cp assets/qa-library.example.md qa/答疑库.md`
 - 格式见 [assets/qa-library.example.md](assets/qa-library.example.md)
 - 守护进程会自动往里沉淀；每 24 小时体检一次，剔除带我们自己签名的脏条目
+- **想把沉淀分享到仓库**：跑 `node scripts/publish-repo.mjs --repo <仓库目录>`
+  —— 自动遮罩「摘自」昵称 / 好友码 / 天宫码，并扫个人信息
+- **想把仓库的问答拿回来**：`node scripts/qa-sync.mjs --to-runtime --apply`
 
-> 为什么仓库里不放：怕出现**旧版本副本**和**运行中版本**并存、互相覆盖。
-> 历史上真出过 —— 一夜自动沉淀的 10 条被旧副本冲没了。
+> ⚠️ **永远不要手工用仓库副本覆盖运行中的库**。
+> 历史教训：一夜自动沉淀的 10 条被旧副本冲没了。
 
 ## ⚠️ 第 0 条：不要泄露他人信息
 
-如果要把自己的答疑库内容提 PR（**注意：默认不要提**，先确认下面「提交前自查」）：
+答疑库会**脱敏后**进仓库，但你自己写条目时仍然要守规矩（别指望脚本兜底）：
 
 | 不要写 | 怎么写 |
 |---|---|
@@ -27,6 +31,7 @@
 | UID / user_id | 遮罩 `63****64` |
 | QQ / 微信 / 群号 / 手机 / 邮箱 | 不写 |
 | 自己的真实姓名 / 所在地 | 不写 |
+| 好友码 / 天宫码 | 不写（发布时会自动遮罩，但别依赖它） |
 
 **遮罩规则**：保留首尾各 1~3 位，中间用 `*` 替换，补足到统一 **8 位**（防止长度被推断），
 保留字符不超过 50%。详见 [SKILL.md 的「脱敏规范」](SKILL.md)。
@@ -48,13 +53,13 @@
 ### 提交前自检
 
 ```bash
-# 17 套回归测试全绿
+# 18 套回归测试全绿
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
 
 node scripts/collect.mjs --dry-run   # 看新条目能不能被命中
 node scripts/qa-admin.mjs purge-tag  # 确认没写进脏数据
@@ -101,7 +106,7 @@ references/         参考文档（改行为前先读对应那份）
 
 ### 约定
 
-1. **改行为必须加回归用例**。仓库里有 **17 套**测试（`test-*.mjs`），改完必须全绿。
+1. **改行为必须加回归用例**。仓库里有 **18 套**测试（`test-*.mjs`），改完必须全绿。
    判定/打分/文案规则尤其如此 —— 这些规则是靠用例锁住的。
 2. **事实来源只有 `qa/答疑库.md`**。脚本里不许硬编码游戏数值。
 3. **不许加文案模板**。措辞一律由 LLM 按上下文生成（`lib/compose-reply.mjs`）。
@@ -122,7 +127,7 @@ node scripts/collect.mjs --dry-run # 跑一轮看看
 
 ## 三、提 PR 前自查
 
-- [ ] 17 套测试全绿
+- [ ] 18 套测试全绿
 - [ ] `node scripts/collect.mjs --dry-run` 正常
 - [ ] `node scripts/qa-admin.mjs purge-tag` 没有脏条目
 - [ ] 改行为的话加了回归用例
