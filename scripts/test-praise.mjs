@@ -9,6 +9,10 @@
 //   node scripts/test-praise.mjs
 
 import { pickPraiseTarget } from './lib/praise.mjs';
+import { openPraiseDb, savePraise, similarPraise } from './lib/praise-store.mjs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { rmSync } from 'node:fs';
 
 const mk = (id, author, authorId, text, extra = {}) => ({
   id_str: id,
@@ -62,6 +66,45 @@ const nested = [
 const t3 = pickPraiseTarget(nested, { myUserId: '999' });
 check('楼中楼回答挂到父评论 id=20', t3 && t3.targetCommentId === '20', JSON.stringify(t3?.targetCommentId));
 check('isNested 标记正确', t3 && t3.isNested === true);
+
+console.log('\n== similarPraise（检查程序，主流程不调用） ==');
+{
+  const tmp = join(tmpdir(), `praise-check-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.sqlite`);
+  let db = null;
+  try {
+    db = openPraiseDb({ paths: { praiseDbFile: tmp } });
+    savePraise(db, {
+      postId: 'p1',
+      commentId: 'c1',
+      author: '甲',
+      commentText: '困难6用机枪加冰车就行，先控住再输出',
+      praiseText: '这个思路稳',
+    });
+    savePraise(db, {
+      postId: 'p2',
+      commentId: 'c2',
+      author: '乙',
+      commentText: '钻石主要靠签到和每日任务',
+      praiseText: '说得实在',
+    });
+
+    const sim = similarPraise(db, { commentText: '困难6用机枪加冰车', topN: 3, minScore: 0.1 });
+    check('能按相似度捞出历史夸奖', sim.length > 0, JSON.stringify(sim));
+    check('最相似的那条排第一', sim[0] && sim[0].text === '这个思路稳', JSON.stringify(sim[0]));
+    check('返回带作者和分数', sim[0] && sim[0].author === '甲' && typeof sim[0].score === 'number', JSON.stringify(sim[0]));
+
+    const none = similarPraise(db, { commentText: '植物阶数怎么升', topN: 3, minScore: 0.95 });
+    check('阈值调高就不返回', none.length === 0, JSON.stringify(none));
+    check('db 为空时安全返回空数组', similarPraise(null, { commentText: 'x' }).length === 0);
+  } finally {
+    try {
+      db?.close?.();
+    } catch {}
+    try {
+      rmSync(tmp, { force: true });
+    } catch {}
+  }
+}
 
 console.log(`\n通过 ${pass} 条`);
 if (fails.length) {

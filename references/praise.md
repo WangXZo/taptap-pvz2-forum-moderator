@@ -1,7 +1,7 @@
 # 夸答题玩家（楼中楼）
 
 > 代码：`scripts/lib/praise.mjs`（挑对象）、`scripts/lib/compose-reply.mjs`（**LLM 生成文案**）、`scripts/lib/reply-nested.mjs`（楼中楼发送）
-> 回归测试：`scripts/test-praise.mjs`（9 条断言）
+> 回归测试：`scripts/test-praise.mjs`（14 条断言）
 
 ## 什么时候夸
 

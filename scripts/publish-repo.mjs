@@ -150,6 +150,7 @@ const DEFAULT_FILES = [
   'references/summon.md',
   'docs/方案.md',
   'docs/github-survey.md',
+  'docs/evidence/01-facts.md',
 ];
 
 /** 脱敏：保留首尾各 1~3 位，中间用 * 补到 8 位（保留 ≤50%） */
@@ -190,6 +191,8 @@ async function buildMaskedConfig() {
 
 /** 答疑库文件（脱敏后单独写，不走普通复制） */
 const QA_FILE = 'qa/答疑库.md';
+/** 事实核验记录（脱敏后单独写） */
+const EVIDENCE_FILE = 'docs/evidence/01-facts.md';
 
 /**
  * 答疑库脱敏（用户 2026-11-05：答疑库**恢复随仓库分发**，但必须脱敏）
@@ -224,6 +227,43 @@ export function maskQa(text) {
   out = out.replace(/\bJFA[A-Za-z0-9]{7}\b/g, (m) => maskValue(m));
 
   return { text: out, names: [...names] };
+}
+
+/**
+ * 事实核验记录脱敏（docs/evidence/01-facts.md，用户 2026-11-05）
+ *
+ * 那份文档是「可行性」的一手证据（官方 CLI 只读、1557 条接口路径逆向、实测结论），
+ * 要**完整**进仓库。只遮三类，接口路径 / 命令 / 结论一个字不动：
+ *   ① 本机路径里的 Windows 用户名   C:\Users\WangXZ\ → C:\Users\Wa****Z\
+ *   ② 真实好友码 / 天宫码
+ *   ③ @ 提及的玩家昵称
+ *   ④ 传进来的敏感串（我的 uid / 队友 uid / 答疑库里抽出的玩家昵称）—— **精确遮，不误伤帖子 id**
+ *
+ * 帖子 id / 评论 id **不遮** —— 那是平台公开内容，遮了反而失去证据价值。
+ *
+ * @param {string} text
+ * @param {{secrets?:string[]}} [opt]
+ */
+export function maskEvidence(text, { secrets = [] } = {}) {
+  let out = String(text || '');
+  // ① 本机路径里的用户名（系统账户不遮）
+  out = out.replace(/([A-Za-z]:\\Users\\)([^\\\s`"']+)/g, (m, prefix, user) =>
+    /^(Public|Default|All Users|Default User)$/i.test(user) ? m : prefix + maskValue(user)
+  );
+  // ② 好友码 / 天宫码
+  out = out.replace(/\b(?:and|ios)[A-Za-z0-9]{8}\b/g, (m) => maskValue(m));
+  out = out.replace(/\bJFA[A-Za-z0-9]{7}\b/g, (m) => maskValue(m));
+  // ③ @昵称（@taptap / @here 这类非人名不遮；遇到路径分隔符就截断，别把 npm 路径当昵称）
+  out = out.replace(/([@＠])([^\s，,。:：()（）\[\]{}"'\\/]{2,20})/g, (m, at, name) =>
+    /^(taptap|here|all|everyone)$/i.test(name) ? m : at + maskValue(name)
+  );
+  // ④ 指定敏感串（我的 uid / 队友 uid / 答疑库里抽出的昵称）—— 精确替换，不误伤帖子 id
+  for (const s of secrets) {
+    const v = String(s || '');
+    if (v.length < 2) continue;
+    if (out.includes(v)) out = out.split(v).join(maskValue(v));
+  }
+  return out;
 }
 
 /**
@@ -299,6 +339,7 @@ async function main() {
     for (const f of files) {
       if (f === 'scripts/config.json') continue; // 单独处理（脱敏）
       if (f === QA_FILE) continue; // 单独处理（脱敏）
+      if (f === EVIDENCE_FILE) continue; // 单独处理（脱敏）
       const src = join(SKILL, f);
       const dst = join(REPO, f);
       try {
@@ -327,6 +368,24 @@ async function main() {
       console.log(`  写入 ${QA_FILE}（摘自昵称遮罩 ${qaNames.length} 个）`);
     } catch (e) {
       console.log(`  跳过 ${QA_FILE}（读不到：${e.code || e.message}）`);
+    }
+  }
+
+  // 事实核验记录：脱敏后写入（保留完整证据链，只遮本机用户名 / 码 / @昵称 / 我的 uid / 玩家昵称）
+  if (!CHECK_ONLY) {
+    try {
+      const raw = await readFile(join(SKILL, EVIDENCE_FILE), 'utf8');
+      const runCfg2 = JSON.parse(await readFile(join(SKILL, 'scripts/config.json'), 'utf8'));
+      const evSecrets = [
+        runCfg2.myUserId,
+        ...(runCfg2.teamUserIds || []),
+        ...qaNames, // 答疑库里抽出来的玩家昵称，evidence 里可能也提到
+      ].filter(Boolean);
+      await mkdir(join(REPO, 'docs', 'evidence'), { recursive: true });
+      await writeFile(join(REPO, EVIDENCE_FILE), maskEvidence(raw, { secrets: evSecrets }), 'utf8');
+      console.log(`  写入 ${EVIDENCE_FILE}（本机用户名 / 码 / @昵称 / ${evSecrets.length} 个指定敏感串已脱敏）`);
+    } catch (e) {
+      console.log(`  跳过 ${EVIDENCE_FILE}（读不到：${e.code || e.message}）`);
     }
   }
 

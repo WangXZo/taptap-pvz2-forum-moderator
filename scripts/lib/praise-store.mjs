@@ -13,7 +13,7 @@
 // 混在一起会让「答疑库重建索引」把夸奖记录清掉。
 
 import { openDb } from './db.mjs';
-import { tokenize } from './qa-vector.mjs';
+import { tokenize, cosine } from './qa-vector.mjs';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS praise_reply (
@@ -76,6 +76,47 @@ export function recentPraiseTexts(db, limit = 500) {
       .all(Number(limit))
       .map((r) => r.praise_text)
       .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 按向量相似度找历史夸奖 —— **检查程序**（用户 2026-11-05 明确要求保留）
+ *
+ * ⚠️ 主流程**不调用**它：夸奖文案由 LLM 生成，防重样靠 `recentPraiseTexts()`
+ *    把最近说过的话喂进提示词让模型避开，不做向量检索。
+ *
+ * 保留用途是**人工排查**：想知道「最近哪几句夸奖说法撞了 / 哪种口气用太多」时，
+ * 拿它按相似度列一下历史记录即可。
+ *
+ * 用法：
+ *   import { openPraiseDb, similarPraise } from './lib/praise-store.mjs';
+ *   const db = openPraiseDb(cfg);
+ *   console.log(similarPraise(db, { commentText: '困难6用机枪', topN: 10, minScore: 0.15 }));
+ *
+ * @returns {{text:string, author:string, score:number}[]} 相似度倒序
+ */
+export function similarPraise(db, { commentText = '', topN = 5, minScore = 0.15 } = {}) {
+  if (!db) return [];
+  try {
+    const rows = db
+      .prepare('SELECT praise_text, comment_text, author, vec FROM praise_reply ORDER BY id DESC LIMIT 500')
+      .all();
+    const q = vectorize(commentText);
+    const qm = new Map(Object.entries(q));
+    const out = [];
+    for (const r of rows) {
+      let v;
+      try {
+        v = new Map(Object.entries(JSON.parse(r.vec || '{}')));
+      } catch {
+        continue;
+      }
+      const s = cosine(qm, v);
+      if (s >= minScore) out.push({ text: r.praise_text, author: r.author, score: Number(s.toFixed(3)) });
+    }
+    return out.sort((a, b) => b.score - a.score).slice(0, topN);
   } catch {
     return [];
   }

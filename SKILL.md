@@ -1028,7 +1028,7 @@ node scripts/test-question.mjs      # 期望 ✓ 38/38 全部通过
 同一条回答只夸一次 —— 已夸过的评论 ID 记在 `data/state.json` 的 `posts[id].praisedComments` 里。
 
 ```bash
-node scripts/test-praise.mjs        # 9 条断言（挑对象 + 口吻/长度护栏），改夸奖规则前后各跑一次
+node scripts/test-praise.mjs        # 14 条断言（挑对象 + 口吻/长度护栏 + similarPraise 检查程序）
 ```
 
 ## TapTap 表情（可用）
@@ -1060,12 +1060,12 @@ node scripts/test-praise.mjs        # 9 条断言（挑对象 + 口吻/长度护
 | `scripts/report-offline.mjs` | 不联网，从状态库重建报表 |
 | `scripts/whoami.mjs` | 读当前 Chrome 的 TapTap `user_id` |
 | `scripts/test-question.mjs` | **提问判定回归测试**（38 条用例），改判定规则前后必跑 |
-| `scripts/test-praise.mjs` | **夸奖逻辑回归测试**（9 条断言：挑对象 + 口吻/长度护栏），改夸奖规则前后必跑 |
+| `scripts/test-praise.mjs` | **夸奖逻辑回归测试**（14 条断言：挑对象 + 口吻/长度护栏 + `similarPraise` 检查程序），改夸奖规则前后必跑 |
 | `scripts/test-limits-codes.mjs` | **平台上限 + 码分类回归测试**（32 条断言）：标题30/内容50000/回复1000、裁剪保住签名表情、好友码 vs 天宫码不混、换码承诺护栏 |
 | `scripts/cold-store.mjs` | **冷库 CLI**（帖子维度冷数据）：`stats` / `list` / `search "关键词"`（向量检索）/ `wake <id>`（手动唤醒） |
 | `scripts/test-cold-store.mjs` | **冷热分离回归测试**（42 条断言）：分类、按类别 TTL、冷藏条件、唤醒规则（自己的帖有人回 / 别人的帖@我或呼唤我 / 普通闲聊不唤醒） |
 | `scripts/test-interact.mjs` | **互动续聊回归测试**（37 条断言）：纯客套排除、情绪强烈例外、候选挑选（@你/回复你/喊你）、同帖同玩家降概率、回复层级、计数累加 |
-| `scripts/test-publish-mask.mjs` | **发布脱敏回归测试**（18 条断言）：遮罩规则（首尾各 1~3 位 + 补足 8 位）、答疑库只遮「摘自昵称/好友码/天宫码」、正文与来源链接不动、幂等 |
+| `scripts/test-publish-mask.mjs` | **发布脱敏回归测试**（26 条断言）：遮罩规则、答疑库只遮「摘自昵称/好友码/天宫码」、evidence 只遮「本机用户名/码/@昵称」、正文与来源链接不动、幂等 |
 | `scripts/test-variants.mjs` | **回复变体 + 泄露自检 + 分享识别回归测试**（12 条断言），改文案规则前后必跑 |
 | `scripts/test-match.mjs` | **匹配打分回归测试**（18 条断言）：该命中的命中、不该命中的不命中 |
 | `scripts/test-summarize.mjs` | **沉淀/有效回答回归测试**（27 条断言，含「不能把我自己的评论沉淀成答案」） |
