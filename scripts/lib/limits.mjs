@@ -21,30 +21,48 @@ export function charLen(s) {
 }
 
 /**
- * 把回复裁到平台上限内
+ * 把回复裁到平台上限内，**同时保证带签名**
  *
  * 策略：
- *   · 没超 → 原样返回
+ *   · 没超 → 原样返回…但签名照补（见下方「签名」那段）
  *   · 超了 → 保留结尾的**签名与表情**（那是身份标识，不能丢），
  *            正文从尾部裁到刚好塞得下
  *   · 裁完如果正文尾巴断在半个词上，去掉最后一个不完整短语（换行/标点处）
  *
+ * 签名（用户 2026-11-10）：「默认需要携带签名（在 LLM 后可以通过脚本添加）」
+ * + 「LLM 就不带签名了，要不然重复」。
+ * 所以：**模型只写正文，签名一律由这里加**；已经带了就不再补（`includes` 判定），
+ * 只有这样才不会出现「正文一个 + 脚本一个」的重复。
+ *
+ * ⚠️ 2026-11-10 之前的版本只在**超长时**才补签名（`if (charLen(s) <= max) return s;`），
+ *    短回复一个签名都没有 —— 两条安慰回复就是这么裸奔发出去的。
+ *
  * @param {string} text
  * @param {object} [o]
  * @param {number} [o.max]        上限（默认 LIMITS.reply）
- * @param {string} [o.signature]  签名（要保留在结尾）
+ * @param {string} [o.signature]  签名（要保留/补在结尾，表情之前）
  */
 export function clampReply(text, { max = LIMITS.reply, signature = '' } = {}) {
   const s = String(text ?? '');
-  if (charLen(s) <= max) return s;
+  const sig = String(signature || '').trim();
+  /** 结尾的表情标记（如果有）—— 签名要插在它**前面** */
+  const tailOf = (str) => {
+    const m = str.match(/(?:\s*\[(?:表情_[^\]]+|TapTap×[^\]_]+_[^\]]+)\])*\s*$/);
+    return m ? m[0] : '';
+  };
+
+  if (charLen(s) <= max) {
+    if (!sig || s.includes(sig)) return s;
+    const tail = tailOf(s);
+    const body = tail ? s.slice(0, s.length - tail.length) : s;
+    return `${body.trimEnd()} ${sig}${tail.trimEnd()}`;
+  }
 
   const chars = [...s];
-  const sig = String(signature || '').trim();
   // 结尾的表情标记（如果有）一起保住
-  const tailMatch = s.match(/(?:\s*\[(?:表情_[^\]]+|TapTap×[^\]_]+_[^\]]+)\])*\s*$/);
-  const emojiTail = tailMatch ? tailMatch[0] : '';
+  const emojiTail = tailOf(s);
   // 签名：原文有就留在结尾；原文没有就**补上**（保证每条回复都带身份标识）
-  const keepSig = sig && s.includes(sig) ? sig : sig ? '' : '';
+  const keepSig = sig && s.includes(sig) ? sig : '';
   const tail = `${keepSig}${emojiTail}`;
   const appendedSig = sig && !s.includes(sig) ? sig : '';
 

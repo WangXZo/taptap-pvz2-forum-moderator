@@ -81,6 +81,7 @@ const DEFAULT_FILES = [
   'scripts/test-archive.mjs',
   'scripts/test-api-contents.mjs',
   'scripts/test-cold-store.mjs',
+  'scripts/test-comfort.mjs',
   'scripts/test-publish-mask.mjs',
   'scripts/test-interact.mjs',
   'scripts/test-limits-codes.mjs',
@@ -96,19 +97,23 @@ const DEFAULT_FILES = [
   'scripts/test-summon.mjs',
   'scripts/test-thread-context.mjs',
   'scripts/test-variants.mjs',
+  'scripts/test-watch-queue.mjs',
   'scripts/cold-store.mjs',
   'scripts/watch.mjs',
+  'scripts/waf.mjs',
   'scripts/whoami.mjs',
   'scripts/lib/archive.mjs',
   'scripts/lib/classify.mjs',
   'scripts/lib/db.mjs',
   'scripts/lib/emoji.mjs',
   'scripts/lib/http.mjs',
+  'scripts/lib/page-fetch.mjs',
   'scripts/lib/mod-task.mjs',
   'scripts/lib/mod-report.mjs',
   'scripts/lib/code-guard.mjs',
   'scripts/lib/cold-store.mjs',
   'scripts/lib/compose-reply.mjs',
+  'scripts/lib/cross-check.mjs',
   'scripts/lib/db.mjs',
   'scripts/lib/emoji.mjs',
   'scripts/lib/http.mjs',
@@ -116,6 +121,7 @@ const DEFAULT_FILES = [
   'scripts/lib/interact-send.mjs',
   'scripts/lib/limits.mjs',
   'scripts/lib/llm.mjs',
+  'scripts/lib/mod-seen.mjs',
   'scripts/lib/notify.mjs',
   'scripts/lib/post-records.mjs',
   'scripts/lib/praise-send.mjs',
@@ -131,6 +137,7 @@ const DEFAULT_FILES = [
   'scripts/lib/reply-nested.mjs',
   'scripts/lib/report.mjs',
   'scripts/lib/signature.mjs',
+  'scripts/lib/single-instance.mjs',
   'scripts/lib/state.mjs',
   'scripts/lib/summarize.mjs',
   'scripts/lib/summon-send.mjs',
@@ -140,6 +147,8 @@ const DEFAULT_FILES = [
   'scripts/lib/usage.mjs',
   'scripts/lib/util.mjs',
   'scripts/lib/variants.mjs',
+  'scripts/lib/waf-unlock.mjs',
+  'scripts/lib/watch-queue.mjs',
   'references/api.md',
   'references/admin.md',
   'references/emojis.md',
@@ -152,6 +161,7 @@ const DEFAULT_FILES = [
   'docs/方案.md',
   'docs/github-survey.md',
   'docs/evidence/01-facts.md',
+  '人工命令启动说明.md',
 ];
 
 /** 脱敏：保留首尾各 1~3 位，中间用 * 补到 8 位（保留 ≤50%） */
@@ -196,12 +206,32 @@ const QA_FILE = 'qa/答疑库.md';
 const EVIDENCE_FILE = 'docs/evidence/01-facts.md';
 
 /**
+ * 这个昵称有没有隐私价值？
+ *
+ * 「摘自」行里会混进一些**没信息量**的名字：`123`、`我`、`A`……
+ * 它们当敏感串去扫全仓库 → 每个文件都命中（谁还没写过「我」字）→ 扫描直接不可用。
+ * 判断标准：**至少 2 个汉字**（昵称基本都是中文；`123`/`abc` 这种不算个人标识）。
+ */
+function meaningfulName(name) {
+  const s = String(name || '').trim();
+  if (!s) return false;
+  const cjk = (s.match(/[\u4e00-\u9fa5]/g) || []).length;
+  return cjk >= 2;
+}
+
+/**
  * 答疑库脱敏（用户 2026-11-05：答疑库**恢复随仓库分发**，但必须脱敏）
  *
- * 只遮罩三类东西，正文一个字都不动（答案本身要保留可读性）：
+ * 只遮罩四类东西，答案本身要保留可读性：
  *   ① `- 摘自：玩家昵称（徽章）` → 昵称遮罩，徽章保留
  *   ② 真实好友码（and/ios + 8 位）
  *   ③ 天宫码（JFA + 7 位）—— 是具体玩家的码，不该进公开仓库
+ *   ④ **正文里**出现的同一个真实昵称 → 一并遮（否则从正文漏出去）
+ *
+ * ⚠️ 2026-11-10 补：拿到「摘自」里的真实昵称后，还要把**正文里**的同一昵称一起替换掉 ——
+ *    玩家会在答案正文里被提到（例：「依星&寻梦补充过：……」），
+ *    只遮「摘自」行的话，昵称照样从正文漏出去。
+ *    没信息量的昵称（`123`、`我`）不遮也不扫 —— 否则整个仓库都是误报。
  *
  * 不动的：`- 来源：https://...`（可追溯性，不是个人信息）、问题正文、答案正文、
  *        帖子标题里带的关卡号（公开内容）。
@@ -219,6 +249,7 @@ export function maskQa(text) {
     const badge = mm && mm[2] ? mm[2] : '';
     if (!name) return prefix + rest;
     if (name.includes('*')) return prefix + rest; // 已经遮过 → 保持幂等，别二次遮
+    if (!meaningfulName(name)) return prefix + rest; // `123`/`我` 这种不遮（遮了没法读，也不算隐私）
     names.add(name);
     return prefix + maskValue(name) + badge;
   });
@@ -226,6 +257,12 @@ export function maskQa(text) {
   // ② 好友码 / ③ 天宫码 → 统一遮罩
   out = out.replace(/\b(?:and|ios)[A-Za-z0-9]{8}\b/g, (m) => maskValue(m));
   out = out.replace(/\bJFA[A-Za-z0-9]{7}\b/g, (m) => maskValue(m));
+
+  // ④ 正文里出现的同一个昵称 → 一并遮掉（否则从正文漏出去）
+  for (const name of names) {
+    if (!out.includes(name)) continue;
+    out = out.split(name).join(maskValue(name));
+  }
 
   return { text: out, names: [...names] };
 }

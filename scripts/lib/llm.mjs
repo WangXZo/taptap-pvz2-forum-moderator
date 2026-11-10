@@ -182,16 +182,11 @@ export async function resolveChannels(config = {}) {
         maxTokens: Number(c.maxTokens || 800),
       });
     }
-    // 按「实测快慢」排序（DSH 的默认模型会随你在 GUI 里切模型而变，不能直接照它的顺序等）：
-    //   volcengine-plan 快且稳 → minimax/kimi 要长时间思考 → ollama 最后（中文不行）
-    if (!c.provider) {
-      const pref = ['volcengine-plan', 'deepseek-official', 'minimax', 'kimi', 'ollama'];
-      dshCh.sort((a, b) => {
-        const ia = pref.indexOf(a.provider);
-        const ib = pref.indexOf(b.provider);
-        return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-      });
-    }
+    // ⚠️ 用户 2026-11-09：「LLM 应复用（直接使用）当前 DSH 模型路由选择，不要在 skill 中写具体模型名称」
+    //    → 这里**不做任何按名字的排序**：
+    //      · DSH 当前默认模型已在 chain 最前面（parseProviders 里 unshift）
+    //      · 其余渠道保持 DSH 配置里的原始顺序
+    //    → 要换模型就在 DSH 里切，skill 自动跟随；skill 里不出现任何具体模型名。
   }
   return [...custom, ...dshCh];
 }
@@ -199,7 +194,7 @@ export async function resolveChannels(config = {}) {
 /** 统一成一种"消息"格式后，按渠道的 api 风格发请求 */
 async function callOnce(ch, { system, messages, temperature, maxTokens, timeoutMs }) {
   const ctrl = new AbortController();
-  // ⚠️ anthropic 风格的渠道（MiniMax/Kimi）**强制 thinking**，思考长度波动很大，
+  // ⚠️ anthropic 风格的渠道**强制 thinking**，思考长度波动很大，
   //    实测单次 11~60s 不等 → 给它们更宽的超时，别在 60s 就掐掉。
   const budget =
     ch.api === 'anthropic-messages' ? Math.max(timeoutMs || 0, 150000) : timeoutMs || 60000;
@@ -217,7 +212,7 @@ async function callOnce(ch, { system, messages, temperature, maxTokens, timeoutM
         },
         body: JSON.stringify({
           model: ch.model,
-          // ⚠️ MiniMax-M3.1-Flash **强制要求 thinking**（thinking.type=disabled 会被 400 拒：
+          // ⚠️ anthropic 风格渠道**强制要求 thinking**（thinking.type=disabled 会被 400 拒：
           //    "requires adaptive thinking"），思考会吃掉大半预算。
           //    给小了只会拿到一段 thinking、正文是空的（stop_reason=max_tokens）。
           max_tokens: Math.max(maxTokens, 8000),
@@ -229,7 +224,7 @@ async function callOnce(ch, { system, messages, temperature, maxTokens, timeoutM
       const text = await res.text();
       if (!res.ok) return { ok: false, status: res.status, error: text.slice(0, 300) };
       const j = JSON.parse(text);
-      // ⚠️ MiniMax 的 content 块**没有 type 字段**：先是 {thinking, signature}（推理过程），
+      // ⚠️ anthropic 风格的 content 块**没有 type 字段**：先是 {thinking, signature}（推理过程），
       //    真正的正文是后面的 {text: "..."}。只认 type==='text' 会把答案全丢掉（返回空）。
       //    所以：取所有「带 text 字段且不是 thinking」的块拼起来。
       const blocks = Array.isArray(j.content) ? j.content : [];
@@ -286,10 +281,11 @@ export async function chat(config, { system = '', messages = [], temperature = 0
     const r = await callOnce(ch, { system, messages, temperature, maxTokens: maxTokens || ch.maxTokens, timeoutMs });
     tried.push({ provider: ch.provider, model: ch.model, ok: r.ok, status: r.status, error: r.ok ? undefined : r.error });
     if (r.ok && String(r.text || '').trim()) {
-      log(`      [LLM] ${ch.provider}/${ch.model}`);
+      // 用户 2026-11-09：不在 skill 里写/打具体模型名 —— 只报「第几个渠道」
+      log(`      [LLM] 已生成（渠道 ${tried.length}）`);
       return { ok: true, text: r.text.trim(), channel: ch.provider, model: ch.model, tried };
     }
-    log(`      [LLM] ${ch.provider}/${ch.model} 失败（${r.status || '异常'}）${r.error ? '：' + String(r.error).slice(0, 160) : ''}`);
+    log(`      [LLM] 渠道 ${tried.length} 失败（${r.status || '异常'}）${r.error ? '：' + String(r.error).slice(0, 160) : ''}`);
   }
   return { ok: false, error: '所有渠道都失败', tried };
 }

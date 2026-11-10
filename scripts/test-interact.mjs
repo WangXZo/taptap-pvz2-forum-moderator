@@ -27,7 +27,7 @@ function t(name, cond) {
 const CONFIG = {
   reply: { signature: '「版主助手-小鲸鱼」' },
   summon: { aliases: ['大肥鱼', '吃白米饭的'], matchRoles: true },
-  interact: { samePlayerLimit: 3, probabilityAfterLimit: 0.5, strongTextLen: 40 },
+  interact: { samePlayerLimit: 1, probabilityAfterLimit: 0.5, strongTextLen: 40 },
 };
 
 /** 造一条评论 */
@@ -89,27 +89,27 @@ t('喊话通道回过的不重复', !picked.some((p) => p.commentId === 'C6'));
 // ---------- 4. 降概率：同帖 × 同玩家累计 3 次后 50% ----------
 const cand = { commentId: 'C5', parentId: 'C1', level: 2, author: '小明', authorId: 'u_x', text: '我按你说的试了，还是打不过', atUs: false };
 t('没回过 → 直接回', decideInteraction(cand, { counts: {}, config: CONFIG }).reply === true);
-t('回过 2 次 → 直接回', decideInteraction(cand, { counts: { u_x: { n: 2 } }, config: CONFIG }).reply === true);
+t('回过 0 次（还没回过）→ 直接回', decideInteraction(cand, { counts: { u_x: { n: 0 } }, config: CONFIG }).reply === true);
 t(
-  '回过 3 次 → 概率 50%（掷出 0.9 → 不回）',
-  decideInteraction(cand, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.9 }).reply === false
+  '回过 1 次 → 概率 50%（掷出 0.9 → 不回）',
+  decideInteraction(cand, { counts: { u_x: { n: 1 } }, config: CONFIG, rng: () => 0.9 }).reply === false
 );
 t(
-  '回过 3 次 → 概率 50%（掷出 0.1 → 回）',
+  '回过 1 次 → 概率 50%（掷出 0.1 → 回）',
   decideInteraction(cand, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.1 }).reply === true
 );
 t(
-  '回过 3 次 + 直接 @我们 → 例外必回',
+  '回过 1 次 + 直接 @我们 → 例外必回',
   decideInteraction(cand, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.99, ...{} }).reply !== undefined &&
     decideInteraction({ ...cand, atUs: true }, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.99 }).reply === true
 );
 t(
-  '回过 3 次 + 情绪激动 → 例外必回',
+  '回过 1 次 + 情绪激动 → 例外必回',
   decideInteraction({ ...cand, text: '在线等，急死了' }, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.99 })
     .reply === true
 );
 t(
-  '回过 3 次 + 连续追问 → 例外必回',
+  '回过 1 次 + 连续追问 → 例外必回',
   decideInteraction(cand, { counts: { u_x: { n: 3 } }, config: CONFIG, rng: () => 0.99, followUps: 2 }).reply === true
 );
 t('计数键优先用 user id', playerKey({ authorId: 'u_x', author: '小明' }) === 'u_x');

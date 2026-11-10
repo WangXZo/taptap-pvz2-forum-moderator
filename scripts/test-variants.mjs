@@ -38,7 +38,31 @@ for (const [name, t] of [
   check(`拦下：${name}`, !assertNoLeak(t).ok, t);
 }
 
-console.log(`\n通过 ${pass} 条`);
+console.log('\n== 表情落位：位置不限，最多 1 个（2026-11-10）==');
+{
+  const { applyEmojiPlacement } = await import('./lib/compose-reply.mjs');
+  const config = { reply: { emoji: { enabled: true } } };
+  const run = (t, kind = 'comfort') => applyEmojiPlacement(t, { kind, config });
+
+  const mid = run('先把材料攒够[表情_加油]再冲一波');
+  check('表情在句中 → 原位置保留', mid.text === '先把材料攒够[表情_加油]再冲一波', mid.text);
+  check('表情在句中 → 不再补第二个', (mid.text.match(/\[表情_/g) || []).length === 1, mid.text);
+
+  const tail = run('这句表情在结尾[表情_比心]');
+  check('表情在句尾 → 保留', tail.text === '这句表情在结尾[表情_比心]', tail.text);
+
+  const none = run('一个表情都没写');
+  check('模型没写 → 脚本补一个', /\[表情_[^\]]+\]$/.test(none.text), none.text);
+  check('补的那个是合法名字', none.emoji && none.text.includes(`[表情_${none.emoji}]`), none.text);
+
+  const bad = run('用了个不存在的[表情_不存在]表情');
+  check('未知表情名 → 剔掉那个标记', !bad.text.includes('[表情_不存在]'), bad.text);
+  check('剔掉后补一个合法的', /\[表情_[^\]]+\]$/.test(bad.text), bad.text);
+
+  const many = run('两个[表情_开心]表情[表情_点赞]'),
+    n = (many.text.match(/\[表情_/g) || []).length;
+  check('模型写了多个 → 原样保留（不在这一层裁剪）', n === 2, String(n));
+}
 if (fails.length) {
   console.log(`失败 ${fails.length} 条：`);
   for (const f of fails) console.log(`  ✗ ${f}`);

@@ -148,9 +148,13 @@ export function playerKey(cand) {
  * 决定这一条要不要回
  *
  * 计数单元 = **同一帖 × 同一玩家**（用户口径「分同一帖内分别累积同一玩家」）：
- *   · 该玩家在这帖被回过 < 3 次 → 直接回
- *   · ≥ 3 次 → 只有 **50%** 概率回（避免跟同一个人无限聊下去）
+ *   · 该玩家在这帖被回过 < N 次 → 直接回
+ *   · ≥ N 次 → 只有 **50%** 概率回（避免跟同一个人无限聊下去）
  *   · 但「情绪强烈」→ 必回（例外优先于概率）
+ *
+ * ⚠️ N 由 `config.interact.samePlayerLimit` 决定：
+ *    2026-11-05 是 3；**2026-11-06 用户改为 1**（原话「超过 1 次降概率：1 次后 50%」）——
+ *    也就是：同一帖同一个玩家，第一次可自由接话，**第二次起就一半概率**。
  *
  * @param {object} cand      候选
  * @param {object} o
@@ -160,7 +164,7 @@ export function playerKey(cand) {
  */
 export function decideInteraction(cand, { counts = {}, config = {}, rng = Math.random, followUps = 0 } = {}) {
   const ic = config?.interact || {};
-  const limit = Number(ic.samePlayerLimit ?? 3);
+  const limit = Number(ic.samePlayerLimit ?? 1);
   const prob = Number(ic.probabilityAfterLimit ?? 0.5);
   const key = playerKey(cand);
   const n = Number(counts?.[key]?.n || 0);

@@ -9,7 +9,7 @@
 //
 // 三张表（见 lib/db.mjs）：post_record（当前状态）/ post_event（事件流水）/ qa_vec（答疑向量）
 
-import { openDb, upsertPost, updatePost, logEvent, getPost, isPostDone, listPosts, listEvents, stats, prunePosts } from './db.mjs';
+import { openDb, upsertPost, updatePost, logEvent, getPost, isPostDone, listPosts, listEvents, stats, prunePosts, hasEvent } from './db.mjs';
 import { STATUS } from './state.mjs';
 
 /** 打开帖子记录库（没有配置就用 data/post-records.sqlite） */
@@ -76,13 +76,47 @@ export function recordStatus(db, id, status, { stage = null, keyword = null, det
   logEvent(db, id, kind || status, detail ? { ...detail, stage } : { stage });
 }
 
-/** 这个帖子是否已经处理过（库里有终态记录，或 state.json 里有） */
+/**
+ * 这个帖子是否已经处理过（库里有终态记录，或 state.json 里有）
+ *
+ * ⚠️ 2026-11-10 补 `qa_status`：只看 `status`（管理任务那一列）会漏掉答疑侧的终态 ——
+ *    分享帖/无需回复的帖子 `status` 是 `scanned`、`qa_status` 是 `no_need`，
+ *    记录一被搬进 SQLite，`state.posts[id]` 就没了 → 判据判定「没处理过」→ **当新帖反复入队**。
+ */
 export function isHandled(db, state, id) {
-  if (db && isPostDone(db, id)) return true;
+  if (db) {
+    if (isPostDone(db, id)) return true;
+    const r = getPost(db, id);
+    // qa 侧终态：已回复 / 无需回复 / 需人工（需人工不自动重判，避免每轮白烧接口）
+    if (r && QA_TERMINAL.has(String(r.qa_status || ''))) return true;
+  }
   const p = state?.posts?.[String(id)];
   if (!p) return false;
   if (p.modTask?.removedAt || p.modTask?.manualOnly || p.modTask?.replyOnlyAt) return true;
   return p.status === STATUS.REPLIED || p.status === STATUS.PENDING;
+}
+
+/** 答疑守护的四类终态（落到 post_record.qa_status） */
+const QA_TERMINAL = new Set(['replied', 'no_need', 'manual']);
+
+/**
+ * 幂等门：这条帖子**已经做过**某类动作了吗？
+ *
+ * 先查 state（快、热数据），再查 `post_event`（持久，记录搬库后仍然查得到）。
+ * 所有「一帖只做一次」的动作（分享互动 / 夸发码 / 夸奖 / 互动续聊 / 喊话）都必须过这里，
+ * 不能只信 `state.posts[id].xxx` —— 那份记录会被搬走（2026-11-10 的一条帖因此被回了 29 次）。
+ *
+ * @param kind 事件名，如 'share_reply' / 'code_praise' / 'praise_reply' / 'interact_reply' / 'summon_reply'
+ * @param match 可选 `{key, value}`：detail 里精确比一个字段（如 commentId）
+ */
+export function hasDoneEvent(db, id, kind, match = null) {
+  return hasEvent(db, String(id), kind, match);
+}
+
+/** 记一条「做过」事件（幂等门的数据来源） */
+export function markDoneEvent(db, id, kind, detail = null) {
+  if (!db || !id) return;
+  logEvent(db, id, kind, detail);
 }
 
 /**

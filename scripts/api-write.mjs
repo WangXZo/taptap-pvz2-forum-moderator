@@ -12,6 +12,14 @@
 //   node scripts/api-write.mjs reply  <momentId> --text "..." [--contents-json '[...]'] [--yes]
 //   node scripts/api-write.mjs child  <momentId> --parent <commentId> --text "..." [--yes]
 //   node scripts/api-write.mjs remove <momentId> --group 40173 [--yes]
+//   node scripts/api-write.mjs del-comment <commentId> [--yes]
+//
+// 签名：`reply` / `child` **默认自动补上** `config.reply.signature`（用户 2026-11-10：
+//       「默认需要携带签名（在 LLM 后可以通过脚本添加）」）。要发不带签名的，加 `--no-signature`。
+//
+// ⚠️ `reply` / `child` 不传 --contents-json 时，交给 lib/taptap-api.mjs 自己建 contents ——
+//    只有那条路会把 [表情_xx] 转成 tap_emoji 节点。自己用 buildContents() 拼纯文本，
+//    表情就会变成字面文字「[表情_叹气]」发出去（2026-11-10 真踩到）。
 //
 // 选项：--session <name>（默认 config.reply.session）、--interval <ms>（默认 1000）
 
@@ -19,7 +27,8 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeRunner } from './lib/replier.mjs';
-import { makeTapApi, buildContents } from './lib/taptap-api.mjs';
+import { makeTapApi } from './lib/taptap-api.mjs';
+import { clampReply } from './lib/limits.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -37,6 +46,21 @@ const [cmd, id] = positional;
 const SESSION = flag('session', config.reply.session || 'tap');
 const YES = has('yes');
 const log = (s) => console.log(s);
+
+/**
+ * 默认给文案补上签名（用户 2026-11-10）：
+ *   「默认需要携带签名（在 LLM 后可以通过脚本添加）」+「LLM 就不带签名了，要不然重复」
+ *
+ * 签名**由脚本加**，不指望模型自己写。这里走的就是发送层同一套 `clampReply()`：
+ *   · 已经带签名的不会再加一次（`includes` 判定）
+ *   · 表情在结尾时，签名插在表情**前面**
+ *   · 顺带按平台上限（1000）裁一刀
+ * 要发不带签名的，显式加 `--no-signature`。
+ */
+function withSignature(text) {
+  const sig = has('no-signature') ? '' : String(config?.reply?.signature || '').trim();
+  return clampReply(text, { signature: sig });
+}
 
 const runner = makeRunner({ opencliMain: config.reply.opencliMain, session: SESSION });
 if (!runner.available) {
@@ -92,15 +116,16 @@ switch (cmd) {
   }
 
   case 'reply': {
-    const text = flag('text', '');
-    const contents = flag('contents-json') || buildContents(text);
+    const text = withSignature(flag('text', ''));
+    // 不自己拼 contents：让 api.reply 按 emoji-map 把 [表情_xx] 转成 tap_emoji 节点
+    const contents = flag('contents-json');
     log(`计划：回复 ${id}\n  正文：${text.slice(0, 120)}${text.length > 120 ? '…' : ''}`);
     if (!YES) {
       log('（未加 --yes，仅预览）');
       break;
     }
     const r = await api.reply({ momentId: id, text, contents });
-    log(`结果：status=${r.status} ok=${r.ok} ${r.error || ''}`);
+    log(`结果：status=${r.status} ok=${r.ok} ${r.error || ''}${r.emojiHit ? ` emoji=${r.emojiHit}` : ''}`);
     log(`响应：${r.body.slice(0, 300)}`);
     if (r.ok) {
       const v = await api.hasReplyText({ momentId: id, text });
@@ -110,7 +135,7 @@ switch (cmd) {
   }
 
   case 'child': {
-    const text = flag('text', '');
+    const text = withSignature(flag('text', ''));
     const parent = flag('parent', '');
     log(`计划：楼中楼回复 ${id} @ ${parent}\n  正文：${text.slice(0, 120)}`);
     if (!YES) {
@@ -120,6 +145,27 @@ switch (cmd) {
     const r = await api.childComment({ momentId: id, parentId: parent, text });
     log(`结果：status=${r.status} ok=${r.ok} ${r.error || ''}`);
     log(`响应：${r.body.slice(0, 300)}`);
+    break;
+  }
+
+  case 'del-comment': {
+    // 删自己发错的回复（表情标记被当字面文本发出去那种）——只删评论，不动帖子
+    log(`计划：删除评论 ${id}`);
+    if (!YES) {
+      log('（未加 --yes，仅预览）');
+      break;
+    }
+    // 两个命名空间都试：新接口 moment-comment / 老接口 creation/comment
+    const paths = ['/webapiv2/moment-comment/v1/delete', '/webapiv2/creation/comment/v1/delete'];
+    for (const p of paths) {
+      const r = await api.post(p, { id: String(id) });
+      log(`  ${p} → status=${r.status} ok=${r.ok} ${r.error || ''}`);
+      if (r.ok) {
+        log(`  响应：${r.body.slice(0, 200)}`);
+        break;
+      }
+      log(`  响应：${r.body.slice(0, 200)}`);
+    }
     break;
   }
 

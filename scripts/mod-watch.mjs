@@ -24,11 +24,21 @@ import { makeRunner, doctorOk } from './lib/replier.mjs';
 import { checkAndEnqueue, processQueueHead } from './mod-task.mjs';
 import { openPostDb } from './lib/post-records.mjs';
 import { renderModReport } from './lib/mod-report.mjs';
+import { ensureSingleInstance } from './lib/single-instance.mjs';
+import { resolve } from 'node:path';
 
 const argv = process.argv.slice(2);
 const { has, argOf } = argvOf(argv);
 
 const config = await loadConfig();
+
+// ⚠️ 单实例保护（2026-11-09 改为**端口锁**）：多个 mod-watch 同时跑会把同一批加好友帖重复回复
+await ensureSingleInstance({
+  name: 'mod-watch',
+  port: Number(config.daemon?.ports?.['mod-watch'] ?? 45872),
+  log: console.log,
+});
+
 const cfg = config.modTasks?.friendRequest || {};
 const intervalSec = Number(argOf('--interval', config.modTasks?.intervalSeconds ?? 120));
 const once = has('--once');

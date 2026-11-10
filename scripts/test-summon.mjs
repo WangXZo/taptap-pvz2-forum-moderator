@@ -30,6 +30,28 @@ check('正文含签名 → 是我们发的', isOurReplyText('这句话没问题 
 check('结尾含签名 → 是我们发的', isOurReplyText('回答内容 ' + SIG + ' [表情_点赞]', config) === true);
 check('没签名 → 不是我们发的', isOurReplyText('玩家随便说的一句话', config) === false);
 
+// ---------- A2. 现在的真实形态：签名与正文**同一行**，且在表情之前（2026-11-10） ----------
+// 签名改成由脚本统一追加（不再独立成段），所以必须确认「识别自己」没被改坏。
+{
+  const real = [
+    ['安慰帖', '差一点没完成的那种最憋屈，前面都熬过来了。别太自责，这波认了 ' + SIG + '[表情_加油]'],
+    ['答疑帖', '困难6的关键是先控住。用冰车冻住前排，再上机枪输出 ' + SIG + '[表情_点赞]'],
+    ['分享互动', '恭喜恭喜，这波肝得值了 ' + SIG + '[表情_星星眼]'],
+    ['表情放中间', '先把[表情_加油]材料攒够 ' + SIG],
+  ];
+  for (const [why, t] of real) {
+    check(`同形态识别自己（${why}）`, isOurReplyText(t, config) === true, t);
+    check(`同形态不算喊话（${why}）`, isSummonText(t, config).summon === false, t);
+  }
+  // 加好友固定话术仍是「签名独立成段」——两种形态都得认
+  check('签名独立成段 → 也算我们自己', isOurReplyText('你好呀，好友码集中贴已置顶\n\n' + SIG, config) === true);
+
+  // 反向：玩家拿签名喊我们，不能被当成「我们回过」
+  check('玩家道谢不算我们发的', isOurReplyText('谢谢 ' + SIG + '[表情_比心]', config) === false);
+  check('玩家喊话不算我们发的', isOurReplyText('小鲸鱼在吗[表情_吃瓜]', config) === false);
+  check('光秃秃一个称呼不算', isOurReplyText(SIG, config) === false);
+}
+
 // 玩家喊我们的 5 个别名（用户 2026-11-02 点名的）
 for (const alias of ['大肥鱼', '版主助手-小鲸鱼', '版主助手', '小鲸鱼', '吃白米饭的']) {
   const hit = isSummonText(`${alias}！！！出来道歉`, config);

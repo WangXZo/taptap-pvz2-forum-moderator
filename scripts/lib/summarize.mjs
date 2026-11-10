@@ -125,7 +125,7 @@ export function tidy(text) {
  * @param {string} [o.myUserId]  我的用户 ID（排除自己的评论）
  * @param {string} [o.signature] 我用的签名（双保险：含签名的评论一律不算答案）
  */
-export function buildQaEntry({ post, comments, now = new Date(), myUserId = '', signature = '' }) {
+export function buildQaEntry({ post, comments, now = new Date(), myUserId = '', signature = '', known = [] }) {
   const selfId = String(myUserId || '__none__');
   const sig = String(signature || '').trim();
 
@@ -155,6 +155,25 @@ export function buildQaEntry({ post, comments, now = new Date(), myUserId = '', 
   const question = (post.title || post.text || '').trim().slice(0, 60);
   const keywords = extractKeywords(post.title || '', post.text || '');
 
+  // 置信度四档（用户 2026-11-06）：
+  //   「只有官方资料，或人工确认正确，视为完全正确」+「官方来源直接视为可信，无需说明」
+  //   官方帖（标题/徽章含 官方/公告/版主/新闻/更新说明）→ **完全正确**（回复直接给准话）
+  //   玩家说法模糊或互相矛盾 → 低；其余社区沉淀 → 中
+  //   ⚠️ 字段可选：不填由 qa.mjs 补默认（人工条目=完全正确 / 社区沉淀=中）
+  const isOfficial = /官方|公告|版主|新闻|更新说明/.test(
+    `${post.title || ''} ${(post.badges || []).join(' ')} ${(main.badges || []).join(' ')}`
+  );
+  const fuzzy = /不一定|似乎|好像|不确定|可能|大概|应该是|我觉得|据说|听说/.test(answerParts.join(' '));
+  const multiView = extras.length >= 2;
+  // 五档（用户 2026-11-06）：0-10 不可信 / 10-40 低 / 40-60 中 / 60-90 高 / 90-100 可信
+  //   只有「官方资料 / 人工确认」能进可信档；社区沉淀最高只到高概率。
+  let confidence = isOfficial ? 95 : fuzzy || multiView ? 25 : 65;
+
+  // 交叉验证（用户 2026-11-06）：**语义判定在 collect.mjs 里异步做**（lib/cross-check.mjs 的 refineConfidence）
+  //   这里只给初判：官方 → 可信；说法模糊/矛盾 → 低；其余社区沉淀 → 高概率。
+  //   「与已有条目一致 / 重复 → 复用可信度」必须看**含义**，不是文字，所以不放这个同步函数里。
+  const crossNote = '';
+
   return {
     question,
     keywords,
@@ -163,6 +182,8 @@ export function buildQaEntry({ post, comments, now = new Date(), myUserId = '', 
     summarizedAt: formatTime(now),
     fromAuthor: main.author,
     fromBadges: main.badges,
+    confidence,
+    crossNote,
   };
 }
 
@@ -202,7 +223,14 @@ export function extractKeywords(title, text) {
 
   const out = [];
   const seen = new Set();
-  for (const w of [...nums, ...blocks, ...twos]) {
+  // 2 字词只保留**出现 ≥2 次**的（用户 2026-11-06：「关键词被切碎了」）
+  //   没装分词库只能滑窗切，跨词边界会切出「阶植」「物比」这类碎片；
+  //   真词在同一段里往往出现不止一次 → 用频次当最便宜的过滤器。
+  const twoCnt = new Map();
+  for (const w of twos) twoCnt.set(w, (twoCnt.get(w) || 0) + 1);
+  const keepTwos = twos.filter((w) => (twoCnt.get(w) || 0) >= 2);
+
+  for (const w of [...nums, ...blocks, ...keepTwos]) {
     if (seen.has(w)) continue;
     seen.add(w);
     out.push(w);
@@ -239,6 +267,8 @@ export async function appendQaEntry(file, entry) {
     (kw ? `- 关键词：${kw}\n` : '') +
     `- 来源：${entry.source}\n` +
     `- 总结时间：${entry.summarizedAt}\n` +
+    (entry.confidence != null ? `- 置信度：${entry.confidence}%\n` : '') +
+    (entry.crossNote ? `- 交叉验证：${entry.crossNote}\n` : '') +
     `- 摘自：${entry.fromAuthor}${entry.fromBadges?.length ? `（${entry.fromBadges.join('/')}）` : ''}\n` +
     `---\n${entry.answer}\n`;
   await writeFile(file, raw.replace(/\s*$/, '\n') + block, 'utf8');

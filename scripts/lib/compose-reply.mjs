@@ -20,6 +20,7 @@ import { renderContext, contextForNode } from './thread-context.mjs';
 import { assertKind } from './summon.mjs';
 import { assertNoLeak } from './variants.mjs';
 import { clampReply } from './limits.mjs';
+import { confLabelOf } from './qa.mjs';
 import { loadEmojiMap } from './taptap-api.mjs';
 
 /** 各任务类型的写法指引（不是模板，是"让模型知道自己在干嘛"） */
@@ -32,6 +33,8 @@ const TASK_BRIEF = {
   interact:
     '玩家回应了你 —— 你夸过他、他回过你的话、或他点名叫你。现在可以继续接一句：顺着他的话往下接，别重复你说过的话，别邀功；他要是问了具体问题，答不上来就实话说拿不准。',
   chat: '有人在闲聊/吐槽，你接一句，共情为主，别讲大道理。',
+  comfort:
+    '他只是在发泄情绪（难受/可惜/被恶心到/白肝了），没有具体问题要你答。你要做的是**陪着难受一下**：先认同他这个情绪是正常的，再说一句让人缓过来的话。别讲道理、别劝人想开、别给攻略、别评价任何数值、别提什么补偿或处理结果、别问"你几阶了"这种追问。',
   refuse: '这涉及退款/封号/客服/账号交易等，不归你管。礼貌说明帮不上，指个正道，别承诺任何结果。',
 };
 
@@ -52,10 +55,24 @@ function systemPrompt(config) {
     '1. 不许贬低、嘲讽、辱骂任何玩家，哪怕他问得很基础。',
     '2. 不许替官方表态或承诺：不承诺修复时间、不给补偿口径、不说"内部消息"、不说"保证"。',
     '3. 不许编造游戏数据（具体数值、版本号、关卡细节、掉率）。你拿不准就说拿不准。',
+    '3b. 参考资料带「置信度：XX%」标记 —— 这是**可信概率**（用户 2026-11-06 定档）。按档位决定口气：',
+    '    · 90-100%（可信，一般是官方图鉴或人工确认过）→ **直接给准话，不用加任何不确定的话**。',
+    '    · 60-90%（高概率）→ 「大概是这样」「有可能不能准确」。',
+    '    · 40-60%（中概率）→ 「有可能是这样」「我也不确定」。',
+    '    · 10-40%（低概率）→ 「不知道对不对，你试试」「我也是听说的」。',
+    '    · 0-10%（不可信）→ 「这个我反正一点也不信」「别当真，再问问」。',
+    '    以上是**口气参照**，不是模板 —— 别照抄，每句都要像你自己的话。',
+    '    资料里说法互相矛盾时，必须把矛盾点说出来，别替玩家挑一个当定论。',
+    '3c. 资料里写「基本公式 + 例外」的，两段都要照顾到：先给规律，再点出例外，别只挑一半。',
+    '3d. 植物/关卡的具体数值，**官方图鉴**（pvz2.hrgame.com.cn/books?type=10）才是可信来源；',
+    '    社区说法一律按上面降档表述，别当成官方数据讲。',
     '4. 不许暴露内部机制：不要提答疑库、脚本、机器人、接口、模型、WAF、配置这些词。',
     '5. 只输出要发出去的那句话本身：不加引号、不加"回复："前缀、不解释你为什么这么说。',
     '6. 不用固定的开场套话（"在的""来了来了""这个问题"这类），每句都像现想的。',
     sig ? `7. 不要在正文里写签名（${sig}），系统会自动加在结尾。` : '',
+    '8. 签名由脚本统一追加，你**只写正文**。写一次签名会被当成正文重复发出去。',
+    '9. 表情可以放在句中，也可以放在句尾（不要求一定在结尾）。想用就写 `[表情_名字]`，' +
+      '**最多 1 个**，名字必须是标准表情组里的（不确定就别写，脚本会自己补一个）。',
     '',
     '你看到的是这栋楼的**三层结构**：帖子本身 → 一级回复 → 楼中楼。',
     '越往下越贴近当前话题；回复时要把**所有父级内容**都考虑进去，别答非所问。',
@@ -95,6 +112,7 @@ function pickEmoji(kind, text, config) {
   else if (kind === 'celebrate') want = ['点赞', '星星眼', '大笑'];
   else if (kind === 'refuse') want = ['叹气', '不好意思', '祈祷'];
   else if (kind === 'chat') want = ['微笑', '狗头', '吃瓜'];
+  else if (kind === 'comfort') want = ['比心', '加油', '拥抱', '叹气', '祈祷', '星星眼'];
   else want = pool;
   const map = loadEmojiMap();
   const usable = want.filter((n) => map && Object.prototype.hasOwnProperty.call(map, n));
@@ -103,6 +121,27 @@ function pickEmoji(kind, text, config) {
   let h = 0;
   for (const ch of t) h = (h * 31 + ch.codePointAt(0)) >>> 0;
   return list[h % list.length] || null;
+}
+
+/**
+ * 表情落位（**位置不限**，用户 2026-11-10：「表情位置不要求。可以放中间。」）
+ *
+ * · 模型自己写了 `[表情_xx]` → 原地保留（句中/句尾都行）；
+ *   但 emoji-map 里没有的名字必须剔掉 —— 留着会让 UI 兜底插不进去、整条转人工。
+ * · 模型没写 → 按情绪在结尾补一个（`pickEmoji`）。
+ *
+ * @returns {{text:string, emoji:string|null, modelPut:boolean}}
+ */
+export function applyEmojiPlacement(text, { kind = 'answer', config = {} } = {}) {
+  const map = loadEmojiMap() || {};
+  const cleaned = String(text || '')
+    .replace(/\[表情_([^\]]+)\]/g, (m, name) => (map[name] ? m : ''))
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const modelPut = /\[表情_[^\]]+\]/.test(cleaned);
+  const emoji = modelPut ? null : pickEmoji(kind, cleaned, config);
+  const out = `${cleaned}${emoji ? `[表情_${emoji}]` : ''}`;
+  return { text: out, emoji, modelPut };
 }
 
 /**
@@ -154,7 +193,10 @@ export function condenseMaterial(qaHits = [], { query = '', maxEntries = 3 } = {
     let body = pick.slice(0, 140);
     if (seen.has(body)) continue;
     seen.add(body);
-    out.push(`- 【库】问：${question || '(无题)'}\n  相关要点：${body}`);
+    // 置信度随资料一起给模型（用户 2026-11-06 五档）：带百分比 + 档位名，模型好按档说话
+    const pct = h?.confidence != null ? Number(h.confidence) : 50;
+    const conf = `${pct}%（${confLabelOf(pct)}）`;
+    out.push(`- 【库｜置信度${conf}】问：${question || '(无题)'}\n  相关要点：${body}`);
   }
   return out.join('\n');
 }
@@ -244,12 +286,24 @@ export async function composeReply({
   const leakChk = assertNoLeak(text);
   if (!leakChk.ok) return { ok: false, reason: `leak:${leakChk.hit}`, text, channel: r.channel };
 
-  // 长度兜底（含签名与表情）
-  const emoji = pickEmoji(finalKind, text, config);
-  const withSig = config?.reply?.signature
-    ? `${text} ${config.reply.signature}${emoji ? `[表情_${emoji}]` : ''}`
-    : `${text}${emoji ? `[表情_${emoji}]` : ''}`;
-  const capped = clampReply(withSig, { signature: config?.reply?.signature || '' });
+  // 长度兜底（含表情）。
+  //
+  // 表情位置**不要求**在结尾（用户 2026-11-10：「表情位置不要求。可以放中间。」）：
+  //   · 模型自己写了 `[表情_xx]` → 保留原位置（句中、句尾都行）；
+  //     但 emoji-map 里没有的名字要剔掉 —— 留着会让 UI 兜底插不进去、整条转人工。
+  //   · 模型没写 → 由脚本按情绪在结尾补一个。
+  //
+  // ⚠️ **签名不在这里加**（用户 2026-11-10：「LLM 就不带签名了，要不然重复」）：
+  //    模型输出 = 纯正文（`sanitize` 还会把模型自己写的签名剥掉），
+  //    签名统一由**发送层加一次**：
+  //      · `replyOne`（replier.mjs）→ `clampReply(..., {signature})`
+  //      · `replyToComment`（reply-nested.mjs）→ 同上
+  //      · 手动发的 `api-write.mjs` → `withSignature()`
+  //    `clampReply` 里那句 `!s.includes(sig)` 保证「已经有了就不再补」，所以两边都不会重复。
+  const placement = applyEmojiPlacement(text, { kind: finalKind, config });
+  const emoji = placement.emoji;
+  const body = placement.text;
+  const capped = clampReply(body, { signature: config?.reply?.signature || '' });
 
   return { ok: true, text: capped, body: text, emoji, channel: r.channel, model: r.model, level };
 }

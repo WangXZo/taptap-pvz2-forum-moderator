@@ -65,7 +65,7 @@
 - **答疑库命中 → 先整理再当资料**：按当前话题挑出最相关的 1~2 句，标注「仅供参考，不许照抄」
 - **玩家喊你**（签名 / 别名 / 「版主在吗」）→ 过去互动一次：敏感问题礼貌拒绝，其余顺着他的话接
 - **玩家回信后继续互动**：@你 / 回复你 / 喊你 → 可以接一句；
-  纯客套（「哈哈谢谢」）不回；同一帖同一玩家回过 3 次后降到 **50%** 概率，但情绪强烈必回
+  纯客套（「哈哈谢谢」）不回；同一帖同一玩家回过 1 次后降到 **50%** 概率，但情绪强烈必回
 - **社区已有人答对 → 沉淀进答疑库 + 在楼中楼夸一句**（夸什么由 LLM 按上下文生成，夸到具体点上）
 - **分享/进度/吐槽帖 → 去说句话**（不输出信息，只互动）
 - **帖子维度冷热分离**：按类别 TTL 冷藏进**向量冷库**（加好友 1 天 / 提问 10 天 / 闲聊 15 天 /
@@ -137,7 +137,7 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，18 套）
+### 自检（改规则前后必跑，20 套）
 
 ```bash
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
@@ -145,7 +145,8 @@ node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/t
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
+ && node scripts/test-comfort.mjs
 ```
 
 ## LLM 从哪来

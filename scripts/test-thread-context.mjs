@@ -90,7 +90,7 @@ const mat = condenseMaterial(hits, { query: '困难6怎么过 冰车要几阶 �
 ok('资料非空', mat.length > 0);
 ok('保留了相关句（先控住）', mat.includes('先控住'));
 ok('丢掉了无关句（钻石）', !mat.includes('钻石'));
-ok('标注了是参考资料', mat.includes('【库】'));
+ok('标注了是参考资料', mat.includes('【库｜置信度'));
 eq('没命中 → 空', condenseMaterial([], { query: 'x' }), '');
 eq('空答案 → 空', condenseMaterial([{ question: 'q', answer: '' }], { query: 'x' }), '');
 

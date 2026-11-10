@@ -5,8 +5,9 @@
 //     原因：Windows 下 .ps1 wrapper 会把带空格/引号的 JS 参数重新拆开，
 //     用 execPath + 数组参数传递才能稳定携带复杂 JS。
 //  2) 表情必须「点选」：直接输入 [表情_开心] 只会变成纯文本（已实测）。
-//  3) fill / type 对编辑器是整体替换，点选表情是追加到末尾
-//     → 因此文案里的表情只能放在结尾。
+//  3) fill / type 对编辑器是整体替换 → 先填全文，再**按位置插表情**（`applyEmojis` 从后往前插）。
+//     ⚠️ 别再写「表情只能放结尾」：`applyEmojis` 本来就支持**句中**插入
+//     （2026-11-10 用户明确「表情位置不要求。可以放中间。」），旧注释是它之前的说法。
 
 import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';

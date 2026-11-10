@@ -237,6 +237,40 @@ export function listPosts(db, { limit = 100, status = null } = {}) {
   return status ? db.prepare(sql).all(String(status), Number(limit)) : db.prepare(sql).all(Number(limit));
 }
 
+/**
+ * 这条帖子有没有过某类事件（**持久幂等门**）
+ *
+ * 为什么必须有它：`state.json` 里的记录会被 `pruneStatePosts` / `archiveOldPosts`
+ * **搬进 SQLite**（搬，不是丢）。任何只写在 `state.posts[id]` 上的「已做过」标记
+ * （`shareCommented` / `praisedComments` / `interactReplied` / `summonReplied`）
+ * 一旦记录被搬走就查不到了 → 同一帖被反复当成新帖、反复互动。
+ * 2026-11-10 真踩到：一条分享帖 10 小时内被回复了 **29 次**。
+ * 事件流水是追加写、不参与剪枝，所以幂等门要落在 `post_event` 上。
+ *
+ * @param match 可选 `{key, value}`：在 detail JSON 里精确比一个字段（如被回复的评论 id）
+ */
+export function hasEvent(db, postId, kind, match = null) {
+  if (!db) return false;
+  let rows = [];
+  try {
+    rows = db
+      .prepare('SELECT detail FROM post_event WHERE post_id=? AND kind=? ORDER BY id DESC LIMIT 200')
+      .all(String(postId), String(kind));
+  } catch {
+    return false;
+  }
+  if (!rows.length) return false;
+  if (!match || !match.key) return true;
+  for (const r of rows) {
+    let d = null;
+    try {
+      d = r.detail ? JSON.parse(r.detail) : null;
+    } catch {}
+    if (d && String(d[match.key] ?? '') === String(match.value ?? '')) return true;
+  }
+  return false;
+}
+
 /** 某帖的事件流水 */
 export function listEvents(db, postId, limit = 50) {
   return db

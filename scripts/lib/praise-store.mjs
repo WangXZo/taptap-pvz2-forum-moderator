@@ -13,7 +13,7 @@
 // 混在一起会让「答疑库重建索引」把夸奖记录清掉。
 
 import { openDb } from './db.mjs';
-import { tokenize, cosine } from './qa-vector.mjs';
+import { sparseVector, cosine } from './qa-vector.mjs';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS praise_reply (
@@ -29,18 +29,6 @@ CREATE TABLE IF NOT EXISTS praise_reply (
 );
 CREATE INDEX IF NOT EXISTS idx_praise_created ON praise_reply(created_at);
 `;
-
-/** 简单稀疏向量：token → 词频权重（夸奖文本短，不需要 idf 也能区分） */
-function vectorize(text) {
-  const tf = new Map();
-  for (const t of tokenize(text)) tf.set(t, (tf.get(t) || 0) + 1);
-  let sum = 0;
-  for (const w of tf.values()) sum += w * w;
-  const norm = Math.sqrt(sum) || 1;
-  const out = {};
-  for (const [k, w] of tf) out[k] = Number((w / norm).toFixed(6));
-  return out;
-}
 
 export function openPraiseDb(config) {
   const file = config?.paths?.praiseDbFile || config?.paths?.postDbFile;
@@ -62,7 +50,7 @@ export function savePraise(db, { postId, commentId, author, commentText, praiseT
     String(commentText || '').slice(0, 500),
     String(praiseText || ''),
     String(point || ''),
-    JSON.stringify(vectorize(`${praiseText} ${commentText}`)),
+    JSON.stringify(sparseVector(`${praiseText} ${commentText}`)),
     Date.now()
   );
 }
@@ -103,7 +91,7 @@ export function similarPraise(db, { commentText = '', topN = 5, minScore = 0.15 
     const rows = db
       .prepare('SELECT praise_text, comment_text, author, vec FROM praise_reply ORDER BY id DESC LIMIT 500')
       .all();
-    const q = vectorize(commentText);
+    const q = sparseVector(commentText);
     const qm = new Map(Object.entries(q));
     const out = [];
     for (const r of rows) {

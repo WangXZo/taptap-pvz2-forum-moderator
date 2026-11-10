@@ -56,6 +56,16 @@ export function parseQa(raw) {
     const timeMatch = meta.match(/总结时间[:：]\s*(.+)/);
     const summarizedAt = timeMatch ? timeMatch[1].trim() : null;
 
+    // 可选：置信度（用户 2026-11-06 定档）——存**可信概率百分比**
+    //   0-10% 不可信 / 10-40% 低概率 / 40-60% 中概率 / 60-90% 高概率 / 90-100% 可信
+    //   兼容旧写法「完全正确 / 高 / 中 / 低」→ 95 / 75 / 50 / 20
+    //   回复时按档位决定口气；不能自动给「可信」，那档只给官方资料和人工确认。
+    const confPct = meta.match(/置信度[:：]\s*(\d{1,3})\s*%?/);
+    const confLegacy = meta.match(/置信度[:：]\s*(完全正确|高|中|低)/);
+    const LEGACY_PCT = { 完全正确: 95, 高: 75, 中: 50, 低: 20 };
+    let confidence = confPct ? Math.max(0, Math.min(100, Number(confPct[1]))) : null;
+    if (confidence === null && confLegacy) confidence = LEGACY_PCT[confLegacy[1]] ?? null;
+
     entries.push({
       question,
       keywords,
@@ -63,12 +73,26 @@ export function parseQa(raw) {
       signature,
       source,
       summarizedAt,
+      // 没写：人工条目 95（可信，人复核过）/ 社区沉淀 50（中概率，玩家说法）
+      confidence: confidence === null ? (source ? 50 : 95) : confidence,
+      confidenceLabel: confLabelOf(confidence === null ? (source ? 50 : 95) : confidence),
       auto: !!source, // 自动沉淀 → 匹配时打折（低于人工条目）
       answer,
       id: slug(question),
     });
   }
   return entries;
+}
+
+/** 置信度百分比 → 档位标签（用户 2026-11-06 定的五档） */
+export function confLabelOf(pct) {
+  const n = Number(pct);
+  if (!Number.isFinite(n)) return '中概率';
+  if (n < 10) return '不可信';
+  if (n < 40) return '低概率';
+  if (n < 60) return '中概率';
+  if (n < 90) return '高概率';
+  return '可信';
 }
 
 function slug(s) {
@@ -208,6 +232,38 @@ export function looksLikeShare(text) {
   }
   // 纯情绪吐槽特征（跟着共鸣一句，不下判断）
   return /(崩了|闪退|卡死|白给|离谱|笑死|无语|麻了|阴间|正常操作|又又|真的服|蚌埠)/.test(t);
+}
+
+/**
+ * 是否是「情绪帖」—— 只想有人应一声，没有求解诉求
+ *
+ * 来历（2026-11-10 用户要求）：《我无疑是绝望的。。。》（任务差一点没完成）、
+ * 《我想知道玩这个游戏的...》（被谐音脏话昵称恶心到）。这两条
+ * ① 答疑库答不了；② 又没有「终于/到手/集齐」这些分享特征 → `looksLikeShare` 不认；
+ * ③ 于是双双掉进「🖐 需人工」，一句话都没有。
+ *
+ * 判据：**情绪强** + **不涉维权/损失/加好友**。
+ * 涉维权的一律不插话 —— 那种帖要版主自己判断，不能给平台表态的机会。
+ * 命中只代表「可以过去陪一句」，不代表可以不上报。
+ */
+export function looksLikeEmotion(text) {
+  const t = String(text || '')
+    .replace(/\[(?:表情_[^\]]+|TapTap×[^\]_]+_[^\]]+)\]/g, '')
+    .trim();
+  if (!t) return false;
+  // 维权 / 损失 / 账号交易 → 不凑热闹
+  if (/(退款|客服|补偿|封号|举报|充值|消费|损失|维权|申诉|投诉|出售|收号|代打)/.test(t)) return false;
+  // 加好友 / 兑换码 → 走各自的通道
+  if (/(加好友|好友位|好友码|扩列|互加|互赞|JFA[A-Za-z0-9]{7}|(?:and|ios)[A-Za-z0-9]{8})/i.test(t))
+    return false;
+  // 带**求解诉求**的是真提问，不是纯情绪 —— 让答疑通道处理，别在这儿抢话。
+  //   ⚠️ 只认「求解型」疑问词：不能直接用 looksLikeQuestion()，
+  //      否则《我想知道玩这个游戏的...》（表面是问句、实质是吐槽）会被误排除。
+  if (/(怎么|如何|咋办|怎么办|咋打|咋过|能不能|可不可以|值得|哪个|哪一|多少|求助|大佬|有没有|推荐)/.test(t))
+    return false;
+  return /(绝望|难受|憋屈|心疼|寒心|破防|崩溃|麻了|不想玩|弃坑|白肝|白玩|可惜|太亏|血亏|气死|恶心|膈应|窝火|想哭|不甘心|就差|差一点|白费)/.test(
+    t
+  );
 }
 
 /**

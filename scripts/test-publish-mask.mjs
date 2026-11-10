@@ -55,6 +55,24 @@ const r2 = maskQa(QA2);
 t('无徽章的摘自也遮罩', !r2.text.includes('测试昵称乙—RX'), r2.text);
 t('抽到带短横线昵称', r2.names.some((n) => n.includes('测试昵称乙')));
 
+// ---------- 2b. 没信息量的昵称不遮、不扫（2026-11-10） ----------
+// 「摘自：123」「摘自：我」这种 → 当敏感串去扫全仓库，每个文件都命中，扫描直接不可用
+{
+  const QA_TRIVIAL = '## 问：z\n- 摘自：123（答疑智多星）\n---\n正文里的「我」字很多\n';
+  const rt = maskQa(QA_TRIVIAL);
+  t('纯数字昵称不遮（不构成隐私）', rt.text.includes('摘自：123'), rt.text);
+  t('纯数字昵称不进敏感串名单', !rt.names.includes('123'), JSON.stringify(rt.names));
+}
+
+// ---------- 2c. 正文里出现同一个真实昵称 → 也要遮（2026-11-10） ----------
+// 只遮「摘自」行的话，玩家昵称照样从答案正文漏出去
+{
+  const QA_BODY = '## 问：w\n- 摘自：测试昵称丙（成就党）\n---\n测试昵称丙补充过：这关要用冰车。\n';
+  const rb = maskQa(QA_BODY);
+  t('正文里的同一昵称也被遮', !rb.text.includes('测试昵称丙'), rb.text);
+  t('正文其余内容保留', rb.text.includes('补充过：这关要用冰车。'), rb.text);
+}
+
 // ---------- 3. maskQa：码 ----------
 const QA3 = '## 问：y\n---\n好友码 andABCDEFGH 和 iosABCDEFGH，天宫码 JFAABCDEFG\n';
 const r3 = maskQa(QA3);

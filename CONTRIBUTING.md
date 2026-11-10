@@ -53,13 +53,14 @@
 ### 提交前自检
 
 ```bash
-# 18 套回归测试全绿
+# 20 套回归测试全绿
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
+ && node scripts/test-comfort.mjs
 
 node scripts/collect.mjs --dry-run   # 看新条目能不能被命中
 node scripts/qa-admin.mjs purge-tag  # 确认没写进脏数据
@@ -106,7 +107,7 @@ references/         参考文档（改行为前先读对应那份）
 
 ### 约定
 
-1. **改行为必须加回归用例**。仓库里有 **18 套**测试（`test-*.mjs`），改完必须全绿。
+1. **改行为必须加回归用例**。仓库里有 **20 套**测试（`test-*.mjs`），改完必须全绿。
    判定/打分/文案规则尤其如此 —— 这些规则是靠用例锁住的。
 2. **事实来源只有 `qa/答疑库.md`**。脚本里不许硬编码游戏数值。
 3. **不许加文案模板**。措辞一律由 LLM 按上下文生成（`lib/compose-reply.mjs`）。

@@ -10,7 +10,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDb, listPosts, listEvents, stats, prunePosts } from './lib/db.mjs';
-import { recordScanned, recordModScanned, recordStatus, isHandled, archiveOldPosts } from './lib/post-records.mjs';
+import { recordScanned, recordModScanned, recordStatus, isHandled, archiveOldPosts, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 
 let pass = 0;
 const fails = [];
@@ -90,6 +90,43 @@ ok('统计总数正确', s.total === 5, String(s.total)); // 111 + old1 + old2 +
 const pruned = prunePosts(db, { olderThanDays: 45, keepStatuses: [] });
 ok('裁剪掉了老记录', pruned.pruned >= 2, String(pruned.pruned));
 ok('裁剪后事件流水里有记录', listEvents(db, 'old1').length >= 1);
+
+// ---------- 持久幂等门（2026-11-10：一条分享帖 10 小时被回了 29 次） ----------
+// 核心：记录被搬进 SQLite 后 state.posts[id] 就没了，
+//       所以「做过没」必须能从 post_event 查到，否则等于没有门。
+{
+  recordScanned(db, { id: 'share1', title: '终于拿到超装了', url: 'u' }, { qaStatus: 'no_need' });
+  ok('分享互动：没做过 → 门是开的', !hasDoneEvent(db, 'share1', 'share_reply'));
+  markDoneEvent(db, 'share1', 'share_reply', { text: '恭喜恭喜', at: '2026-11-10T00:00:00Z' });
+  ok('分享互动：做过一次 → 门关上', hasDoneEvent(db, 'share1', 'share_reply'));
+  ok('分享互动：另一种动作互不影响', !hasDoneEvent(db, 'share1', 'code_praise'));
+
+  // 互动续聊：按「被回复的那条评论」精确去重
+  markDoneEvent(db, 'share1', 'interact_reply', { commentId: 'C9', hash: 'h1' });
+  ok('互动：同一条评论 → 认得出来', hasDoneEvent(db, 'share1', 'interact_reply', { key: 'commentId', value: 'C9' }));
+  ok(
+    '互动：另一条评论 → 仍然可以回',
+    !hasDoneEvent(db, 'share1', 'interact_reply', { key: 'commentId', value: 'C10' })
+  );
+  // 数值/字符串都当同一个 key（接口有时候给数字）
+  ok(
+    '互动：id 数字与字符串等价',
+    hasDoneEvent(db, 'share1', 'interact_reply', { key: 'commentId', value: 9 }) === false &&
+      hasDoneEvent(db, 'share1', 'interact_reply', { key: 'commentId', value: 'C9' })
+  );
+
+  // 搬库后仍然挡得住（这条是事故的直接复现）
+  ok('记录在库里 → 算处理过（qa_status 终态）', isHandled(db, { posts: {} }, 'share1'));
+  ok('记录在库里 → state 里没有也不当新帖', !isHandled(db, { posts: {} }, 'share2'));
+}
+
+// ---------- 老记录搬库后：qa_status 终态也算处理过 ----------
+{
+  recordScanned(db, { id: 'qa1', title: '某问题', url: 'u' }, { qaStatus: 'replied' });
+  ok('qa_status=replied → 算处理过', isHandled(db, { posts: {} }, 'qa1'));
+  recordScanned(db, { id: 'qa2', title: '另一问题', url: 'u' }, { qaStatus: 'pending' });
+  ok('qa_status=pending → 还没处理完，仍要参与判定', !isHandled(db, { posts: {} }, 'qa2'));
+}
 
 try {
   db.close();

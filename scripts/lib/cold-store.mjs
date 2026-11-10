@@ -19,7 +19,7 @@
 //   自己的帖 20 天；分享 30 天；官方 60 天。
 //   ⚠️ 真正生效的是 config.archive.coldDays（config 优先），这里的只是兜底默认值。
 
-import { tokenize, cosine } from './qa-vector.mjs';
+import { sparseVector, cosine } from './qa-vector.mjs';
 
 const DAY = 86400000;
 
@@ -74,18 +74,6 @@ export function coldTtlDays(category, config = {}) {
   return Number.isFinite(d) && d > 0 ? d : 45;
 }
 
-/** 稀疏向量（字符 n-gram，和 qa-vector 同一套切词） */
-function vectorize(text) {
-  const tf = new Map();
-  for (const t of tokenize(String(text || ''))) tf.set(t, (tf.get(t) || 0) + 1);
-  let sum = 0;
-  for (const w of tf.values()) sum += w * w;
-  const norm = Math.sqrt(sum) || 1;
-  const out = {};
-  for (const [k, w] of tf) out[k] = Number((w / norm).toFixed(6));
-  return out;
-}
-
 /**
  * 把一条帖子写进冷库
  */
@@ -113,7 +101,7 @@ export function putCold(db, post, { category, text = '', commentCount = 0, lastI
     post.status || null,
     post.keyword || null,
     String(text).slice(0, 2000),
-    JSON.stringify(vectorize(`${post.title || ''} ${text}`)),
+    JSON.stringify(sparseVector(`${post.title || ''} ${text}`)),
     Number(commentCount || 0),
     Number(lastInteractionAt || 0),
     now
@@ -231,7 +219,7 @@ export function searchCold(db, text, { topN = 5, minScore = 0.12, category = nul
          WHERE woken_at IS NULL ${category ? 'AND category = ?' : ''} LIMIT 1000`
       )
       .all(...(category ? [category] : []));
-    const q = vectorize(text);
+    const q = sparseVector(text);
     const qm = new Map(Object.entries(q));
     const out = [];
     for (const r of rows) {

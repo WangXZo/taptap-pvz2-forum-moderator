@@ -7,11 +7,22 @@
   "teamUserIds": [],
   "watch": {
     "intervalSeconds": 120,
-    "note": "守护循环：2 分钟检查一次 + 队列处理（新到旧重排，不打断当前）。想放慢就改 intervalSeconds；检查会打一次列表接口，处理每条再打一次 —— 这是 WAF 边界的代价，被拦会自动退避。"
+    "minOpGapMs": 300,
+    "sources": {
+      "created": true,
+      "commented": true,
+      "notify": true,
+      "createdEverySeconds": 300,
+      "commentedEverySeconds": 900,
+      "notifyEverySeconds": 120
+    },
+    "sourcesNote": "守护队列的三个来源（2026-11-06 用户要求，可单独开关 + 各自独立节奏）：① created=按发布时间拉最新（新帖）；② commented=按**回复时间**拉（捞到老帖又有人回，不只看最新 10 条）；③ notify=通知接口 type=7（回复我/@我/呼唤我，直接用 cURL 那个接口，不必等 collect 写 state）。\n⚠️ 为什么要错峰：实测三源每 120s 齐拉会把匿名接口打到触发阿里云 WAF（连 sort=created 都拦），整条链路停摆。所以给每个源独立间隔：notify 走页面上下文（带 Cookie，不占匿名 IP 配额）→ 跟队列重排同频 120s；created 主链路 → 300s；commented 只是补充 → 900s。\n队列在**每轮 intervalSeconds（120s）都会重排一次**，只是「拉新数据」按上面的节奏走。三源合并去重后按发布时间新→旧重排，**只重排不删**，可超过 10 条（上限 200）。",
+    "wafCooldownMinutes": 15,
+    "wafNote": "连续 2 次被 WAF 拦 → 熔断冷却 15 分钟（期间不拉任何 feed，只保留 notify）。实测 IP 级封禁 >25 分钟，所以宁可早停。",
+    "note": "守护循环：2 分钟重排队列 + 处理（新到旧、不打断当前）。intervalSeconds 是**重排/处理**节奏；拉数据按 sources.*EverySeconds 错峰。"
   },
   "collect": {
     "topN": 8,
-    "sortBy": "publish_time",
     "sort": "created",
     "type": "feed",
     "commentDelayMs": 1500
@@ -39,12 +50,10 @@
       "官方补偿",
       "版号"
     ],
-    "allowCloser": true,
     "refuseOnUnknown": false,
     "emoji": {
       "enabled": true,
-      "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。",
-      "allowNames": []
+      "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。可用表情由 data/emoji-map.json 采集，不在这里配白名单。"
     },
     "note": "via=一级回复走接口直连（已实测）；nestedVia=楼中楼（夸奖/喊话/互动续聊）走接口 —— create-child 的参数是 parent_id（2026-11-03 真实 cURL 校准），猜错会错发成顶层评论",
     "via": "api",
@@ -60,9 +69,15 @@
   },
   "share": {
     "enabled": true,
-    "signature": false,
+    "signature": true,
     "maxPerRun": 2,
     "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值"
+  },
+  "comfort": {
+    "enabled": true,
+    "signature": true,
+    "maxPerRun": 2,
+    "note": "纯情绪帖（绝望/可惜/憋屈/被恶心到…，既不是提问也不是分享）→ 陪一句共情，**一帖一次**。不引答疑库、不评价数值、不给攻略、不承诺处理。楼主后面再回复 → 走正常互动续聊（3f），可按他的回复内容继续回；互动按 commentId 去重，同一条只回一次。签名默认带（由脚本追加，不让模型写）"
   },
   "summon": {
     "enabled": true,
@@ -82,11 +97,10 @@
     "enabled": true,
     "maxPerPost": 1,
     "maxPerRun": 3,
-    "samePlayerLimit": 3,
+    "samePlayerLimit": 1,
     "probabilityAfterLimit": 0.5,
     "strongTextLen": 40,
-    "checkEveryMinutes": 30,
-    "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 3 次后，回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。"
+    "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 3 次后，回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。**没有独立检查频率**：通知由 watch 每轮（intervalSeconds）拉取并入队。"
   },
   "modTasks": {
     "enabled": true,
@@ -139,9 +153,7 @@
       "chat": 15
     },
     "coldDaysNote": "按帖子类别分别设置冷藏天数（单位天）。2026-11-05 按用户要求改为：加好友 1 天、提问 10 天、闲聊 15 天、我的帖 20 天、分享 30 天、官方 60 天。改这里立刻生效（config 优先于代码默认值）。",
-    "wakeEnabled": true,
-    "wakeNote": "唤醒信号改用通知接口 /notification/v2/by-me?type=7（回复和@我收到的）：一次请求就知道谁在哪个帖子的哪条评论下@我或回我，比「评论数变了再读评论猜」准。默认 30 分钟查一次（别太频繁，通知接口也要占请求）。",
-    "wakeEveryMinutes": 30
+    "wakeNote": "唤醒**没有独立开关/频率**了（2026-11-06 架构收敛）：唤醒信号由 watch 每轮检查（intervalSeconds，默认 120s）拉通知接口 /notification/v2/by-me?type=7 得到，直接并入队列；通知触发的帖若在冷库，处理时就地唤醒（markWoken）。要关掉通知源就设 watch.sources.notify=false。"
   },
   "qaHealth": {
     "enabled": true,

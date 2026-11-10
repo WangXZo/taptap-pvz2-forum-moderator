@@ -49,6 +49,30 @@ const capped2 = clampReply(longWithEmoji, { signature: sig });
 ok('超限 → 表情保住了', capped2.includes('[表情_点赞]'), capped2.slice(-40));
 ok('超限 → 仍在上限内', charLen(capped2) <= LIMITS.reply, String(charLen(capped2)));
 
+// ---------- 1b. 签名：默认必带，且只加一次（2026-11-10） ----------
+// 老版本只在「超长」时才补签名 → 短回复一个签名都没有（两条安慰就是裸奔发出去的）
+const SHORT = '差一点没完成的那种最憋屈';
+{
+  const a = clampReply(SHORT, { signature: sig });
+  ok('短回复也补签名', a.includes(sig), a);
+  ok('短回复补在最结尾', a.endsWith(sig), a);
+  ok('不重复补（只出现一次）', a.split(sig).length - 1 === 1, a);
+  ok('补完内容没丢', a.includes(SHORT), a);
+
+  const b = clampReply(`${SHORT} ${sig}`, { signature: sig });
+  ok('已经带了 → 不再补第二次', b.split(sig).length - 1 === 1, b);
+
+  const c = clampReply(`${SHORT}[表情_加油]`, { signature: sig });
+  ok('带表情 → 签名插在表情前面', c.includes(`${sig}[表情_加油]`), c);
+  ok('带表情 → 仍然只出现一次', c.split(sig).length - 1 === 1, c);
+
+  const d = clampReply(`${SHORT}[表情_加油]`, { signature: '' });
+  ok('不传签名 → 一个字都不加', d === `${SHORT}[表情_加油]`, d);
+
+  const e = clampReply(`${SHORT} ${sig}[表情_加油]`, { signature: sig });
+  ok('签名+表情都已带 → 原样不重复', e.split(sig).length - 1 === 1, e);
+}
+
 ok('标题超限能查出来', checkLimits({ title: 'x'.repeat(31) }).some((x) => x.field === 'title'));
 ok('回复超限能查出来', checkLimits({ reply: 'x'.repeat(1001) }).some((x) => x.field === 'reply'));
 ok('正常长度不报', checkLimits({ title: '短标题', reply: '短回复' }).length === 0);

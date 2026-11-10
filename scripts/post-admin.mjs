@@ -23,10 +23,15 @@ import { listFeed, listComments, extractText, flattenContents } from './lib/http
 import { loadQaLibrary, matchPost, looksLikeQuestion } from './lib/qa.mjs';
 import { loadUsage, entryKeyOf } from './lib/usage.mjs';
 import { loadState, STATUS, REASON } from './lib/state.mjs';
+import { openPostDb, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
 const rest = argv.slice(1).filter((a) => !a.startsWith('--'));
+const argOf = (name, dflt = null) => {
+  const i = argv.indexOf(name);
+  return i >= 0 && argv[i + 1] && !argv[i + 1].startsWith('--') ? argv[i + 1] : dflt;
+};
 
 const config = await loadConfig();
 const MY_ID = String(config.myUserId || '');
@@ -441,11 +446,42 @@ async function cmdCheckRemoved() {
   }
 }
 
+/**
+ * 补一条「已经做过」事件（修数据用）
+ *
+ * 场景（2026-11-10 真发生）：分享/夸奖/互动这些「一帖只做一次」的动作，
+ * 幂等凭据原来只写在 state.json 的帖记录上；那条记录被搬进 SQLite 后凭据就丢了，
+ * 于是同一帖被反复当成「还没互动过」。补一条事件等于把门关上，不用改历史代码。
+ *
+ * 用法：node scripts/post-admin.mjs mark-done <momentId> <kind> [--comment <commentId>] [--text "..."]
+ *   kind：share_reply / code_praise / praise_reply / interact_reply / summon_reply
+ */
+async function cmdMarkDone() {
+  const [id, kind] = rest;
+  if (!id || !kind) {
+    console.error('用法：post-admin.mjs mark-done <momentId> <kind> [--comment <commentId>] [--text "..."]');
+    process.exit(1);
+  }
+  const commentId = argOf('--comment', null);
+  const text = argOf('--text', null);
+  const db = openPostDb(config);
+  const detail = {
+    ...(commentId ? { commentId: String(commentId) } : {}),
+    ...(text ? { text: String(text).slice(0, 80) } : {}),
+    at: new Date().toISOString(),
+    by: 'post-admin mark-done',
+  };
+  markDoneEvent(db, id, kind, detail);
+  const has = hasDoneEvent(db, id, kind, commentId ? { key: 'commentId', value: commentId } : null);
+  console.log(`已记事件：${id} ${kind}（现在查得到=${has}）`);
+}
+
 const CMDS = {
   fetch: cmdFetch,
   'mark-replied': cmdMarkReplied,
   'reset-praised': cmdResetPraised,
   'reset-share': cmdResetShare,
+  'mark-done': cmdMarkDone,
   cleanup: cmdCleanup,
   diag: cmdDiag,
   recheck: cmdRecheck,
@@ -454,7 +490,7 @@ const CMDS = {
 
 if (!cmd || !CMDS[cmd]) {
   console.log('帖子工具：node scripts/post-admin.mjs <子命令>');
-  console.log('  fetch / mark-replied / reset-praised / reset-share / cleanup / diag / recheck');
+  console.log('  fetch / mark-replied / reset-praised / reset-share / mark-done / cleanup / diag / recheck');
   console.log('  详细说明见 references/admin.md');
   process.exit(cmd ? 1 : 0);
 }

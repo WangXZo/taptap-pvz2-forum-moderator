@@ -41,13 +41,14 @@ node scripts/whoami.mjs
 
 # 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
 
-# 4) 全部自检（改规则前后都要跑，18 套）
+# 4) 全部自检（改规则前后都要跑，19 套）
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
 node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
 node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs
+node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
+node scripts/test-watch-queue.mjs && node scripts/test-comfort.mjs
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run
@@ -74,16 +75,30 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 ## 守护循环：**2 分钟检查 + 队列**（新到旧，不打断当前）
 
 用户 2026-11-02：「改成一直跑，每 2 分钟新到旧，重排一次队列，不打断当前（参考版主管理任务的队列设计）。即加快处理，尝试 WAF 限流边界。」
+用户 2026-11-06 补充：「通知（回复、@、呼唤）驱动的帖子也要入队…而且获取论坛帖子流，也可以切换 sort
+（`created` 发布时间降序 / `commented` 回复时间 / `default` 推荐），获取入队信息。」
 
 `scripts/watch.mjs` 是单线程时间片的两段节奏（**不是**两个并发循环）：
 
 ```
-① 检查：每 intervalSeconds（默认 120s）取一次最新 10 条
-        → 挑出「需要处理」的 → 并入队列 → 按发布时间**新→旧**重排
+① 检查：每 intervalSeconds（默认 120s）拉三个来源 → 挑出「需要处理」的 → 并入队列 → 按发布时间**新→旧**重排
 ② 处理：一直取队首（永远最新的那条）→ 读评论 → 判定 → 回/夸/沉淀 → 出队
 ```
 
 **「不打断当前」**：检查只在两条帖之间发生 —— 正在处理的那条一定处理完才轮到检查。
+
+### 队列的三个来源（`config.watch.sources`，可单独开关）
+
+| 来源 | 接口 | 能捞到什么 | 为什么必需 |
+|---|---|---|---|
+| `created` | `/feed/v7/by-group?sort=created` | 最新 10 条：新帖 | 日常答疑主链路 |
+| `commented` | 同上 `sort=commented` | **按回复时间**的最新帖 | 老帖又有人回时，`created` 里早滑出去了 |
+| `notify` | `/notification/v2/by-me?type=7` | 回复我 / @我 / 呼唤我 | 最精准的「该我说话了」信号，且**不看是否在最新 10 条里** |
+
+三源合并去重后统一重排：**只重排、不删**，队列超过 10 条是正常的（上限 200）。
+`notify` 入队的项带 `needsComments=true` → 处理时**强制重新读评论**
+（楼中楼回复不一定改顶层评论数，不强制读就会漏掉玩家的回信）。
+`notify` 要 opencli 页面上下文，拉不到就降级（只靠 feed 两源），不会让整轮停摆。
 
 队列里放什么（轻量判定，**不读评论**，省接口）：
 
@@ -93,6 +108,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 | `status === 'pending'` | 上次没发出去 |
 | `summonPending === true` | 喊话没回完 |
 | `scannedComments !== 当前评论数` | 又有人回帖了（可能又有人喊我们） |
+| `interactPending` | 通知说「回复我/@我」→ 待互动 |
+| 来自 `notify` 源 | 直接入队（不需要上述判定） |
 
 ```bash
 node scripts/watch.mjs                 # 常驻，2 分钟一轮
@@ -363,11 +380,11 @@ node scripts/test-cold-store.mjs   # 42 条断言：分类/TTL/冷藏/唤醒（�
 
 1. **事实只能来自答疑库**（命中后先整理成参考资料，模型用自己的话讲，**不照抄**）
 2. **不泄露内部信息** —— 过 `assertNoLeak`
-3. **格式硬约束** —— 单行、表情在结尾、只用标准表情组、总长 ≤1000
+3. **格式硬约束** —— 单行、只用标准表情组、总长 ≤1000（表情可句中可句尾，位置不限）
 
 ```bash
 node scripts/test-praise.mjs         # 9 条断言：只测「挑对象」+ 口吻/长度护栏
-node scripts/test-variants.mjs       # 12 条断言：泄露自检 + 分享识别
+node scripts/test-variants.mjs       # 20 条断言：泄露自检 + 分享识别 + 表情落位
 ```
 
 ## 兑换码：好友码 vs 天宫码（**两种码，两种态度，绝不能混**）
@@ -489,13 +506,18 @@ renderContext(ctx);                                      // 渲染成给模型�
 | **自己用** | `config.llm` 留空 | 自动复用 DSH 的模型配置（`~/.dsh/profiles/web/cordis.patch.yml` + `~/.dsh/.credentials.yaml`），跟着你在 GUI 里切的模型走 |
 | **给别人用** | 填 `config.llm.apiKey / baseURL / model` | 用自己的 Key，不碰 DSH 配置 |
 
-渠道按**实测快慢**排序：`volcengine-plan`（~5s）→ `minimax`（强制 thinking，30~90s）→ `kimi` → `ollama`。
-失败自动切下一条（429/超时/空正文都算失败）。
+**默认直接跟随 DSH 当前模型路由**（用户 2026-11-09）：
+- 读 `agent-default-model` → **当前默认模型排第一**，其余渠道按 DSH 配置里的原始顺序兜底
+- 代码里**不写任何具体模型名** —— 要换模型就在 DSH 里切，skill 自动跟随
+- 失败自动切下一条（429/超时/空正文都算失败），日志只报「渠道 N」，不打印模型名
 
-⚠️ 两个坑（踩过）：
-1. **MiniMax 的 content 块没有 `type` 字段**，先是 `{thinking, signature}` 再是 `{text}` ——
+> 想用自己的 Key（给别人用、不依赖 DSH）→ 填 `config.llm.apiKey / baseURL / model`，那条会排在最前面。
+> 主用户本人不用这条路，全靠 DSH 路由。
+
+⚠️ 两个坑（踩过，**换渠道时仍适用**，按 api 风格判断而不是按模型名）：
+1. **anthropic 风格的 content 块可能没有 `type` 字段**，先给 `{thinking, signature}` 再给 `{text}` ——
    只认 `type==='text'` 会把答案全丢掉（返回空）。
-2. **MiniMax 强制 thinking**（`thinking.type=disabled` 会被 400 拒），给少了 token 只拿到思考、正文为空。
+2. **部分 anthropic 风格渠道强制 thinking**（`thinking.type=disabled` 会被 400 拒），给少了 token 只拿到思考、正文为空。
    所以 anthropic 风格渠道统一给 8000 token 预算、150s 超时。
 
 ### 三道护栏（换了生成方式也不放松）
@@ -518,7 +540,7 @@ node scripts/test-summon.mjs           # 签名识别 + 护栏（模板断言已
 > 「当你夸了玩家，玩家回复你、要求互动，可进行回复」
 > 「『玩家回信要求互动』怎么判定？@你、回复你、喊你（大肥鱼等包括别名）」
 > 「但只是『哈哈谢谢』，不用回」
-> 「超过 3 次降概率：同一帖累计回复数；3 次后 50%；分同一帖内分别累积同一玩家」
+> 「超过 1 次降概率：同一帖累计回复数；1 次后 50%；分同一帖内分别累积同一玩家」
 > 「情绪强烈必回：长文本 / 直接 @ / 连续追问 / 情绪激动」
 > 「继续回复发在哪：如果在主贴上问，直接回复。如果贴内回复，在此回复的楼中楼下面；
 > 如果本身就是楼中楼，同层楼中楼，@目标玩家回复内容。」
@@ -546,11 +568,16 @@ node scripts/test-summon.mjs           # 签名识别 + 护栏（模板断言已
 
 | 该玩家在这帖被回过 | 行为 |
 |---|---|
-| < 3 次 | 直接回 |
-| ≥ 3 次 | 只有 **50%** 概率回 |
-| ≥ 3 次，但**情绪强烈** | **例外必回** |
+| < 1 次（还没回过） | 直接回 |
+| ≥ 1 次 | 只有 **50%** 概率回 |
+| ≥ 1 次，但**情绪强烈** | **例外必回——但只必回一次** |
 
 情绪强烈的四种例外：**长文本**（≥40 字）/ **直接 @我们** / **连续追问**（同一人 ≥2 次）/ **情绪激动**（在线等、急、崩溃…）。
+
+⚠️ **「必回」= 对这条回复内容必回一次，不是每次都回**（用户 2026-11-10）：
+例外只用来**突破 50% 概率**、不是用来突破去重。
+「这条回复内容回过一次」之后就不再入队、不再回 —— 凭据写在事件流水
+（`interact_reply` + `commentId` + 内容指纹 `hash`），`state.posts[id].interactReplied` 只当热缓存。
 
 ### 怎么发现「玩家回话了」
 
@@ -564,7 +591,7 @@ node scripts/test-summon.mjs           # 签名识别 + 护栏（模板断言已
 
 | 记在哪 | 内容 |
 |---|---|
-| `state.posts[id].interactReplied` | 已回应过的评论 ID（不重复回） |
+| `state.posts[id].interactReplied` | 已回应过的评论 ID（热缓存；持久凭据在 `post_event` 的 `interact_reply`） |
 | `state.posts[id].interactCounts` | 每个玩家在这帖被回过几次（降概率用） |
 | `state.posts[id].interactAt` | 最近一次接话时间 |
 
@@ -575,7 +602,7 @@ node scripts/test-summon.mjs           # 签名识别 + 护栏（模板断言已
   "enabled": true,
   "maxPerPost": 1,        // 每帖每次最多回几条
   "maxPerRun": 3,         // 单轮上限
-  "samePlayerLimit": 3,   // 同帖同玩家回过这么多次后降概率
+  "samePlayerLimit": 1,   // 同帖同玩家回过这么多次后降概率（1 = 第二次起 50%）
   "probabilityAfterLimit": 0.5,
   "checkEveryMinutes": 30
 }
@@ -619,14 +646,133 @@ node scripts/test-variants.mjs       # 泄露自检（模板断言已删）
 - **只说话，不输出信息**：不引用答疑库、不评价具体数值、不给攻略（避免说错）
 - **必须排除不该插话的类型**：兑换码 / 组队 / 满勤 / 招募 / 出售账号 / 教程攻略
 - **涉维权/损失的不凑热闹**：帖子含 退款/客服/补偿/封号/举报/充值/消费/损失/申诉/投诉 → 不互动（让版主判断）
-- 单轮上限 `share.maxPerRun`（默认 2），同一帖只互动一次（记在 `state.posts[id].shareCommented`）
+- 单轮上限 `share.maxPerRun`（默认 2），**同一帖只互动一次**
+  （`state.posts[id].shareCommented` **或** 事件流水里的 `share_reply`，任一命中就不再互动。
+  只信 state 会翻车 —— 那条记录会被搬进 SQLite，见硬约束 56）
 - 分享帖**不读评论、不沉淀问答**（它不是答案来源）
 
 配置：
 
 ```json
-"share": { "enabled": true, "signature": false, "maxPerRun": 2 }
+"share": { "enabled": true, "signature": true, "maxPerRun": 2 }
 ```
+
+## 纯情绪帖：只想要个回应，去陪一句（2026-11-10）
+
+用户原话：「这种的为什么不安慰一下？去安慰一下。」
+
+两种帖子会掉进缝里 —— **答疑库答不了、又没有分享特征**，于是双双进了「🖐 需人工」，
+一句话都没人回：
+
+| 帖子 | 卡在哪 |
+|---|---|
+| 《我无疑是绝望的。。。》任务差一点没完成 | 没有疑问词但长度够 → 兜底判成**提问**；答疑库不命中 → 需人工 |
+| 《我想知道玩这个游戏的...》被谐音脏话昵称恶心到 | 带「什么…吗」→ 判成**提问**；答疑库不命中 → 需人工 |
+
+分享轻互动只对「非提问」生效（`reason === NOT_QUESTION`），所以判成提问之后**分享通道也进不去了** ——
+两头都不占。这就是缺口。
+
+现在有第三条通道（`collect.mjs` 第 3d-2 步）：
+
+```
+判定 looksLikeEmotion(title+正文) → composeReply({kind:'comfort'}) → 一级回复
+```
+
+**能认的**：绝望 / 难受 / 憋屈 / 心疼 / 寒心 / 破防 / 崩溃 / 麻了 / 不想玩 / 弃坑 /
+白肝 / 白玩 / 可惜 / 太亏 / 血亏 / 气死 / 恶心 / 膈应 / 窝火 / 想哭 / 不甘心 / 就差 / 差一点 / 白费
+
+**不碰的**（任一命中就 return false）：
+
+| 排除 | 为什么 |
+|---|---|
+| 退款/客服/补偿/封号/举报/充值/消费/损失/维权/申诉/投诉 | 涉维权 → 让版主判断，不给平台表态的机会 |
+| 加好友/好友位/好友码/扩列/互加/互赞/`JFA`+7/`and|ios`+8 | 走各自的通道 |
+| **求解型疑问词**：怎么/如何/咋办/怎么办/咋打/咋过/能不能/可不可以/值得/哪个/哪一/多少/求助/大佬/有没有/推荐 | 那是真提问，让答疑通道处理，别抢话 |
+
+> ⚠️ 排除求解词**不能**直接用 `looksLikeQuestion()` —— 《我想知道玩这个游戏的...》
+> 表面是问句、实质是吐槽，用整可用判定会把真该安慰的也排掉。只认「求解型」词。
+
+### 一帖一次，之后按正常互动续聊
+
+用户原话：「『纯情绪帖』一帖一次。如果楼主继续回复，按照正常回复逻辑判断回复。
+可继续针对回复内容回复。（注意：1、识别自己，2、玩家对话是不是自己。）」
+
+| 阶段 | 谁处理 | 去重键 |
+|---|---|---|
+| 第一次开口 | 第 3d-2 步（安慰通道） | 事件流水 `comfort_reply` —— **一帖一次** |
+| 楼主再回复 | 第 3f 步（互动续聊） | 事件流水 `interact_reply` + `commentId` + 内容指纹 |
+
+两条链**互不影响**：`comfort_reply` 和 `interact_reply` 是不同 kind，安慰过不代表互动过。
+
+两个必须站稳的点：
+
+1. **识别自己** —— 我们发的那条安慰要能被认成「我们说的」。
+   `lib/signature.mjs` 的 `isOurComment` 按 `myUserId` + 签名结尾双重判定；
+   安慰回复虽然不带签名（`comfort.signature: false`），但作者 id 就是 `myUserId`，照样认得出。
+   玩家在那条下面回 → `parentId` 落在 `ourCommentIds` 里 → 判「回复你」→ 进互动候选。
+2. **玩家是不是在跟我们说话** —— `pickInteractions` 的三个信号：@我们 / 回复我们的评论 / 喊我们。
+   纯客套（「哈哈谢谢」）不算；情绪强烈（长文本 / 直接点名 / 连续追问 / 情绪激动）必回，但**只必回一次**。
+
+```
+我们：差一点没完成的那种最憋屈…别太自责[表情_加油]
+  └ 楼主：谢谢啊，就是有点不甘心            ← 纯客套，不回
+  └ 楼主：主要是最后那个任务要三连打，我漏了一次  ← 有内容，回（且按这条 commentId 去重）
+```
+
+配置：
+
+```json
+"comfort": { "enabled": true, "signature": true, "maxPerRun": 2 }
+```
+
+```bash
+node scripts/test-comfort.mjs   # 27 条断言：两条真实帖认得出来 / 8 类不碰 / 一帖一次 / 与互动互不误伤
+```
+
+## 签名：**默认必带，而且只由脚本加一次**
+
+用户 2026-11-10：
+
+> 「我刚刚让回的，你没带签名。注意，默认需要携带签名（在 LLM 后可以通过脚本添加）。」
+> 「注意 LLM 就不带签名了，要不然重复。」
+
+### 职责分工（这条别改）
+
+| 谁 | 做不做签名 |
+|---|---|
+| **LLM** | **不写**。提示词里明令「只写正文，签名由脚本追加」；万一模型还是写了，`sanitize()` 会把它剥掉 |
+| **脚本** | **加一次**。`clampReply()` 里 `!s.includes(sig)` 保证「已经有了就不再补」 |
+
+三条落地路径，覆盖所有回复出口：
+
+| 出口 | 在哪加 |
+|---|---|
+| 一级回复 `replyOne` | `replier.mjs` → `clampReply(text, {signature})` |
+| 楼中楼 `replyToComment`（夸奖 / 喊话 / 互动续聊） | `reply-nested.mjs` → `clampReply(text, {signature})` |
+| **手动发** `api-write.mjs reply|child` | `withSignature()`（`--no-signature` 才是例外） |
+
+> ⚠️ 2026-11-10 踩到的就是第三条：两条安慰是**手动**用 `api-write.mjs` 发的，
+> 那条路当时绕过了 `clampReply`，所以整条回复一个签名都没有。
+> `compose-reply.mjs` 也不再自己拼签名 —— 它拼的话，发送层再补一次就可能出现重复。
+
+签名原文在 `config.reply.signature`（`「版主助手-小鲸鱼」`）；`share.signature` / `comfort.signature`
+现在都是 `true`，实际生效的永远是上面那三处，改动它们不会改变行为。
+
+### 表情位置：**不限**（2026-11-10）
+
+用户原话：「表情位置不要求。可以放中间。」
+
+| 情形 | 谁决定 | 结果 |
+|---|---|---|
+| 模型自己写了 `[表情_xx]` | 模型 | **原地保留**（句中/句尾都行） |
+| 模型没写 | `applyEmojiPlacement()` 按情绪补一个 | 补在**结尾** |
+| 模型写了个 emoji-map 里没有的名字 | 脚本剔掉 | 剔掉后按「没写」处理，补一个合法的 |
+
+为什么必须剔掉未知表情：UI 兜底路径（`applyEmojis` 点选）插不进去会**整条转人工**，
+不如直接换成一个确定能用的。
+
+签名与表情的先后：`clampReply` 把签名插在**结尾表情之前**，
+所以最常见的样子是 `正文 「版主助手-小鲸鱼」[表情_加油]`。
 
 ## 多人协作：按**签名**识别「这帖回过没」
 
@@ -717,7 +863,8 @@ node scripts/test-variants.mjs       # 泄露自检（模板断言已删）
 2. **不替官方承诺**（`assertKind` 禁词：保证/一定修/会补偿/内部消息/包过…）
 3. **不泄露内部机制**（`assertNoLeak`）
 
-另外：文案**必须单行**（楼中楼 `fill` 不支持多行），表情放句尾，总长 ≤1000（`clampReply`）。
+另外：文案**必须单行**（楼中楼 `fill` 不支持多行），**表情位置不限**（句中、句尾都可以），
+总长 ≤1000（`clampReply`）。
 
 > ⚠️ 这三道是**最后一道**。换了 LLM 生成更要守 —— 模型同样会越界（尤其爱替官方下结论）。
 
@@ -751,7 +898,7 @@ node scripts/test-variants.mjs       # 泄露自检（模板断言已删）
 已回应过的评论记在 `state.posts[id].summonReplied`，报表里能看到「本轮喊话互动」明细。
 
 ```bash
-node scripts/test-summon.mjs   # 21 条断言：签名识别 + 喊话判定 + 护栏
+node scripts/test-summon.mjs   # 33 条断言：签名识别（含同形态/独立成段两种）+ 喊话判定 + 护栏
 ```
 
 ## 版主管理任务：加好友帖 → 回固定文案 → 移除
@@ -1010,7 +1157,8 @@ node scripts/test-question.mjs      # 期望 ✓ 38/38 全部通过
 **失败不无限重试** —— 达到 `praise.maxFailRetries`（默认 3）就不再试这一条；
 主通道现在是接口（`create-child`，参数 `parent_id`），UI 只作兜底。
 
-**长度护栏**（`test-praise` 有断言）：夸奖单行、≤30 字（渲染后）、带口语特征、表情在结尾。
+**长度护栏**（`test-praise` 有断言）：夸奖单行、≤30 字（渲染后）、带口语特征。
+表情位置不限（句中、句尾都行），但**最多 1 个**。
 （早年的「模板必须带 `{name}`、字面量 ≤13 字」那套断言随模板一起删了 —— 现在没有模板了。）
 
 配置：
@@ -1066,12 +1214,14 @@ node scripts/test-praise.mjs        # 14 条断言（挑对象 + 口吻/长度�
 | `scripts/test-cold-store.mjs` | **冷热分离回归测试**（42 条断言）：分类、按类别 TTL、冷藏条件、唤醒规则（自己的帖有人回 / 别人的帖@我或呼唤我 / 普通闲聊不唤醒） |
 | `scripts/test-interact.mjs` | **互动续聊回归测试**（37 条断言）：纯客套排除、情绪强烈例外、候选挑选（@你/回复你/喊你）、同帖同玩家降概率、回复层级、计数累加 |
 | `scripts/test-publish-mask.mjs` | **发布脱敏回归测试**（26 条断言）：遮罩规则、答疑库只遮「摘自昵称/好友码/天宫码」、evidence 只遮「本机用户名/码/@昵称」、正文与来源链接不动、幂等 |
-| `scripts/test-variants.mjs` | **回复变体 + 泄露自检 + 分享识别回归测试**（12 条断言），改文案规则前后必跑 |
+| `scripts/test-watch-queue.mjs` | **守护队列入队回归测试**（33 条断言）：三源（created/commented/通知）都能入队、点赞不入队、只重排不删、超过 10 条不截断、上限 200、needsComments 标记 |
+| `scripts/test-comfort.mjs` | **纯情绪帖安慰通道回归测试**（27 条断言）：两条真实事故帖认得出来、8 类一律不碰（维权/加好友/寻码/真提问…）、一帖一次（凭据落事件流水）、不误伤互动与分享通道 |
+| `scripts/test-variants.mjs` | **泄露自检 + 分享识别 + 表情落位回归测试**（20 条断言），改文案规则前后必跑 |
 | `scripts/test-match.mjs` | **匹配打分回归测试**（18 条断言）：该命中的命中、不该命中的不命中 |
 | `scripts/test-summarize.mjs` | **沉淀/有效回答回归测试**（27 条断言，含「不能把我自己的评论沉淀成答案」） |
 | `scripts/test-archive.mjs` | **归档回归测试**（17 条断言） |
 | `scripts/test-qa-health.mjs` | **答疑库体检回归测试**（35 条断言）：标签识别、只认正文、默认不写、移动不删除、24h 频率 |
-| `scripts/test-summon.mjs` | **签名识别 + 喊话互动回归测试**（21 条断言）：我们回过 vs 玩家喊我们、喊话判定、护栏 |
+| `scripts/test-summon.mjs` | **签名识别 + 喊话互动回归测试**（33 条断言）：我们回过 vs 玩家喊我们、喊话判定、护栏 |
 | `scripts/report-gaps.mjs` | **答疑库缺口报表** → `reports/gaps.md`：没命中库的提问 + 高频主题词，告诉你该补什么 |
 | `scripts/qa-admin.mjs` | **答疑库管理 CLI**：`show/append/keywords/register/rebuild/backup` + **`purge-tag`（剔除携带自己标签的条目）** + **`purge-junk`（剔除广告/灌水等垃圾条目）** |
 | `scripts/post-admin.mjs` | **帖子工具 CLI**：`fetch/mark-replied/reset-praised/reset-share/cleanup/diag/recheck` + **`check-removed`（查帖子还在不在版块里）** |
@@ -1085,7 +1235,10 @@ node scripts/test-praise.mjs        # 14 条断言（挑对象 + 口吻/长度�
 | `scripts/test-qa-vector.mjs` | **向量检索回归测试**（21 条断言）：召回、不相关问题低分、dense 失败自动退回 |
 | `scripts/test-post-records.mjs` | **记录层回归测试**（24 条断言）：逐行 upsert、幂等、搬库不误伤待回复/需人工 |
 | `scripts/test-removed-list.mjs` | **清单工具回归测试**（20 条断言）：时间解析、闭区间过滤、好友码提取与去重 |
-| `scripts/publish-repo.mjs` | **脱敏发布**：把运行中的 skill 同步到 GitHub 仓库（config 脱敏 + 个人信息扫描） |
+| `scripts/doctor.mjs` | **一键自检**（只读）：环境 / 配置 / 浏览器桥接 / 答疑库 / LLM 渠道 / 分层唤醒 / 冷热分类 / 互动续聊，11 段 |
+| `scripts/install.mjs` | **一键安装**：检查环境、补全 config、建目录、跑 doctor |
+| `scripts/qa-sync.mjs` | **答疑库双副本合并**：`--status` / `--to-repo` / `--to-runtime`（`--apply` 才写） |
+| `scripts/publish-repo.mjs` | **脱敏发布**：把运行中的 skill 同步到 GitHub 仓库（config / 答疑库 / evidence 三处脱敏 + 个人信息扫描 + 覆盖度校验） |
 | `scripts/probe-dom.mjs` | **DOM 探针**：`comment/editor/emoji/watch/eval`（TapTap 改版时校准选择器用） |
 | `scripts/restore-qa.mjs` | **答疑库还原**：`--restore` 用备份回退（每轮自动备份） |
 | `scripts/schedule.ps1` | **计划任务管理**：`-Action install/doctor/status/start/stop/uninstall` |
@@ -1116,6 +1269,7 @@ node scripts/test-praise.mjs        # 14 条断言（挑对象 + 口吻/长度�
 | `notify.mjs` | **通知**（回复和@我收到的）：解析帖子/评论 id + 判断「是不是在叫我」 |
 | `interact.mjs` | **互动续聊判定**：@你/回复你/喊你 → 候选；纯客套排除；同帖同玩家降概率；情绪强烈必回；定回复层级 |
 | `interact-send.mjs` | **互动续聊发送**：楼中楼执行 + 记账（`interactReplied` / `interactCounts`），与喊话通道分开 |
+| `watch-queue.mjs` | **守护队列入队**：把通知（回复/@/呼唤）里的帖子并入队列（不管在不在最新 10 条），只重排不删 |
 | `summon.mjs` | **只剩护栏** `assertKind`（不贬低 / 不替官方承诺）—— 模板池已删 |
 | `summon-send.mjs` | 发送喊话楼中楼回复（复用 `reply-nested.mjs`）+ 记账防重复 |
 | `mod-task.mjs` | **版主管理判定**：强/弱/排除词表 + 邀请码识别（`detectFriendRequest`） |
@@ -1129,6 +1283,8 @@ node scripts/test-praise.mjs        # 14 条断言（挑对象 + 口吻/长度�
 | `state.mjs` | 状态库（四类标记 + 防重复） |
 | `report.mjs` | 生成 `questions.md` / `.csv` |
 | `paths.mjs` | 配置加载 + `{{SKILL}}` 路径占位解析 |
+| `praise-send.mjs` | 发送夸奖楼中楼 + 记账（`praisedComments` / `praiseFailCount`） |
+| `mod-report.mjs` | **版主任务报表** → `reports/mod-tasks.md`（待人工移除清单 / 队列 / 已移除） |
 
 常用参数：
 
@@ -1184,7 +1340,7 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 我在别人答案下面盖的夸奖楼永远得分最高，被当成「最佳答案」沉淀进库，库里的「答案」变成了：
 
 ```
-「回忆之旅乱码」   → 答案 = 「依星&寻梦 说得又准又细，省了大家很多摸索 「版主助手-小鲸鱼」」
+「回忆之旅乱码」   → 答案 = 「某玩家 说得又准又细，省了大家很多摸索 「版主助手-小鲸鱼」」
 「这地形和这关卡名字」→ 答案 = 「g 说得又准又细，省了大家很多摸索」
 「私人拖尾」       → 真实答案 + 「补充：谢谢 123 耐心解答，正是新手需要的那种答案…」
 ```
@@ -1216,7 +1372,16 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 ## 硬约束（踩过的坑）
 
 1. **官方无写接口**。`taptap-cli` 的 `community-management` 是纯只读，官方 skill 原文：「要发帖、回帖、置顶、加精、删除或处理内容 → CLI 不支持写」。所以回复只能靠 `opencli` 驱动真实浏览器模拟点击。
-2. **WAF 限流**。匿名接口被探测过密会返回 `<meta name="aliyun_waf_aa">`（HTTP 200 但内容是 HTML），**IP 级封禁实测持续 >25 分钟**。因此默认 10 分钟一轮、页间隔 ≥1.5s，**别把间隔调小、别反复重启**。
+2. **WAF 限流 —— 而且它不会自己恢复**（用户 2026-11-06 明确纠正）：
+   匿名接口探测过密会返回 `<meta name="aliyun_waf_aa">`（HTTP 200 但内容是 HTML）。
+   ⚠️ **没有自动解封时间，必须人工到浏览器完成人机验证才能解除。**
+   所以代码里：**一被拦就落熔断标记（`data/waf-blocked.json`）+ 不再重试**
+   （重试只会继续撞、还可能加重封禁）；feed 两个源整体停掉，只留走页面上下文的通知源。
+   人工验证通过后：`node scripts/waf.mjs test` → `node scripts/waf.mjs clear`。
+   - 每轮检查要打请求，所以**三源错峰**：created 300s / commented 900s / notify 120s
+     （notify 走页面上下文带 Cookie，不占匿名 IP 配额）
+   - 所有匿名请求统一 **0.3s 最短间隔**（`lib/http.mjs` 的 throttle），别连珠炮
+   - **别把间隔调小、别反复重启进程** —— 每次重启都会重新打一轮请求
    - ⚠️ 2026-11-02 起改成 **2 分钟检查 + 队列**（用户要求「加快处理，尝试 WAF 边界」）。代价要清楚：检查 1 次请求 + 每条处理 1~2 次请求，被拦会自动退避。**别再把队列重复入队的 bug 留着** —— 那等于每 2 分钟把同一批帖重扫一遍，最招 WAF（见下方第 9、10 条）。
 3. **`limit` 最大 10**；排序由**接口参数** `sort` 决定，不要在客户端自己排：
    - `sort=created` → **按发布时间严格降序**（本 skill 默认，用它取「最新 N 条」）
@@ -1246,7 +1411,8 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
     - 真实鼠标点图标有效；点外层 div 无效，要点里面的 `svg`/`path`
 18. **表情面板是页面级 portal**（`.tap-editor-emoji__popover`），**不在评论项里**。查找面板和表情图片必须**全页找**，scope 到评论项会永远返回空。
 19. **表情按钮要派发 mousedown→mouseup→click**，且触发点是 `span.tap-popover__trigger-wrap`（不是 `label`）。纯 `.click()` 不开面板。楼中楼工具栏 3 个按钮 = **@ 提及 / 表情 / 图片** —— **绝不点 @ 按钮**（会在文案里插 @）。
-20. **楼中楼 `fill` 不支持多行**（含 `\n\n` 会把内容清空）。夸奖文案必须单行，表情放句尾。
+20. **楼中楼 `fill` 不支持多行**（含 `\n\n` 会把内容清空）。文案必须单行；
+    **表情位置不限**（句中、句尾都行，`applyEmojis` 从后往前按位置插）。
 21. **接口的 `child_posts` 不返回被折叠的楼中楼回复**（页面上要点「展开剩余 N 条回复」才看得到）。所以「接口查不到」≠「没发出去」—— 曾因此重复发了一条。**判据用浏览器侧：草稿已清空 + 展开后页面里能搜到文案**。
 22. **校验别拿整条评论的 innerText 当证据** —— 里面包含输入框草稿，会造成「假核验」（曾报「已核验内容」其实没发出去）。只认回复列表里的文字。
 23. **回复有长度上限：1000 字符**（帖子标题 30 / 内容 50000）。超长会被平台拒，发送前统一过 `clampReply()` 裁一刀，**签名和表情必须保住**。
@@ -1305,13 +1471,53 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
     要是也拿去判「他人已回复 → 沉淀」，就会把「加好友呀」这种垃圾写进库里。
     2026-10-29 实测踩到，一轮就把 2 条广告写进了答疑库，已剔除归档。
 49. **互动续聊：只接「有内容的回应」**（用户 2026-11-05）。判定口径 = **@你 / 回复你 / 喊你**（含别名）；
-    纯客套（「哈哈谢谢」）**不回**。计数单元 = **同一帖 × 同一玩家**：该玩家在这帖被回过 3 次后，
+    纯客套（「哈哈谢谢」）**不回**。计数单元 = **同一帖 × 同一玩家**：该玩家在这帖被回过 1 次后，
     回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」**例外必回**。
     回在哪：贴内回复 → 该回复的楼中楼；本身就是楼中楼 → 同层楼中楼并 @ 对方。
 50. **楼中楼回复不一定改顶层评论数** —— 只看「评论数变了没」会漏掉玩家的回信。
     互动信号走**通知接口**（`/notification/v2/by-me?type=7`），标记在 `state.interactPending`。
 51. **好友意图的「移除」动作已关闭**（用户 2026-11-05）：识别照常、回复照常，帖子**不移除**。
     开关 `config.modTasks.friendRequest.removeEnabled`（默认 false）→ 改回 true 就恢复移除。
+52. **时间戳单位陷阱**（2026-11-06 真踩到，日志里出现「凉 20743 天」）：
+    TapTap 接口给的 `publish_time` / `commented_time` 是**秒**（10 位），而 `Date.now()` 是**毫秒**（13 位）。
+    直接相减会得到「凉了 2 万年」→ **所有帖子一律被判超期、全部误冷藏**。
+    算天数前先归一：`const ms = raw > 1e12 ? raw : raw * 1000;`；冷库存**秒级原值**，别混着存两种单位。
+53. **测试里不要写死配置值**。`test-cold-store` 曾把手写的旧 TTL（friend 3 天等）当断言，
+    结果配置改成 1 天后测试还在按旧值验 —— 改成**从 `scripts/config.json` 读真实值**再断言。
+54. **队列要看三个来源，不能只看「最新 10 条」**（用户 2026-11-06）：
+    「通知（回复、@、呼唤）驱动的帖子也要入队…而且获取论坛帖子流，也可以切换 sort
+    （`created` 发布时间降序 / `commented` 回复时间 / `default` 推荐），获取入队信息。」
+    → 三源：`sort=created`（新帖）+ `sort=commented`（老帖又有人回）+ 通知接口 type=7（回复我/@我/呼唤我）。
+    合并去重后**只重排、不删**，队列可超过 10 条（上限 200）；通知入队的项带 `needsComments=true`
+    强制读评论。只遍历 created 的话，滑出前 10 条的通知帖**永远进不了队列**。
+55. **不许用「评论数变了」判断「有没有人回我」**（用户 2026-11-10 明确纠正）：
+    「不要用统计数量来确认回复，我已经提供『通知-@/回复』接口了。」
+    我们自己发一条回复 → 评论数 +1、`commented_time` 刷新 → 这帖立刻回到「有人回帖了」的状态，
+    **自己喂自己**。`considerItem` 里那条 `scannedComments !== commentCount` 判据已删除；
+    「有没有人回我」只认通知接口（type=7：回复我 / @我 / 呼唤我）——
+    它精准，而且我们自己发的回复不会给自己产生通知，天生不会自我循环。
+56. **「一帖只做一次」的凭据必须落在 `post_event`，不能只写在 `state.posts[id]`**（2026-11-10 真事故）：
+    一条分享帖《终于拿到猕猴桃超装了！！！》在 10 小时里被我们回复了 **29 次**
+    （15 分钟一条，正好是 `commented` 源的节奏）。成因是三件事叠在一起：
+    ① 分享互动的幂等标记 `shareCommented` 只写在 state；
+    ② 那条记录早被 `pruneStatePosts` 搬进 SQLite，`state.posts[id]` 已经不存在；
+    ③ 自己的回复让评论数变化 → 重新入队（现在已按第 55 条删除该判据）。
+    所以：分享互动 / 夸发码 / 夸奖 / 互动续聊 / 喊话，成功发送后都要 `markDoneEvent()`
+    写一条事件（`share_reply` / `code_praise` / `praise_reply` / `interact_reply` / `summon_reply`），
+    判定时用 `hasDoneEvent()` 双查（state **或** 事件流水）。事件流水是追加写、不参与剪枝，搬库不影响。
+    互动类的匹配键是**被回复的那条评论 id**（`{key:'commentId'}`）——「这条回复内容回过一次就不回第二次」。
+57. **`isHandled` 要认 `qa_status`**：答疑侧终态写在 `qa_status`（`replied/no_need/manual`），
+    管理任务那一列 `status` 对分享帖只是 `scanned`。只认 `status` 的话，
+    记录一搬库就判「没处理过」→ **又当新帖入队**。两个都算才算挡住。
+    补数据用 `node scripts/post-admin.mjs mark-done <momentId> <kind> [--comment <id>]`。
+58. **签名默认必带，而且只由脚本加一次**（用户 2026-11-10）：
+    「默认需要携带签名（在 LLM 后可以通过脚本添加）」+「LLM 就不带签名了，要不然重复」。
+    LLM **只写正文**（提示词里明令，`sanitize()` 还会剥掉模型自己写的）；
+    签名统一在发送层加：`replyOne` / `replyToComment` 走 `clampReply(..., {signature})`，
+    手动发的 `api-write.mjs reply|child` 走 `withSignature()`（`--no-signature` 才是例外）。
+    `clampReply` 的 `!s.includes(sig)` 保证不会补第二次。
+    ⚠️ 要是哪天发现某条回复**没有签名**，先看它是不是绕过了这两个出口 ——
+    2026-11-10 那两条安慰就是这么漏的（手动用 api-write 发，当时那条路没接 `clampReply`）。
 
 ## 排障
 

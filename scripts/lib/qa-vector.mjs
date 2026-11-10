@@ -167,6 +167,25 @@ export function cosine(a, b) {
 }
 
 /**
+ * 稀疏向量（token → 归一化词频），直接序列化成普通对象
+ *
+ * 用途：把一段文本变成 `{token: weight}`，存进 SQLite 的 TEXT 列（冷库 / 夸奖沉淀都用）。
+ * 为什么放在这里：原来 `cold-store.mjs` 和 `praise-store.mjs` **各抄了一份 vectorize**，
+ * 算法一模一样（同一套 tokenize + L2 归一化）—— 改一处忘另一处就会两套向量混不到一起。
+ * 2026-11-06 收敛到这一份实现。
+ */
+export function sparseVector(text) {
+  const tf = new Map();
+  for (const t of tokenize(String(text || ''))) tf.set(t, (tf.get(t) || 0) + 1);
+  let sum = 0;
+  for (const w of tf.values()) sum += w * w;
+  const norm = Math.sqrt(sum) || 1;
+  const out = {};
+  for (const [k, w] of tf) out[k] = Number((w / norm).toFixed(6));
+  return out;
+}
+
+/**
  * 查询覆盖率：这句提问有多少「被这条答疑解释掉」了
  *
  * 为什么不能只用余弦：提问很短（十几个 n-gram），文档很长（问法+关键词+答案上百个 token），

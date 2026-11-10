@@ -8,20 +8,20 @@
 //   node scripts/collect.mjs --top 20      # 覆盖配置里的 N
 
 import { loadConfig, argvOf, sleep, SKILL_ROOT } from './lib/paths.mjs';
-import { listFeed, listComments, extractText, MOMENT_URL, WafBlocked } from './lib/http.mjs';
+import { listFeed, listComments, extractText, MOMENT_URL, WafBlocked, setPageFetcher } from './lib/http.mjs';
+import { createPageFetcher } from './lib/page-fetch.mjs';
 import { isOurComment, isSummonText, teamUserIdsOf, commentText } from './lib/signature.mjs';
 import { assertKind } from './lib/summon.mjs';
 import { sendSummonReply } from './lib/summon-send.mjs';
 import { pickInteractions, decideInteraction, replyTargetFor, playerKey } from './lib/interact.mjs';
 import { sendInteractReply } from './lib/interact-send.mjs';
-import { loadQaLibrary, looksLikeQuestion, looksLikeShare } from './lib/qa.mjs';
+import { loadQaLibrary, looksLikeQuestion, looksLikeShare, looksLikeEmotion } from './lib/qa.mjs';
 import { openDb } from './lib/db.mjs';
-import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned } from './lib/post-records.mjs';
+import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
 import { buildThreadTree } from './lib/thread-context.mjs';
 import { composeReply as composeLlmReply, condenseMaterial } from './lib/compose-reply.mjs';
-import { archiveToCold, wakeByNotifications, isCold } from './lib/cold-store.mjs';
-import { listNotifications, isAboutMe, ourNames } from './lib/notify.mjs';
+import { archiveToCold, isCold, markWoken } from './lib/cold-store.mjs';
 import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
 import { classify } from './lib/classify.mjs';
@@ -29,6 +29,7 @@ import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { getTapApi } from './lib/taptap-api.mjs';
 import { parseEmojiSegments } from './lib/emoji.mjs';
 import { buildQaEntry, appendQaEntry } from './lib/summarize.mjs';
+import { refineConfidence } from './lib/cross-check.mjs';
 import { pickPraiseTarget } from './lib/praise.mjs';
 import { sendPraise } from './lib/praise-send.mjs';
 import { assertNoLeak } from './lib/variants.mjs';
@@ -40,6 +41,9 @@ import { shouldHealthCheck, purgeTagged, tagsFromConfig } from './lib/qa-health.
 
 const argv = process.argv.slice(2);
 const { has, argOf } = argvOf(argv);
+
+/** 页面通道是否已尝试注入（进程内只做一次） */
+let PAGE_READY = false;
 
 /**
  * 摊平评论树（含楼中楼），保留父评论 id
@@ -201,8 +205,22 @@ async function fetchMomentItem(id, { config }) {
   }
 }
 
-export async function runOnce({ doReply = false, dryRun = true, top = null, only = null, quiet = false } = {}) {
+export async function runOnce({
+  doReply = false,
+  dryRun = true,
+  top = null,
+  only = null,
+  quiet = false,
+  forceComments = false,
+} = {}) {
   const config = await loadConfig();
+  // 页面上下文通道（带登录 Cookie）—— 匿名接口被 WAF 拦时的唯一出路。
+  // 惰性注入 + 只注入一次（进程内复用）。
+  if (!PAGE_READY) {
+    PAGE_READY = true;
+    const pf = createPageFetcher({ config, log: quiet ? () => {} : console.log });
+    if (pf) setPageFetcher(pf);
+  }
   const qa = await loadQaLibrary(config.paths.qaFile);
   const usage = await loadUsage(config.paths.usageFile);
   const state = await loadState(config.paths.stateFile);
@@ -417,6 +435,15 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
       replyCount: commentCount,
     };
 
+    // 通知触发的帖（watch 入队时带 needsComments → runOnce 的 forceComments）如果已在冷库 → 就地唤醒
+    //   用户 2026-11-06：通知（回复/@/呼唤）驱动的帖子也进队列；唤醒不再靠 collect 定时扫通知
+    //   ⚠️ 2026-11-09 修：这里原来写的是 `fromNotify`（根本没定义），
+    //      导致每条帖处理都抛 `fromNotify is not defined` → 队列永远清不空。参数名是 forceComments。
+    if (forceComments && postDb && isCold(postDb, id)) {
+      markWoken(postDb, id, '通知触发（watch 入队）');
+      log(`  [唤醒] ${id} 由通知触发 → 从冷库搬回热数据`);
+    }
+
     // 2a. 读评论：判断「我们回过没 / 别人回过没 / 有谁在喊我们」
     //
     // ⚠️ 「回过没」改成**按签名识别**（用户 2026-10-29 要求）：
@@ -429,13 +456,16 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
     // 非提问帖以前不读评论；为了抓「喊话」也要读，但只在评论数变了/上次没回完时才读，别每轮白打接口
     // ⚠️ interactPending：通知里有人说「回复了我 / @我」→ 这一帖必须重新读评论
     //    （楼中楼回复不一定改顶层评论数，光看 commentsChanged 会漏掉）
-    const interactPending = Boolean(prev?.interactPending);
+    //    两个来源都看：帖子级标记 + 全局表（通知里的老帖可能**不在 state.posts 里**）
+    const interactPending =
+      Boolean(prev?.interactPending) || Boolean(state.interactPending?.[String(id)]);
     const needComments =
       commentCount > 0 &&
       ((looksQ
         ? isNew || !(prev?.replied && prev.reason === REASON.ALREADY_REPLIED) || commentsChanged
         : summonOn && (commentsChanged || prev?.summonPending === true)) ||
-        interactPending);
+        interactPending ||
+        forceComments);
     let comments = null;
     // 三层树（帖子 → 一级回复 → 楼中楼）：回复生成要用它作为上下文（2026-11-04）
     let threadTree = null;
@@ -468,14 +498,23 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
         // 上下文（用户 2026-11-02）：玩家喊我们时，要能「看懂这一楼在聊什么」再回话。
         //   包含：帖子标题 + 正文 + 其他玩家的一级回复 + 楼中楼。
         const ctx = buildPostContext({ post, flat, config });
+        // 幂等门（持久）：这些评论我们**已经回过**了就不再进候选 ——
+        // state.posts[id].summonReplied / interactReplied 会随记录搬库而消失，
+        // 只靠它会出现「同一条回复被反复回」（2026-11-10 事故）。
+        const repliedByEvent = (kind, commentId) =>
+          hasDoneEvent(postDb, id, kind, { key: 'commentId', value: commentId });
         post.summonCandidates = summonOn
-          ? pickSummons(flat, { config, teamIds: TEAM_IDS, prev, context: ctx })
+          ? pickSummons(flat, { config, teamIds: TEAM_IDS, prev, context: ctx }).filter(
+              (x) => !repliedByEvent('summon_reply', x.commentId)
+            )
           : [];
         // 互动续聊候选（用户 2026-11-05）：**@你 / 回复你 / 喊你** → 可以继续互动；
         // 纯客套（「哈哈谢谢」）自动排除。
         const ourIds = new Set(ours.map((x) => String(x.c?.id_str || '')).filter(Boolean));
         post.interactCandidates = interactOn
-          ? pickInteractions(flat, { config, ourCommentIds: ourIds, prev })
+          ? pickInteractions(flat, { config, ourCommentIds: ourIds, prev }).filter(
+              (x) => !repliedByEvent('interact_reply', x.commentId)
+            )
           : [];
         await sleep(config.collect.commentDelayMs ?? 1500);
       } catch (e) {
@@ -549,6 +588,21 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
           signature: config.reply?.signature || '',
         });
         if (entry) {
+          // 语义交叉验证（用户 2026-11-06）：
+          //   「如果玩家回答与官方一致，也视为可信 → 复用其可信度」
+          //   「与已有答疑重复，也复用其可信度」
+          //   ⚠️ 比的是**含义**，不是文字 —— 所以放这里用 LLM 判（lib/cross-check.mjs）。
+          //   LLM 不可用时降级为文字相似度，并在 crossNote 里标明。
+          try {
+            const cc = await refineConfidence({ config, entry, known: qa, log });
+            if (cc.confidence !== entry.confidence) {
+              log(`  [可信度] 《${String(entry.question).slice(0, 20)}》${entry.confidence}% → ${cc.confidence}%（${cc.how}）`);
+              entry.confidence = cc.confidence;
+            }
+            if (cc.note) entry.crossNote = cc.note;
+          } catch (e) {
+            log(`  [可信度] 语义校验失败（${e.message}）→ 用初判 ${entry.confidence}%`);
+          }
           const r = await appendQaEntry(config.paths.qaFile, entry);
           if (r.added) {
             const st = statOf(usage, entryKeyOf(entry.question), { source: entry.source });
@@ -571,6 +625,8 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
       finalReason === REASON.OTHERS_REPLIED &&
       comments &&
       !prev?.praised &&
+      // 幂等门：这条帖已经夸过谁了？（state 被搬库后查不到，靠事件流水兜住）
+      !hasDoneEvent(postDb, id, 'praise_reply') &&
       // 失败次数上限：楼中楼 UI 偶尔找不到目标/发送按钮（体检见 comment_not_found / no_send_button），
       // 不能每轮都重试同一个失败目标 —— 白烧时间，还让日志一直红。
       Number(prev?.praiseFailCount || 0) < Number(config.praise?.maxFailRetries ?? 3)
@@ -582,7 +638,16 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
         });
         // 同一条回答只夸一次（praisedComments 记着已夸过的评论 ID）
         const done = prev?.praisedComments || [];
-        if (target && done.includes(String(target.targetCommentId))) {
+        const praiseAlready =
+          Boolean(
+            target &&
+              (done.includes(String(target.targetCommentId)) ||
+                hasDoneEvent(postDb, id, 'praise_reply', {
+                  key: 'commentId',
+                  value: target.targetCommentId,
+                }))
+          );
+        if (praiseAlready) {
           log(`  [跳过] 《${post.title}》的这条回答 ${target.targetCommentId} 之前已夸过`);
         } else if (target) {
           // 夸奖也走 LLM（2026-11-04 起不用模板）：按三层上下文夸到具体点上
@@ -831,79 +896,17 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
     };
   }
 
-  // ---------- 2z. 通知检查（冷帖唤醒 + 互动信号，**共用一次请求**）----------
-  //  通知 = 「回复和@我收到的」（`/notification/v2/by-me?type=7`）：
-  //  它直接给出「谁、在哪个帖子的哪条评论下说了什么」，比「评论数变了再去读评论猜」准，
-  //  而且**只多 1 个请求**（不像原来还要 sort=commented 拉一遍列表 + 逐条读评论）。
+  // ---------- 2z. 通知：**collect 不再自己拉**（2026-11-06 架构收敛）----------
+  //  用户原话：「不是靠 collect 每 30 分钟写 state 来间接入队」「这个不是 2 分钟重排队列吗？」
   //
-  //  ① 冷帖唤醒（用户 2026-11-02）：
-  //     · 自己的帖：有人回（含楼中楼）→ 唤醒
-  //     · 别人的帖：有人**@我**或**呼唤我** → 唤醒
-  //  ② 互动信号（用户 2026-11-05）：「回复了你的评论 / @了你」→ 该帖标记待互动
-  //     （楼中楼回复**不一定**改顶层评论数，光看 commentsChanged 会漏掉 → 用通知兜底）
-  let notes = [];
-  const noteEveryMin = Math.min(
-    Number(config.archive?.wakeEveryMinutes ?? 30),
-    Number(config.interact?.checkEveryMinutes ?? 30)
-  );
-  const lastNoteAt = Number(state.lastWakeCheckAt || 0);
-  if (Date.now() - lastNoteAt > noteEveryMin * 60 * 1000) {
-    state.lastWakeCheckAt = Date.now();
-    try {
-      notes = await listNotifications({ config, log });
-    } catch (e) {
-      log(`  [通知] 拉取失败：${e.message}`);
-    }
-  }
-
-  if (notes.length) {
-    // 我们可能被 @ 的称呼：运行时从 state 推（真实昵称不进配置、不进仓库）
-    const names = ourNames(state, config);
-    const noteCfg = { ...config, ourNames: names };
-
-    // ① 冷帖唤醒
-    if (config.archive?.wakeEnabled !== false && postDb) {
-      const w = wakeByNotifications(postDb, state, notes, {
-        config: noteCfg,
-        isAboutMe: (n, cfg) => isAboutMe(n, cfg),
-      });
-      if (w.woken) {
-        log(`  [唤醒] ${w.woken} 条冷帖重新变热（通知触发的）：`);
-        for (const it of w.items) log(`    · ${it.id} —— ${it.reason}${it.from ? `（${it.from}）` : ''}`);
-      }
-    }
-
-    // ② 互动信号：热帖里有人回我 / @我 / 喊我 → 标记待互动
-    if (interactOn) {
-      let marked = 0;
-      for (const n of notes) {
-        const mid = String(n.momentId || '');
-        if (!mid) continue;
-        if (!isAboutMe(n, noteCfg)) continue;
-        if (postDb && isCold(postDb, mid)) continue; // 冷帖已由上面处理
-        state.interactPending = state.interactPending || {};
-        state.interactPending[mid] = {
-          at: Date.now(),
-          reason: n.title || n.action || '回复/@我',
-          from: n.senderName || '',
-        };
-        if (!state.posts[mid]) {
-          state.posts[mid] = {
-            id: mid,
-            firstSeen: new Date().toISOString(),
-            lastSeen: new Date().toISOString(),
-            status: STATUS.REPLIED,
-          };
-        }
-        state.posts[mid].interactPending = true;
-        marked++;
-      }
-      if (marked) log(`  [互动] ${marked} 个帖子有「回复/@我」的信号 → 已标记待互动`);
-    }
-
-    await saveState(config.paths.stateFile, state);
-  }
-
+  //  所以通知拉取**统一收到 watch.mjs**：它每轮检查（默认 120s）直接拉
+  //  `/notification/v2/by-me?type=7`，把「回复我 / @我 / 呼唤我」的帖子直接并入队列。
+  //  原来这里还有个「每 30 分钟才拉一次」的门槛 —— 既和 2 分钟重排错拍、又白多打一次请求，已删。
+  //
+  //  collect 这边只负责两件事（都在下面循环里做）：
+  //    ① 队列项带 fromNotify 的 → **强制读评论**（楼中楼回复不一定改顶层评论数）
+  //    ② 若这帖已经凉进冷库 → **就地唤醒**搬回热数据
+  //
   // ---------- 3. 回复 ----------
   const pendings = results.filter((r) => r.status === STATUS.PENDING);
   if (doReply && pendings.length) {
@@ -1032,6 +1035,12 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
           if (r.ok) {
             sent++;
             p.praised = true;
+            // 持久幂等门：记录搬库后 state.praisedComments 查不到 → 靠这条事件挡重复夸奖
+            markDoneEvent(postDb, p.id, 'praise_reply', {
+              commentId: String(p.praise.commentId),
+              text: String(p.praise.text).slice(0, 80),
+              at: new Date().toISOString(),
+            });
           } else {
             p.note = `夸奖失败@${r.stage}`;
             // 记失败次数：同一个目标连错 N 次就不再试（见上面 maxFailRetries 的判断）
@@ -1121,15 +1130,20 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
     // 🎁 有人贴出天宫码（JFA…）= 无私分享 → 优先去**夸行为**（用户 2026-11-02）
     const isCodeShare = (r) => looksLikeCodeShare(`${r.title || ''}\n${r.text || ''}`);
     const CODE_CAP = Number(config.share?.maxCodePraisePerRun ?? 2);
+    // ⚠️ 幂等门双查：state（热）+ post_event（持久）。
+    //    只看 state 会翻车 —— 记录被搬进 SQLite 后 `state.posts[id]` 就没了，
+    //    这条帖会被每轮当成「还没互动过的分享帖」反复回（2026-11-10：一条帖 10 小时被回了 29 次）。
+    const codeDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'code_praise');
+    const shareDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'share_reply');
     const codeShares = results
-      .filter((r) => r.status === STATUS.NO_NEED && !state.posts[r.id]?.shareCommented && isCodeShare(r))
+      .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r))
       .slice(0, CODE_CAP);
     const shares = results.filter(
       (r) =>
         r.status === STATUS.NO_NEED &&
         r.reason === REASON.NOT_QUESTION &&
         looksLikeShare(r.title) &&
-        !state.posts[r.id]?.shareCommented &&
+        !shareDone(r.id) &&
         !isCodeShare(r) // 发码帖走上面那条
     );
     if (codeShares.length) {
@@ -1175,6 +1189,11 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
             shareCommented: true,
             codePraiseAt: new Date().toISOString(),
           };
+          // 持久幂等门：记录搬进 SQLite 后 state 里就查不到了，这条事件才是「已经夸过」的凭据
+          markDoneEvent(postDb, s.id, 'code_praise', {
+            text: String(text).slice(0, 80),
+            at: new Date().toISOString(),
+          });
           state.recentReplies = state.recentReplies || {};
           state.recentReplies[liteHash(text)] = {
             text,
@@ -1240,8 +1259,14 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
             });
             if (r.ok) {
               n++;
+              state.posts[s.id] = state.posts[s.id] || {};
               state.posts[s.id].shareCommented = true;
               state.posts[s.id].shareAt = new Date().toISOString();
+              // 同一帖的分享互动**只做一次** —— 靠事件流水兜住（state 会被剪枝搬库）
+              markDoneEvent(postDb, s.id, 'share_reply', {
+                text: String(text).slice(0, 80),
+                at: new Date().toISOString(),
+              });
               const h = liteHash(text);
               state.recentReplies = state.recentReplies || {};
               state.recentReplies[h] = {
@@ -1256,6 +1281,91 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
             }
             await sleep(config.reply.delayMs ?? 6000);
           }
+        }
+      }
+    }
+  }
+
+  // ---------- 3d-2. 纯情绪帖 → 陪一句（用户 2026-11-10 要求） ----------
+  //   来历：《我无疑是绝望的。。。》（任务差一点没完成）、《我想知道玩这个游戏的...》
+  //   （被谐音脏话昵称恶心到）—— 答疑库答不了、又没有「终于/到手」这些分享特征，
+  //   于是双双掉进「需人工」，一句话都没有。
+  //
+  //   规矩（用户明确）：
+  //     · **一帖一次**（凭据落事件流水 comfort_reply，state 会被剪枝搬库靠不住）
+  //     · 楼主后面再回复 → 走**正常的互动续聊**判断（不是这条通道），
+  //       可以针对他那条回复内容再回（互动按 commentId 去重，见 3f）
+  //     · 涉维权/损失/加好友/寻码一律不插话；不承诺处理、不评价数值、不给攻略
+  if (doReply && config.comfort?.enabled !== false) {
+    // 分享/夸码这一轮已经处理过的帖子不要重复开口
+    const spokeThisRun = new Set([...(shares || []), ...(codeShares || [])].map((x) => String(x.id)));
+    const comfortDone = (id) =>
+      Boolean(state.posts[id]?.comforted) || hasDoneEvent(postDb, id, 'comfort_reply');
+    const comforts = results.filter(
+      (r) =>
+        (r.status === STATUS.NO_NEED || r.status === STATUS.MANUAL) &&
+        !spokeThisRun.has(String(r.id)) &&
+        !comfortDone(r.id) &&
+        looksLikeEmotion(`${r.title || ''}\n${r.text || ''}`)
+    );
+    if (comforts.length) {
+      const cap = Number(config.comfort?.maxPerRun ?? 2);
+      log(`\n  -> 情绪帖可安慰 ${comforts.length} 条（上限 ${cap}，一帖一次）${dryRun ? '（dry-run，不发送）' : ''}`);
+      const cGens = [];
+      for (const s of comforts.slice(0, cap)) {
+        // 不给参考资料、不给 hint：纯共情，模型不许编数据、不许下判断
+        const gen = await composeLlmReply({
+          config,
+          kind: 'comfort',
+          tree: buildThreadTree(
+            { id: s.id, title: s.title, text: s.text, author: s.author, authorId: s.authorId },
+            []
+          ),
+          targetId: `post:${s.id}`,
+          hint: '他只是在发泄情绪，没有具体问题。陪着难受一下就好：认同情绪、别讲道理、别劝、别问细节、别评价数值、别说补偿或处理结果。',
+          log,
+        });
+        if (!gen.ok) {
+          log(`    [跳过] 安慰生成失败（${gen.reason}）→ 转人工，不退回模板`);
+          continue;
+        }
+        cGens.push({ s, text: gen.text });
+      }
+      if (dryRun) {
+        for (const { s, text } of cGens) {
+          log(`\n  -- [dry-run] 安慰：${s.title}`);
+          log(`      | ${text}`);
+        }
+      } else if (cGens.length) {
+        const crunner = makeRunner({
+          opencliMain: config.reply.opencliMain,
+          session: config.reply.session,
+        });
+        if (doctorOk(crunner).ok) {
+          for (const { s, text } of cGens) {
+            log(`\n  -- 安慰：${s.title}`);
+            const r = await replyOne({ runner: crunner, url: s.url, text, config, dryRun: false, log });
+            if (r.ok) {
+              state.posts[s.id] = state.posts[s.id] || {};
+              state.posts[s.id].comforted = true;
+              state.posts[s.id].comfortAt = new Date().toISOString();
+              // 一帖一次：凭据必须落库（state 会被剪枝搬库）
+              markDoneEvent(postDb, s.id, 'comfort_reply', {
+                text: String(text).slice(0, 80),
+                at: new Date().toISOString(),
+              });
+              const h = liteHash(text);
+              state.recentReplies = state.recentReplies || {};
+              state.recentReplies[h] = { text, at: new Date().toISOString(), count: 1, postId: s.id };
+              await saveState(config.paths.stateFile, state);
+              log('    [OK] 已安慰（楼主再回复会走正常互动续聊）');
+            } else {
+              log(`    [FAIL] 安慰失败（${r.stage}）`);
+            }
+            await sleep(config.reply.delayMs ?? 6000);
+          }
+        } else {
+          log('    [跳过] opencli 不可用');
         }
       }
     }
@@ -1318,6 +1428,10 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
             if (res.ok) {
               n++;
               s.sent = true;
+              markDoneEvent(postDb, r.id, 'summon_reply', {
+                commentId: String(s.commentId),
+                at: new Date().toISOString(),
+              });
             } else {
               if (state.posts[r.id]) state.posts[r.id].summonPending = true;
               log(
@@ -1381,6 +1495,14 @@ export async function runOnce({ doReply = false, dryRun = true, top = null, only
           if (res.ok) {
             n++;
             c.sent = true;
+            // 「回复过这条内容」的持久凭据：同一帖同一条回复只接一次话，
+            // 后面就算又入队（通知重放 / 记录搬库）也不会重复回（用户 2026-11-10 要求）
+            markDoneEvent(postDb, r.id, 'interact_reply', {
+              commentId: String(c.commentId),
+              // 内容指纹：同一条回复内容不变 → 再入队也认得出来
+              hash: liteHash(String(c.text || '')),
+              at: new Date().toISOString(),
+            });
           } else {
             log(
               `    [FAIL] 失败（${res.stage}）` +

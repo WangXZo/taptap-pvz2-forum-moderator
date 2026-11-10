@@ -29,6 +29,7 @@ import { loadState, saveState } from './lib/state.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { detectFriendRequest, checkAuthor, DEFAULT_FIXED_REPLY, startOfToday, todayKey } from './lib/mod-task.mjs';
 import { removePost } from './lib/remove-post.mjs';
+import { claimReply, releaseReply } from './lib/mod-seen.mjs';
 import { makeTapApi } from './lib/taptap-api.mjs';
 import { openPostDb, recordModScanned, recordStatus, isHandled } from './lib/post-records.mjs';
 import { liteHash } from './lib/util.mjs';
@@ -344,9 +345,24 @@ export async function processQueueHead({ config, cfg, state, runner, db = null, 
   );
 
   // 3a. 回固定文本（已回过就跳过 —— 中途失败重跑不重复回）
+  //
+  // ⚠️ 两道幂等（用户 2026-11-06 要求加「已回复指纹」）：
+  //   ① state.posts[id].modTask.repliedAt —— 只防**同进程**
+  //   ② data/replied/<id>.flag 原子占位 —— 防**跨进程**（两个 mod-watch 同时跑时，
+  //      各持一份 state，光靠 ① 会同一帖回两遍）
+  let claimed = false;
   if (state.posts[t.id]?.modTask?.repliedAt) {
     log('      [跳过] 之前已经回过固定文案，跳过回复');
   } else {
+    const claim = await claimReply({ dataDir: config.paths.dataDir || 'data', momentId: t.id });
+    if (!claim.ok) {
+      log('      [跳过] 这帖已被另一个进程回过了（已回复指纹存在）→ 不重复回');
+      state.modTask.backlog = backlog.filter((b) => String(b.id) !== String(t.id));
+      await saveState(modStateFile(config), state);
+      await sleep(COOLDOWN);
+      return { processed: true, ok: true, id: t.id, stage: 'claimed_by_other', left: state.modTask.backlog.length };
+    }
+    claimed = true;
     let r = null;
     if (VIA !== 'ui') {
       const o = api.ensureOrigin();
@@ -365,6 +381,8 @@ export async function processQueueHead({ config, cfg, state, runner, db = null, 
     }
     if (!r) r = await replyOne({ runner, url: t.url, text: REPLY_TEXT, config, dryRun: false, log });
     if (!r.ok) {
+      // 发送失败 → **回滚指纹占位**，否则这帖以后再也回不了（下次还能重试）
+      if (claimed) await releaseReply({ dataDir: config.paths.dataDir || 'data', momentId: t.id });
       log(`      [跳过] 回复失败（${r.stage}）→ 不移除，转人工（出队）`);
       state.posts[t.id] = {
         ...(state.posts[t.id] || {}),
