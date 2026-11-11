@@ -77,7 +77,7 @@
   "websearch": {
     "enabled": true,
     "timeoutMs": 60000,
-    "note": "答疑库没命中时联网补一次（用户 2026-11-12 认可）：搜到 AI 答案 → 按 50% 中概率作答（「这个想小鲸鱼搜到，大概是这样」）；只有结果页 / 被风控 / 超时 → 不硬编答案，仍转人工。单轮查询上限 2 次与 3s 间隔由 baidu-websearch skill 内部强制（resetRound/quotaLeft），同一帖 24h 内不重复搜。依赖 baidu-websearch skill，未安装则静默跳过"
+    "note": "答疑库没命中时联网补一次（用户 2026-11-12 认可）：搜到 AI 答案 → 按 50% 置信度作答（「这个想小鲸鱼搜到，大概是这样」，置信度=对这条二手信息的信任度，不是匹配分也不是回复概率）；只有结果页 / 被风控 / 超时 → 不硬编答案，仍转人工。单轮查询上限 2 次与 3s 间隔由 baidu-websearch skill 内部强制（resetRound/quotaLeft），同一帖 24h 内不重复搜。依赖 baidu-websearch skill，未安装则静默跳过"
   },
   "codeMatch": {
     "enabled": true,

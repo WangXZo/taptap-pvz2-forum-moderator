@@ -10,7 +10,7 @@
 // 调用方按「没搜到」处理即可，不影响主流程。
 //
 // 调用约定（2026-11-12 起，配合 baidu-websearch 的三级返回）：
-//   ok:true  mode:'answer' → 有 AI 答案，可按 50% 中概率作答
+//   ok:true  mode:'answer' → 有 AI 答案，可按 50% 置信度作答
 //   ok:true  mode:'page'   → 只有结果页整理，**不当答案用**，只可当线索
 //   ok:false reason:...    → 配额用完 / 被风控 / HTTP 错 / 搜不到，一律转人工
 

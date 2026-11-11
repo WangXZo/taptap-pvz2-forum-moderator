@@ -734,7 +734,7 @@ export async function runOnce({
     }
 
     // 2e-2. 答疑库没命中 → 联网补一次（用户 2026-11-12 认可的策略）
-    //   · 搜到 AI 答案 → 升为「待回复」，答案作参考资料，按 **50% 中概率**作答
+    //   · 搜到 AI 答案 → 升为「待回复」，答案作参考资料，按 **50% 置信度**作答
     //   · 只有结果页（没 sseApi）/ 被风控 / 超时 → **不硬编答案**，维持「需人工」
     //   · 单轮最多 2 次查询（配额在 baidu-websearch 内部管），同一帖 24h 内不重复搜
     let webNote = '';
@@ -772,7 +772,7 @@ export async function runOnce({
           webNote = wr.text;
           finalStatus = STATUS.PENDING;
           finalReason = null;
-          log(`  [联网] 《${shortTitle}》搜到答案（${wr.answer.length} 字）→ 升为待回复，按 50% 中概率作答`);
+          log(`  [联网] 《${shortTitle}》搜到答案（${wr.answer.length} 字）→ 升为待回复，按 50% 置信度作答`);
         } else if (wr?.ok && wr.mode === 'page') {
           log(`  [联网] 《${shortTitle}》只有结果页（${wr.titles?.length || 0} 条标题）→ 不当答案用，仍转人工`);
         } else {

@@ -56,8 +56,9 @@ export function parseQa(raw) {
     const timeMatch = meta.match(/总结时间[:：]\s*(.+)/);
     const summarizedAt = timeMatch ? timeMatch[1].trim() : null;
 
-    // 可选：置信度（用户 2026-11-06 定档）——存**可信概率百分比**
-    //   0-10% 不可信 / 10-40% 低概率 / 40-60% 中概率 / 60-90% 高概率 / 90-100% 可信
+    // 可选：置信度（用户 2026-11-06 定档）——存**可信度百分比**
+    //   0-10% 不可信 / 10-40% 低置信度 / 40-60% 中置信度 / 60-90% 高置信度 / 90-100% 可信
+    //   （档位说的是**这条答案有多可信**；互动续聊那个「回不回」才是概率，两套别混）
     //   兼容旧写法「完全正确 / 高 / 中 / 低」→ 95 / 75 / 50 / 20
     //   回复时按档位决定口气；不能自动给「可信」，那档只给官方资料和人工确认。
     const confPct = meta.match(/置信度[:：]\s*(\d{1,3})\s*%?/);
@@ -73,7 +74,7 @@ export function parseQa(raw) {
       signature,
       source,
       summarizedAt,
-      // 没写：人工条目 95（可信，人复核过）/ 社区沉淀 50（中概率，玩家说法）
+      // 没写：人工条目 95（可信，人复核过）/ 社区沉淀 50（中置信度，玩家说法）
       confidence: confidence === null ? (source ? 50 : 95) : confidence,
       confidenceLabel: confLabelOf(confidence === null ? (source ? 50 : 95) : confidence),
       auto: !!source, // 自动沉淀 → 匹配时打折（低于人工条目）
@@ -87,11 +88,11 @@ export function parseQa(raw) {
 /** 置信度百分比 → 档位标签（用户 2026-11-06 定的五档） */
 export function confLabelOf(pct) {
   const n = Number(pct);
-  if (!Number.isFinite(n)) return '中概率';
+  if (!Number.isFinite(n)) return '中置信度';
   if (n < 10) return '不可信';
-  if (n < 40) return '低概率';
-  if (n < 60) return '中概率';
-  if (n < 90) return '高概率';
+  if (n < 40) return '低置信度';
+  if (n < 60) return '中置信度';
+  if (n < 90) return '高置信度';
   return '可信';
 }
 
