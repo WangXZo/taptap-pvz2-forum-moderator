@@ -17,6 +17,10 @@
 // 签名：`reply` / `child` **默认自动补上** `config.reply.signature`（用户 2026-11-10：
 //       「默认需要携带签名（在 LLM 后可以通过脚本添加）」）。要发不带签名的，加 `--no-signature`。
 //
+// 换行：`--text` 里可以直接带换行 —— `buildContentsWithEmoji()` 会按行拆成多个 paragraph，
+//       时间线上就是分段显示（**别用 markdown 的 `**` 加粗**，TapTap 不认，会原样显示星号）。
+//       在 PowerShell 里传多行：用 here-string（@' … '@）或 `--text "第一行`n第二行"`。
+//
 // ⚠️ `reply` / `child` 不传 --contents-json 时，交给 lib/taptap-api.mjs 自己建 contents ——
 //    只有那条路会把 [表情_xx] 转成 tap_emoji 节点。自己用 buildContents() 拼纯文本，
 //    表情就会变成字面文字「[表情_叹气]」发出去（2026-11-10 真踩到）。
@@ -119,7 +123,10 @@ switch (cmd) {
     const text = withSignature(flag('text', ''));
     // 不自己拼 contents：让 api.reply 按 emoji-map 把 [表情_xx] 转成 tap_emoji 节点
     const contents = flag('contents-json');
-    log(`计划：回复 ${id}\n  正文：${text.slice(0, 120)}${text.length > 120 ? '…' : ''}`);
+    const para = String(text).split(/\r?\n/).filter((s) => s.trim()).length;
+    log(
+      `计划：回复 ${id}\n  正文（${para} 段）：${text.slice(0, 120)}${text.length > 120 ? '…' : ''}`
+    );
     if (!YES) {
       log('（未加 --yes，仅预览）');
       break;

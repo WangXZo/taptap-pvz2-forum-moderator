@@ -20,7 +20,7 @@ const check = (name, cond, extra = '') => (cond ? pass++ : fails.push(`${name} $
 const SIG = '「版主助手-小鲸鱼」';
 const config = {
   reply: { signature: SIG },
-  summon: { aliases: ['大肥鱼', '吃白米饭的'], matchRoles: true },
+  summon: { aliases: ['大肥鱼', '肥鱼', '吃白米饭的'], matchRoles: true },
   myUserId: '6******4',
 };
 
@@ -53,11 +53,15 @@ check('没签名 → 不是我们发的', isOurReplyText('玩家随便说的一�
 }
 
 // 玩家喊我们的 5 个别名（用户 2026-11-02 点名的）
-for (const alias of ['大肥鱼', '版主助手-小鲸鱼', '版主助手', '小鲸鱼', '吃白米饭的']) {
+for (const alias of ['大肥鱼', '版主助手-小鲸鱼', '版主助手', '小鲸鱼', '吃白米饭的', '肥鱼']) {
   const hit = isSummonText(`${alias}！！！出来道歉`, config);
   check(`喊「${alias}」→ 认得`, hit.summon, JSON.stringify(hit));
 }
 check('喊「小鲸鱼在吗」→ 认得', isSummonText('小鲸鱼在吗', config).summon);
+// 用户 2026-11-10：「如果有人喊大肥鱼/小鲸鱼/肥鱼，大概率就是喊你」→ 单独的「肥鱼」也要认
+for (const t of ['肥鱼', '肥鱼在吗', '肥鱼这次活动咋领', '肥鱼帮我看看']) {
+  check(`喊「${t}」→ 认得`, isSummonText(t, config).summon, t);
+}
 check('「版主 + 呼叫语气」→ 认得', isSummonText('版主在吗，帮忙看下', config).summon);
 check('普通聊天 → 不认', !isSummonText('今天天气不错', config).summon);
 check('我们自己的回话 → 不算被喊', !isSummonText('我在的，你说 ' + SIG, config).summon);

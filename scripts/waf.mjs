@@ -102,10 +102,20 @@ if (cmd === 'unlock') {
 
 if (cmd === 'test') {
   const config = await loadConfig();
+  // ⚠️ **必须注入页面通道**（2026-11-10 踩到）：
+  //    守护进程实际拉数据走的就是页面通道（带登录 Cookie）。
+  //    不注入的话，`listFeed` 会退回**匿名**通道 —— 匿名被封时 test 会误报「仍不可用」，
+  //    而且 ttGet 命中拦截会**顺手把熔断标记重新落下**：
+  //      test → 重新熔断 → 守护以为 feed 源坏了 → 整个 feed 停摆（只剩通知源）。
+  //    实测过一次：人机验证都做完了，test 一跑又封回去。
+  const { createPageFetcher } = await import('./lib/page-fetch.mjs');
+  const { setPageFetcher } = await import('./lib/http.mjs');
+  const pf = createPageFetcher({ config, log: (m) => console.log(m) });
+  if (pf) setPageFetcher(pf);
   try {
     const d = await listFeed({ groupId: config.groupId, from: 0, limit: 3, sort: 'created', type: 'feed' });
     const n = (d.list || []).length;
-    console.log(`✓ feed 接口正常，拿到 ${n} 条`);
+    console.log(`✓ feed 接口正常，拿到 ${n} 条（${pf ? '页面通道' : '匿名通道'}）`);
     if (readWafFlag()) {
       console.log('  提示：还有熔断标记，确认无误后运行：node scripts/waf.mjs clear');
     }

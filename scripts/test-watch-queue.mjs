@@ -170,6 +170,165 @@ t('两处重复的只算一条', ids2.filter((x) => x.id === 'P9').length === 1,
   t('不传 shouldSkip → 全量入队', r2.added === 4, JSON.stringify(r2));
 }
 
+// ---------- 5d. 动态窗口（通用模块 lib/window-fetch.mjs，2026-11-10） ----------
+// 「只拉一页 10 条」→ 停机超过几小时那批帖永远滑出窗口（实测覆盖只有 39%）
+{
+  const { fetchWindow, createCursorStore } = await import('./lib/window-fetch.mjs');
+  const NOW = 1_800_000_000_000;
+
+  // 造一个分页源：每页 10 条，越往后越旧（按真实密度：10 条 ≈ 4 小时）
+  const makeSource = (totalPages) => {
+    const calls = [];
+    const fetchPage = async ({ from, limit }) => {
+      calls.push(from);
+      const page = Math.floor(from / limit);
+      const list = [];
+      for (let i = 0; i < limit; i++) {
+        const idx = from + i;
+        if (idx >= totalPages * limit) break;
+        list.push({ t: NOW - idx * 24 * 60000 }); // 每条往前 24 分钟（≈ 10 条 4 小时）
+      }
+      return { list, next_page: page + 1 < totalPages ? `p${page + 1}` : null };
+    };
+    return { fetchPage, calls };
+  };
+
+  // ① 没有游标 → 只补 backfillMs（默认 6h），不该翻满页
+  const src1 = makeSource(100);
+  const r1 = await fetchWindow({
+    fetchPage: src1.fetchPage,
+    cursorMs: null,
+    backfillMs: 6 * 3600 * 1000,
+    nowMs: NOW,
+    timeOf: (it) => it.t,
+  });
+  t('第一次：按 backfill 停，不翻满页', r1.pages < 10, `pages=${r1.pages}`);
+  t('第一次：扫到的条数 = 页数 × 10', r1.items.length === r1.pages * 10, `${r1.items.length}/${r1.pages}`);
+  // 游标 = **高水位**（扫到的最新一条），不是最老那条
+  t('第一次：游标 = 扫到的最新一条（高水位）', r1.cursorMs === Math.max(...r1.items.map((x) => x.t)));
+
+  // ② 有游标 → 翻到比游标还老就停（能补停机期间的缺口）
+  const src2 = makeSource(100);
+  const gapCursor = NOW - 30 * 3600 * 1000; // 停机 30 小时
+  const r2 = await fetchWindow({
+    fetchPage: src2.fetchPage,
+    cursorMs: gapCursor,
+    nowMs: NOW,
+    timeOf: (it) => it.t,
+  });
+  t('停机 30h → 翻的页数够补缺口', r2.pages >= 8, `pages=${r2.pages}`);
+  t('停机 30h → 翻到了游标之前', r2.oldestMs <= gapCursor, String(r2.oldestMs));
+  t('停机 30h → reached 标记为真', r2.reached === true);
+  t('停机 30h → 新游标前移到高水位', r2.cursorMs > gapCursor, String(r2.cursorMs));
+
+  // ②b 关键回归：**下一轮不会又翻到同样的深度**
+  //     游标存高水位（而不是最老那条）→ 第二轮只翻 1~2 页，深度收敛
+  const src2b = makeSource(100);
+  const r2b = await fetchWindow({
+    fetchPage: src2b.fetchPage,
+    cursorMs: r2.cursorMs, // 用上一轮的新游标
+    nowMs: NOW,
+    timeOf: (it) => it.t,
+  });
+  t('第二轮：深度收敛（≤2 页）', r2b.pages <= 2, `pages=${r2b.pages}`);
+
+  // ③ maxPages 兜底：不让它无限翻
+  const src3 = makeSource(1000);
+  const r3 = await fetchWindow({
+    fetchPage: src3.fetchPage,
+    cursorMs: NOW - 1000 * 3600 * 1000,
+    maxPages: 5,
+    nowMs: NOW,
+    timeOf: (it) => it.t,
+  });
+  t('maxPages 兜底生效', r3.pages === 5, `pages=${r3.pages}`);
+
+  // ④ 单页就够（游标很新）→ 只翻 1 页
+  const src4 = makeSource(100);
+  const r4 = await fetchWindow({
+    fetchPage: src4.fetchPage,
+    cursorMs: NOW - 60 * 1000,
+    nowMs: NOW,
+    timeOf: (it) => it.t,
+  });
+  t('游标很新 → 只翻 1 页', r4.pages === 1, `pages=${r4.pages}`);
+
+  // ⑤ 游标仓库：落盘 + 读回
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'cursor-'));
+  const f = join(dir, 'c.json');
+  const c1 = createCursorStore(f);
+  c1.set('created', 123456);
+  c1.save();
+  const c2 = createCursorStore(f);
+  t('游标落盘后能读回', c2.get('created') === 123456, String(c2.get('created')));
+  t('没有的来源返回 null', c2.get('commented') === null);
+  try {
+    rmSync(dir, { recursive: true, force: true });
+  } catch {}
+}
+
+// ---------- 5b-2. 天宫码撮合（lib/code-match.mjs，2026-11-10 用户规则） ----------
+// 规则：新发码（5 分钟内）→ 链接发给 30 分钟内求码的人；每个码最多 3 人；
+//       没有求贴就不处理；优先新求码贴；发码超过 5 分钟不再发。
+{
+  const { pickCodeMatches, buildCodeMatchText } = await import('./lib/code-match.mjs');
+  const NOW = 1_800_000_000_000;
+  const mk = (id, text, min) => ({ id, title: '', text, publishTime: NOW - min * 60000 });
+
+  const base = [
+    mk('S1', 'JFAabcdefg 给大家用', 2), // 2 分钟前发码 → 有效
+    mk('A1', '蹲一个天宫码', 3),
+    mk('A2', '求一个天宫码，蹲了好久了', 10),
+    mk('A3', '求天宫码', 20),
+    mk('A4', '求个天宫码', 25),
+  ];
+  const r1 = pickCodeMatches({ items: base, nowMs: NOW });
+  t('撮合：命中 1 条发码帖', r1.length === 3 && new Set(r1.map((x) => x.share.id)).size === 1);
+  t('撮合：每个码最多 3 个人', r1.length === 3, String(r1.length));
+  t('撮合：优先新求码贴（A1 最先）', r1[0].asker.id === 'A1', r1[0].asker.id);
+  t('撮合：顺序按新→旧', r1.map((x) => x.asker.id).join(',') === 'A1,A2,A3', r1.map((x) => x.asker.id).join(','));
+
+  // 发码超过 5 分钟 → 不再发、不处理
+  const oldShare = [mk('S2', 'JFAhijklmn 分享', 6), mk('A1', '求天宫码', 2)];
+  t('撮合：发码帖超 5 分钟 → 不处理', pickCodeMatches({ items: oldShare, nowMs: NOW }).length === 0);
+
+  // 没有求贴 → 不处理
+  const noAsk = [mk('S3', 'JFAzzzzzzz 分享', 1)];
+  t('撮合：没有求码帖 → 不处理', pickCodeMatches({ items: noAsk, nowMs: NOW }).length === 0);
+
+  // 求码帖超 30 分钟 → 不再通知
+  const lateAsk = [mk('S4', 'JFAqqqqqqq 分享', 1), mk('A9', '求天宫码', 31)];
+  t('撮合：求码帖超 30 分钟 → 不通知', pickCodeMatches({ items: lateAsk, nowMs: NOW }).length === 0);
+
+  // 自己贴码又求码 → 不撮合自己
+  const self = [mk('X1', 'JFAmmmmmmm 求个天宫码换一下', 1)];
+  t('撮合：求码帖不撮合自己', pickCodeMatches({ items: self, nowMs: NOW }).length === 0);
+
+  // 已撮合过的对不再发
+  const once = pickCodeMatches({
+    items: base,
+    nowMs: NOW,
+    isDone: (askerId, shareId) => askerId === 'A1' && shareId === 'S1',
+  });
+  t('撮合：同一对只撮合一次', !once.some((x) => x.asker.id === 'A1'));
+
+  // 文案：会话式开场 + 让他去谢谢大佬 + **链接放最后**（用户 2026-11-10 给的样式）
+  const msg = buildCodeMatchText({ share: { id: 'S9' } });
+  const link = 'https://www.taptap.cn/moment/S9';
+  t('文案：带帖子链接', msg.includes(link));
+  t('文案：链接在结尾', msg.trimEnd().endsWith(link), msg);
+  t('文案：自称小鲸鱼（人格化）', /小鲸鱼/.test(msg), msg);
+  t('文案：趁热 / 快去领 的口气', /趁热|快去领/.test(msg), msg);
+  t('文案：让他去谢谢大佬', /谢谢/.test(msg), msg);
+  t('文案：不含签名（由发送层统一追加）', !msg.includes('版主助手'));
+  t('文案：同一发码帖措辞稳定（可复现）', buildCodeMatchText({ share: { id: 'S9' } }) === msg);
+  const msgs = ['S1', 'S2', 'S3', 'S4'].map((id) => buildCodeMatchText({ share: { id } }));
+  t('文案：不同发码帖会换说法（不是同一条模板）', new Set(msgs).size > 1, String(new Set(msgs).size));
+}
+
 // ---------- 5c. 指纹去重：同一帖同一条回复只入队一次（2026-11-06 用户要求） ----------
 {
   const { notifyFingerprint, pruneSeen } = await import('./lib/watch-queue.mjs');

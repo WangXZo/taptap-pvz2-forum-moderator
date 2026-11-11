@@ -27,8 +27,11 @@
 
 import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { loadState, STATUS } from './lib/state.mjs';
-import { listFeed, WafBlocked } from './lib/http.mjs';
-import { openPostDb, isHandled } from './lib/post-records.mjs';
+import { listFeed, WafBlocked, activityTime } from './lib/http.mjs';
+import { fetchWindow, createCursorStore } from './lib/window-fetch.mjs';
+import { openPostDb, isHandled, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
+import { pickCodeMatches, buildCodeMatchText } from './lib/code-match.mjs';
+import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { runOnce } from './collect.mjs';
 import {
   enqueueNotifyIds,
@@ -123,6 +126,16 @@ const saveQueue = async () => {
   await writeFile(QUEUE_FILE, JSON.stringify(queue, null, 1), 'utf8');
 };
 
+// ---------------- 动态窗口游标（通用模块，2026-11-10） ----------------
+// 每个源记住「上次扫到的最老一条的时间」。下次从最新往回翻，翻到比它还老就停。
+// 存盘是为了**重启不丢**：否则每次重启都要从头翻，白烧接口。
+const CURSOR_FILE = resolve(
+  config.paths.dataDir || resolve(ROOT_DIR(), 'data'),
+  'watch-cursor.json'
+);
+const CURSOR = createCursorStore(CURSOR_FILE);
+const saveCursor = () => CURSOR.save();
+
 console.log('═══════════════════════════════════════');
 console.log(
   `  TapTap 论坛答疑守护  |  检查每 ${intervalSec}s  |  队列：新到旧、不打断当前  |  每轮 ${TOP} 条  |  回复 ${doReply ? (dryRun ? 'dry-run' : '开启') : '关闭'}`
@@ -167,23 +180,49 @@ async function checkAndEnqueue() {
     console.log(`        到 Chrome 打开 https://www.taptap.cn 完成人机验证，然后 node scripts/waf.mjs test / clear`);
   }
 
-  /** 拉一次 feed（sort 可切换） */
-  const pull = async (sort) => {
-    try {
-      const data = await listFeed({
-        groupId: config.groupId,
-        from: 0,
-        limit: Math.max(TOP, 10),
-        sort,
-        type: config.collect.type,
-      });
-      return data.list || [];
-    } catch (e) {
-      // WAF 已在 http.mjs 里落标记 + 不再重试，这里只需记一笔
-      if (e instanceof WafBlocked) console.log(`  [WAF] ${sort} 被拦截 → 已标记熔断，等人工验证`);
-      else console.log(`  [FAIL] ${sort} 检查失败：${e.message}`);
-      return [];
+  /**
+   * 一条帖子的「时间轴」—— **按源取不同的字段**（2026-11-10 踩到）
+   *
+   * `sort=created`  → 用 `publish_time`（发帖时间）
+   * `sort=commented`→ 必须用 `commented_time`（最后回复时间）！
+   *   错用 publish_time 的后果：`commented` 榜里全是「老帖被顶」，publish_time 能是 2022 年
+   *   → 游标一下跳到 2022 → 之后每轮都要翻满 maxPages 页去追那个游标 → 白烧接口、招 WAF。
+   */
+  const timeOf = (it, sort) => {
+    const m = it.moment || {};
+    if (sort === 'commented') {
+      const t = Number(m.commented_time || m.stat?.commented_time || 0);
+      if (t) return t * 1000;
     }
+    return activityTime(it) * 1000;
+  };
+
+  /**
+   * 拉 feed —— 走**通用**动态窗口模块（lib/window-fetch.mjs）
+   *
+   * 动态窗口的算法、游标语义、时间轴选择都在那个模块里，
+   * 这里只负责「喂什么数据进去」和「算出这条的时间」。
+   */
+  const pull = async (sort, cursorMs) => {
+    const r = await fetchWindow({
+      fetchPage: (p) =>
+        listFeed({
+          groupId: config.groupId,
+          from: p.from,
+          limit: p.limit,
+          sort,
+          type: config.collect.type,
+        }),
+      cursorMs,
+      maxPages: Number(src.maxPages ?? 20),
+      timeOf: (it) => timeOf(it, sort),
+      nowMs,
+      log: (m) => console.log(m),
+    });
+    if (r.pages > 1) {
+      console.log(`  [窗口] ${sort} 翻了 ${r.pages} 页 / ${r.items.length} 条（补历史缺口）`);
+    }
+    return r;
   };
 
   /**
@@ -235,6 +274,9 @@ async function checkAndEnqueue() {
   };
 
   // ① 最新（发布时间降序）—— 每 createdEverySeconds 一次
+  //    ⚠️ 顺手做「天宫码撮合」：这里拿到的是**最新一批帖子**，正好是判断
+  //    「5 分钟内有人发了码」+「30 分钟内有人在求码」所需要的原料。
+  let pulledForMatch = [];
   if (
     src.created !== false &&
     !feedBlocked &&
@@ -245,9 +287,15 @@ async function checkAndEnqueue() {
     })
   ) {
     LAST_PULL.created = nowMs;
-    const items = await pull(config.collect.sort || 'created');
-    scanned += items.length;
-    for (const it of items) considerItem(it, 'created');
+    const r = await pull(config.collect.sort || 'created', CURSOR.get('created'));
+    scanned += r.items.length;
+    for (const it of r.items) considerItem(it, 'created');
+    pulledForMatch = r.items;
+    // 游标 = 本轮扫到的**最新**一条（高水位）→ 下次从这里往回翻，深度收敛
+    if (r.cursorMs) {
+      CURSOR.set('created', r.cursorMs);
+      saveCursor();
+    }
   }
 
   // ② 按回复时间（能捞到「老帖又有人回」）—— 每 commentedEverySeconds 一次（默认最慢，它最费请求）
@@ -261,9 +309,13 @@ async function checkAndEnqueue() {
     })
   ) {
     LAST_PULL.commented = nowMs;
-    const items = await pull('commented');
-    scanned += items.length;
-    for (const it of items) considerItem(it, 'commented');
+    const r = await pull('commented', CURSOR.get('commented'));
+    scanned += r.items.length;
+    for (const it of r.items) considerItem(it, 'commented');
+    if (r.cursorMs) {
+      CURSOR.set('commented', r.cursorMs);
+      saveCursor();
+    }
   }
 
   // ③ 通知（回复 / @ / 呼唤）—— 走页面上下文，不占匿名 IP 配额，所以跟队列重排同频
@@ -314,18 +366,84 @@ async function checkAndEnqueue() {
   const fromState = enqueueNotifyIds(queue, state, queued);
   addedNotify += fromState.added;
 
+  // ⑤ 天宫码撮合（用户 2026-11-10）
+  //    有人**5 分钟内**贴了天宫码 → 把该帖链接发给**30 分钟内**在求码的帖子。
+  //    每条发码帖最多通知 3 个求码的人，**新贴优先**；同一对（求码帖×发码帖）只撮合一次。
+  //    文案由 buildCodeMatchText 生成，签名由 clampReply 统一追加。
+  let matched = 0;
+  if (config.codeMatch?.enabled !== false && pulledForMatch.length && !feedBlocked) {
+    try {
+      const candidates = pulledForMatch.map((it) => {
+        const m = it.moment || {};
+        return {
+          id: String(m.id_str || ''),
+          title: m.topic?.title || '',
+          text: m.topic?.summary || '',
+          publishTime: Number(m.publish_time || m.created_time || 0) * 1000,
+        };
+      });
+      const pairs = pickCodeMatches({
+        items: candidates,
+        nowMs,
+        shareWindowMs: Number(config.codeMatch?.shareWindowMinutes ?? 5) * 60 * 1000,
+        askWindowMs: Number(config.codeMatch?.askWindowMinutes ?? 30) * 60 * 1000,
+        maxAskersPerShare: Number(config.codeMatch?.maxAskersPerShare ?? 3),
+        // 同一对只撮合一次（凭据落事件流水，搬库不影响）
+        isDone: (askerId, shareId) =>
+          Boolean(db) &&
+          hasDoneEvent(db, askerId, 'code_match', { key: 'shareId', value: shareId }),
+      });
+      if (pairs.length) {
+        console.log(`  [撮合] 有 ${pairs.length} 对可撮合（发码帖 ${new Set(pairs.map((p) => p.share.id)).size} 条）`);
+        const runner = makeRunner({
+          opencliMain: config.reply.opencliMain,
+          session: config.reply.session,
+        });
+        if (!doctorOk(runner).ok) {
+          console.log('    [跳过] opencli 不可用');
+        } else {
+          for (const { asker, share } of pairs) {
+            const text = buildCodeMatchText({ share });
+            const r = await replyOne({
+              runner,
+              url: `https://www.taptap.cn/moment/${asker.id}`,
+              text,
+              config,
+              dryRun: false,
+              log: console.log,
+            });
+            if (r.ok) {
+              matched++;
+              markDoneEvent(db, asker.id, 'code_match', {
+                shareId: share.id,
+                at: new Date().toISOString(),
+              });
+              console.log(`    [OK] 已通知 ${asker.id} ← 发码帖 ${share.id}`);
+            } else {
+              console.log(`    [FAIL] 撮合 ${asker.id} 失败（${r.stage || ''}）`);
+            }
+            await sleep(Number(config.watch?.minOpGapMs ?? 300));
+          }
+        }
+      }
+    } catch (e) {
+      console.log(`  [撮合] 本轮跳过：${e.message}`);
+    }
+  }
+
   queue = sortAndCap(queue, 200);
   await saveQueue();
 
   const parts = [];
   if (addedFeed) parts.push(`feed ${addedFeed}`);
   if (addedNotify) parts.push(`通知 ${addedNotify}`);
+  if (matched) parts.push(`撮合 ${matched}`);
   console.log(
     `  [检查] 扫了 ${scanned} 条（created+commented）→ 新入队 ${addedFeed + addedNotify} 条` +
       (parts.length ? `（${parts.join(' + ')}）` : '') +
       `，队列 ${queue.length} 条（新→旧）`
   );
-  return { added: addedFeed + addedNotify, total: queue.length, scanned, notify: addedNotify };
+  return { added: addedFeed + addedNotify, total: queue.length, scanned, notify: addedNotify, matched };
 }
 
 /** 处理队首一条（最新的那条）—— 严格**逐个**处理，处理完才出队 */

@@ -62,8 +62,16 @@ export function squashedTags(config) {
 }
 
 /**
+ * 宽松变体（用户 2026-11-10：「论坛有可能出现其他昵称，可以自行熟悉判断」）
+ *
+ * 玩家不一定照着我们的全名喊：`鲸鱼`、`肥鱼大大`、`小鲸鱼助手`、`版主助手你出来`……
+ * 精确标签匹配认不出这些 → 再加一层模糊匹配（只认「我们名字的骨架」，不认泛称）。
+ */
+const FUZZY_TAG_RE = /(大?肥鱼|小?鲸鱼|鲸鱼|版主助手|白米饭)/;
+
+/**
  * 在文本里找我们自己的标签
- * @returns {{tag:string, index:number}|null}
+ * @returns {{tag:string, index:number, fuzzy?:boolean}|null}
  */
 export function findTag(text, config) {
   const s = squash(text);
@@ -72,6 +80,9 @@ export function findTag(text, config) {
     const i = s.indexOf(tag);
     if (i >= 0) return { tag, index: i };
   }
+  // 兜底：模糊变体（鲸鱼 / 肥鱼大大 / 白米饭…）
+  const m = s.match(FUZZY_TAG_RE);
+  if (m) return { tag: m[0], index: m.index || 0, fuzzy: true };
   return null;
 }
 

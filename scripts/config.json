@@ -12,11 +12,12 @@
       "created": true,
       "commented": true,
       "notify": true,
-      "createdEverySeconds": 300,
-      "commentedEverySeconds": 900,
-      "notifyEverySeconds": 120
+      "createdEverySeconds": 120,
+      "commentedEverySeconds": 120,
+      "notifyEverySeconds": 120,
+      "maxPages": 20
     },
-    "sourcesNote": "守护队列的三个来源（2026-11-06 用户要求，可单独开关 + 各自独立节奏）：① created=按发布时间拉最新（新帖）；② commented=按**回复时间**拉（捞到老帖又有人回，不只看最新 10 条）；③ notify=通知接口 type=7（回复我/@我/呼唤我，直接用 cURL 那个接口，不必等 collect 写 state）。\n⚠️ 为什么要错峰：实测三源每 120s 齐拉会把匿名接口打到触发阿里云 WAF（连 sort=created 都拦），整条链路停摆。所以给每个源独立间隔：notify 走页面上下文（带 Cookie，不占匿名 IP 配额）→ 跟队列重排同频 120s；created 主链路 → 300s；commented 只是补充 → 900s。\n队列在**每轮 intervalSeconds（120s）都会重排一次**，只是「拉新数据」按上面的节奏走。三源合并去重后按发布时间新→旧重排，**只重排不删**，可超过 10 条（上限 200）。",
+    "sourcesNote": "守护队列的三个来源（2026-11-06 用户要求，可单独开关 + 各自独立节奏）：① created=按发布时间拉最新（新帖）；② commented=按**回复时间**拉（捞到老帖又有人回，不只看最新 10 条）；③ notify=通知接口 type=7（回复我/@我/呼唤我，直接用 cURL 那个接口，不必等 collect 写 state）。\n⚠️ 为什么要错峰：实测三源每 120s 齐拉会把匿名接口打到触发阿里云 WAF（连 sort=created 都拦），整条链路停摆。所以给每个源独立间隔：notify 走页面上下文（带 Cookie，不占匿名 IP 配额）→ 跟队列重排同频 120s；created 主链路 → 120s；commented 补充 → 120s。\n⚠️ 2026-11-10 改：created/commented 间隔 300/900 → **120s**，并且**动态窗口**（每个源记住上次扫到的最老时间，游标存在 data/watch-cursor.json；从最新往回翻页，翻到比游标还老才停）。原因：只拉一页 10 条 → 守护停机超过 3 小时那批帖就永远滑出窗口（实测一周 561 条只碰到 220 条，覆盖 39%）。maxPages=20 是单轮翻页上限（200 条），别再往上调，容易招 WAF。\n队列在**每轮 intervalSeconds（120s）都会重排一次**，只是「拉新数据」按上面的节奏走。三源合并去重后按发布时间新→旧重排，**只重排不删**，可超过 10 条（上限 200）。",
     "wafCooldownMinutes": 15,
     "wafNote": "连续 2 次被 WAF 拦 → 熔断冷却 15 分钟（期间不拉任何 feed，只保留 notify）。实测 IP 级封禁 >25 分钟，所以宁可早停。",
     "note": "守护循环：2 分钟重排队列 + 处理（新到旧、不打断当前）。intervalSeconds 是**重排/处理**节奏；拉数据按 sources.*EverySeconds 错峰。"
@@ -73,6 +74,18 @@
     "maxPerRun": 2,
     "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值"
   },
+  "websearch": {
+    "enabled": true,
+    "timeoutMs": 60000,
+    "note": "答疑库没命中时联网补一次（用户 2026-11-12 认可）：搜到 AI 答案 → 按 50% 中概率作答（「这个想小鲸鱼搜到，大概是这样」）；只有结果页 / 被风控 / 超时 → 不硬编答案，仍转人工。单轮查询上限 2 次与 3s 间隔由 baidu-websearch skill 内部强制（resetRound/quotaLeft），同一帖 24h 内不重复搜。依赖 baidu-websearch skill，未安装则静默跳过"
+  },
+  "codeMatch": {
+    "enabled": true,
+    "shareWindowMinutes": 5,
+    "askWindowMinutes": 30,
+    "maxAskersPerShare": 3,
+    "note": "天宫码撮合（用户 2026-11-10）：有人 5 分钟内贴了天宫码 → 把该帖链接发给 30 分钟内求码的帖子。每条发码帖最多通知 3 个求码的人，新贴优先。只转达链接：不担保码有效、不代替任何人交换、不索要；同一对（求码帖×发码帖）只撮合一次（凭据落 post_event.code_match）。签名由脚本统一追加"
+  },
   "comfort": {
     "enabled": true,
     "signature": true,
@@ -83,6 +96,7 @@
     "enabled": true,
     "aliases": [
       "大肥鱼",
+      "肥鱼",
       "吃白米饭的"
     ],
     "matchRoles": true,

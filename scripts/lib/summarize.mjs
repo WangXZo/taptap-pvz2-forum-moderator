@@ -79,6 +79,11 @@ export function isUsefulAnswer(r) {
     .trim();
   if (t.length < 12) return false; // 太短，多半是接话/碎片
   if (JUNK_PATTERNS.test(t)) return false; // 客服引导 / 私下交易 / 敏感
+  // 🚫 求码句不是答案（2026-11-10 事故：《蹲一个天宫码》把楼主自己那句
+  //    「求一个天宫码，蹲了好久了」当成答案沉淀进库，之后又拿它去回别人）
+  if (/(求|蹲|想要|来个|有没有|给个|谁有|求个).{0,6}(天宫码|兑换码|激活码|礼包码|码)/.test(t)) return false;
+  // 🚫 私下换码不是答案（「你是安卓的吗，我们俩可以换」这类，和 answerPromisesCode 同一口径）
+  if (/(我们?俩|咱俩).{0,10}(可以|能)?换|(可以|能)(互换|换码)/.test(t)) return false;
   if (CODE_RE.test(t)) return false; // 贴兑换码
   if (/[?？]\s*$/.test(t) && t.length < 20) return false; // 纯反问
   if (!/[一-龥]/.test(t)) return false; // 没有中文说明，多半是贴码

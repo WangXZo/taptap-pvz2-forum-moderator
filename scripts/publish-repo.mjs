@@ -98,6 +98,7 @@ const DEFAULT_FILES = [
   'scripts/test-thread-context.mjs',
   'scripts/test-variants.mjs',
   'scripts/test-watch-queue.mjs',
+  'scripts/test-websearch.mjs',
   'scripts/cold-store.mjs',
   'scripts/watch.mjs',
   'scripts/waf.mjs',
@@ -111,6 +112,9 @@ const DEFAULT_FILES = [
   'scripts/lib/mod-task.mjs',
   'scripts/lib/mod-report.mjs',
   'scripts/lib/code-guard.mjs',
+  'scripts/lib/code-match.mjs',
+  'scripts/lib/websearch.mjs',
+  'scripts/lib/window-fetch.mjs',
   'scripts/lib/cold-store.mjs',
   'scripts/lib/compose-reply.mjs',
   'scripts/lib/cross-check.mjs',
@@ -183,7 +187,7 @@ export function maskValue(s) {
  * 这些是我们自己助手的昵称，公开写在代码和文档里，玩家喊我们时也要认。
  * 所以它们**不当敏感串扫**，也不脱敏 —— 只有真正的个人隐私（uid / 队友 uid / 真实好友码）才拦。
  */
-const PUBLIC_ALIASES = ['大肥鱼', '吃白米饭的'];
+const PUBLIC_ALIASES = ['大肥鱼', '肥鱼', '吃白米饭的'];
 
 /** 生成脱敏后的 config.json */
 async function buildMaskedConfig() {

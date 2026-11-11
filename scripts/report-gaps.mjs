@@ -52,7 +52,7 @@ for (const [id, p] of Object.entries(state.posts || {})) {
     skippedNonQuestion++;
     continue;
   }
-  gaps.push({ id, title: p.title || '(无标题)', url: p.url, reason: p.reason, at: p.lastSeen || '' });
+  gaps.push({ id, title: p.title || '(无标题)', url: p.url, reason: p.reason, at: p.lastSeen || '', web: p.webSearch || null });
 }
 
 // 可选：把当前最新帖子也过一遍，找出「现在也没命中」的
@@ -111,18 +111,30 @@ if (hot.length) {
 
 lines.push('## 未命中的提问清单');
 lines.push('');
+// 「搜索」列 = 联网补答的结论（用户 2026-11-12）：
+//   只有结果页 / 没搜到 / 被风控 → 这些是**优先补库**的目标；空白 = 还没搜过
+const webText = (w) => {
+  if (!w) return '';
+  if (w.mode === 'answer') return '搜到答案';
+  if (w.mode === 'page') return '只有结果页';
+  if (w.reason === 'blocked') return '被风控';
+  if (w.reason === 'quota') return '配额用完未搜';
+  return w.reason ? `没搜到(${w.reason})` : '没搜到';
+};
 if (!gaps.length && !freshRows.length) {
   lines.push('_（暂无。可能是新库还没积累。）_');
 } else {
-  lines.push('| # | 标题 | 链接 | 说明 |');
-  lines.push('|---|---|---|---|');
+  lines.push('| # | 标题 | 搜索 | 链接 | 说明 |');
+  lines.push('|---|---|---|---|---|');
   let i = 1;
   for (const g of gaps.slice(0, 200)) {
     const why = g.reason === REASON.LOW_CONFIDENCE ? '分数不足' : '未命中任何条目';
-    lines.push(`| ${i++} | ${String(g.title).replace(/\|/g, '/').slice(0, 40)} | ${g.url || '-'} | ${why} |`);
+    lines.push(
+      `| ${i++} | ${String(g.title).replace(/\|/g, '/').slice(0, 40)} | ${webText(g.web)} | ${g.url || '-'} | ${why} |`
+    );
   }
   for (const f of freshRows) {
-    lines.push(`| ${i++} | ${String(f.title).replace(/\|/g, '/').slice(0, 40)} | ${f.url} | 当前分数 ${f.score}（最接近：${f.nearest}） |`);
+    lines.push(`| ${i++} | ${String(f.title).replace(/\|/g, '/').slice(0, 40)} | - | ${f.url} | 当前分数 ${f.score}（最接近：${f.nearest}） |`);
   }
 }
 lines.push('');

@@ -222,6 +222,8 @@ export async function composeReply({
   qaHits = [],
   avoidTexts = [],
   hint = '',
+  /** 联网搜到的说法（答疑库没命中时补的，**二手信息**，按 50% 中概率讲） */
+  webNote = '',
   log = () => {},
 } = {}) {
   if (!tree) return { ok: false, reason: 'no_tree' };
@@ -254,6 +256,12 @@ export async function composeReply({
     TASK_BRIEF[finalKind] || TASK_BRIEF.answer,
     material
       ? `\n## 参考资料（已按本楼话题挑出相关部分，**仅供参考**：用自己的话讲，不许照抄、不许整段搬）\n${material}`
+      : '',
+    webNote
+      ? `\n## 小鲸鱼联网搜到的说法（**二手信息，不是官方口径**）\n` +
+        `用它的唯一前提：**按 50% 中概率讲** —— 开口用「这个想小鲸鱼搜到，大概是这样」这类说法，` +
+        `结尾提醒他自己那边实测为准；**只讲搜到的范围内**，不许补搜到之外的数字/时间/细节，别当定论。\n\n` +
+        `${String(webNote).slice(0, 1200)}`
       : '',
     avoidTexts && avoidTexts.length
       ? `\n## 你最近说过的话（**别重复这些说法**，换个说法、换个角度）\n${avoidTexts

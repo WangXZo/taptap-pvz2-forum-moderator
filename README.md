@@ -54,6 +54,24 @@
 > ⚠️ **永远不要手工用仓库副本覆盖运行中的库** ——
 > 历史教训：一夜自动沉淀的 10 条被旧副本冲没了。
 
+## 答疑库没命中时，可以联网补一句（可选）
+
+答疑库没命中 → 默认转「需人工」。装上 **`skills/baidu-websearch/`** 这个独立小技能后，
+它会先联网搜一把：
+
+| 搜索返回 | 怎么处理 |
+|---|---|
+| 百度 AI 搜索有**生成答案**（`mode=answer`） | 按 **50% 中概率**作答，开口「这个想小鲸鱼搜到，大概是这样」+ 提醒以自己实测为准 |
+| 只有**普通结果页**（`mode=page`） | **不硬编答案**，仍转「需人工」；标题会写进 `reports/gaps.md` 的「搜索」列当补库线索 |
+| 被风控 / 超时 / 本轮配额用完 | 静默跳过，仍转「需人工」 |
+
+- 装法：把 `skills/baidu-websearch/` 拷到 `~/.dsh/skills/baidu-websearch/`（零依赖，node ≥18）
+- **没装就按正常流程走**：照原样转「需人工」，不报错、不影响主流程
+- 限流写在那个技能里：**单轮最多 2 次查询 + 间隔 ≥3s**；同一帖 24h 内不重复搜
+- 开关：`scripts/config.json` → `websearch.enabled`
+
+> 搜索结果是**二手信息**，不是官方口径 —— 所以只按 50% 中概率讲，且不许补搜到之外的细节。
+
 ## 它会做什么、不会做什么
 
 **会**：
@@ -137,7 +155,7 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，20 套）
+### 自检（改规则前后必跑，21 套）
 
 ```bash
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
@@ -146,7 +164,7 @@ node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
 node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
- && node scripts/test-comfort.mjs
+node scripts/test-comfort.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
 ```
 
 ## LLM 从哪来
