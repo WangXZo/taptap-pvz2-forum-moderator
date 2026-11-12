@@ -270,9 +270,9 @@ t('两处重复的只算一条', ids2.filter((x) => x.id === 'P9').length === 1,
   } catch {}
 }
 
-// ---------- 5b-2. 天宫码撮合（lib/code-match.mjs，2026-11-10 用户规则） ----------
-// 规则：新发码（5 分钟内）→ 链接发给 30 分钟内求码的人；每个码最多 3 人；
-//       没有求贴就不处理；优先新求码贴；发码超过 5 分钟不再发。
+// ---------- 5b-2. 天宫码撮合（lib/code-match.mjs，2026-11-10 建 / 2026-11-12 扩） ----------
+// 规则：新发码（5 分钟内）→ 链接发给 2 小时内求码的人（30 分钟→2 小时）；每个码最多 3 人；
+//       同一个求码帖最多被通知 1 次；没有求贴就不处理；优先新求码贴；发码超过 5 分钟不再发。
 {
   const { pickCodeMatches, buildCodeMatchText } = await import('./lib/code-match.mjs');
   const NOW = 1_800_000_000_000;
@@ -299,9 +299,21 @@ t('两处重复的只算一条', ids2.filter((x) => x.id === 'P9').length === 1,
   const noAsk = [mk('S3', 'JFAzzzzzzz 分享', 1)];
   t('撮合：没有求码帖 → 不处理', pickCodeMatches({ items: noAsk, nowMs: NOW }).length === 0);
 
-  // 求码帖超 30 分钟 → 不再通知
-  const lateAsk = [mk('S4', 'JFAqqqqqqq 分享', 1), mk('A9', '求天宫码', 31)];
-  t('撮合：求码帖超 30 分钟 → 不通知', pickCodeMatches({ items: lateAsk, nowMs: NOW }).length === 0);
+  // 求码帖窗口：30 分钟 → 2 小时（用户 2026-11-12）
+  const inWindow = [mk('S4', 'JFAqqqqqqq 分享', 1), mk('A9', '求天宫码', 100)];
+  t('撮合：2 小时内的求码帖 → 能撮合', pickCodeMatches({ items: inWindow, nowMs: NOW }).length === 1);
+  const lateAsk = [mk('S5', 'JFAwwwwwww 分享', 1), mk('A9', '求天宫码', 121)];
+  t('撮合：求码帖超 2 小时 → 不通知', pickCodeMatches({ items: lateAsk, nowMs: NOW }).length === 0);
+
+  // 同一个求码帖最多被通知 maxSharesPerAsker 次（2 小时窗口下防重复刷屏）
+  const twoShares = [
+    mk('S6', 'JFAyyyyyyy 分享', 1),
+    mk('S7', 'JFAxxxxxxx 分享', 2),
+    mk('A1', '求天宫码', 5),
+  ];
+  const r2 = pickCodeMatches({ items: twoShares, nowMs: NOW });
+  t('撮合：同一求码帖只被通知 1 次', r2.filter((x) => x.asker.id === 'A1').length === 1, String(r2.length));
+  t('撮合：maxSharesPerAsker=0 → 不限', pickCodeMatches({ items: twoShares, nowMs: NOW, maxSharesPerAsker: 0 }).length === 2);
 
   // 自己贴码又求码 → 不撮合自己
   const self = [mk('X1', 'JFAmmmmmmm 求个天宫码换一下', 1)];

@@ -31,6 +31,14 @@ import { listFeed, WafBlocked, activityTime } from './lib/http.mjs';
 import { fetchWindow, createCursorStore } from './lib/window-fetch.mjs';
 import { openPostDb, isHandled, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 import { pickCodeMatches, buildCodeMatchText } from './lib/code-match.mjs';
+import {
+  loadPool,
+  savePool,
+  takeTemplate,
+  renderTemplate,
+  generateTemplates,
+  normalizeForCompare,
+} from './lib/code-match-templates.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { runOnce } from './collect.mjs';
 import {
@@ -375,7 +383,7 @@ async function checkAndEnqueue() {
 
   // ① 最新（发布时间降序）—— 每 createdEverySeconds 一次
   //    ⚠️ 顺手做「天宫码撮合」：这里拿到的是**最新一批帖子**，正好是判断
-  //    「5 分钟内有人发了码」+「30 分钟内有人在求码」所需要的原料。
+  //    「5 分钟内有人发了码」+「2 小时内有人在求码」所需要的原料。
   let pulledForMatch = [];
   if (
     src.created !== false &&
@@ -468,11 +476,35 @@ async function checkAndEnqueue() {
   const fromState = enqueueNotifyIds(queue, state, queued);
   addedNotify += fromState.added;
 
-  // ⑤ 天宫码撮合（用户 2026-11-10）
-  //    有人**5 分钟内**贴了天宫码 → 把该帖链接发给**30 分钟内**在求码的帖子。
-  //    每条发码帖最多通知 3 个求码的人，**新贴优先**；同一对（求码帖×发码帖）只撮合一次。
-  //    文案由 buildCodeMatchText 生成，签名由 clampReply 统一追加。
+  // ⑤ 天宫码撮合（用户 2026-11-10 建，2026-11-12 扩）
+  //    有人**5 分钟内**贴了天宫码 → 把该帖链接发给**2 小时内**在求码的帖子（30 分钟→2 小时）。
+  //    每条发码帖最多通知 3 个求码的人，**新贴优先**；同一对（求码帖×发码帖）只撮合一次；
+  //    同一个求码帖最多被通知 maxSharesPerAsker 次（防同一帖被反复通知 = 刷屏）。
+  //    文案：**LLM 预生成的模板池**（用一条少一条，池空了自动补）→ 签名由 clampReply 统一追加。
   let matched = 0;
+  // ---- 模板池：配置 + 读取（**与本轮有没有新帖无关**）----
+  // ⚠️ 池维护是家务活：要是绑在 pulledForMatch 上，论坛安静、没新帖时池子永远补不满。
+  //    所以「读取 / 补足」放在撮合门外；只有「找对 + 发送」才需要最新 feed。
+  const tplCfg = config.codeMatch?.templates || {};
+  const tplEnabled = config.codeMatch?.enabled !== false && tplCfg.enabled !== false;
+  const minTemplates = Number(tplCfg.minTemplates ?? 4);
+  const targetTemplates = Number(tplCfg.targetTemplates ?? 8);
+  const maxAgeHours = Number(tplCfg.maxAgeHours ?? 24);
+  const tplFile = resolve(
+    config.paths.dataDir || resolve(ROOT_DIR(), 'data'),
+    tplCfg.file || 'code-match-templates.json'
+  );
+  // 模板池：独立文件（watch 拥有）—— 不写 state.json，那边由 collect 负责。
+  // 池空 / LLM 挂了 → 撮合时退回内置兜底模板（通知不能因为生成失败就发不出去）。
+  let pool = [];
+  if (tplEnabled) {
+    try {
+      pool = (await loadPool(tplFile, { maxAgeHours, nowMs })).templates;
+    } catch (e) {
+      console.log(`  [模板] 读池失败：${e.message}`);
+    }
+  }
+  // ---- 撮合：找对 + 发送（需要最新 feed）----
   if (config.codeMatch?.enabled !== false && pulledForMatch.length && !feedBlocked) {
     try {
       const candidates = pulledForMatch.map((it) => {
@@ -488,8 +520,9 @@ async function checkAndEnqueue() {
         items: candidates,
         nowMs,
         shareWindowMs: Number(config.codeMatch?.shareWindowMinutes ?? 5) * 60 * 1000,
-        askWindowMs: Number(config.codeMatch?.askWindowMinutes ?? 30) * 60 * 1000,
+        askWindowMs: Number(config.codeMatch?.askWindowMinutes ?? 120) * 60 * 1000,
         maxAskersPerShare: Number(config.codeMatch?.maxAskersPerShare ?? 3),
+        maxSharesPerAsker: Number(config.codeMatch?.maxSharesPerAsker ?? 1),
         // 同一对只撮合一次（凭据落事件流水，搬库不影响）
         isDone: (askerId, shareId) =>
           Boolean(db) &&
@@ -505,7 +538,16 @@ async function checkAndEnqueue() {
           console.log('    [跳过] opencli 不可用');
         } else {
           for (const { asker, share } of pairs) {
-            const text = buildCodeMatchText({ share });
+            // 取一条模板就用掉（用完即弃 → 同一条不会发两次）；池空退回内置兜底
+            let text = '';
+            const taken = takeTemplate(pool);
+            if (taken) {
+              pool = taken.rest;
+              text = renderTemplate(taken.text, share);
+            } else {
+              text = buildCodeMatchText({ share });
+              console.log('    [模板] 池空 → 本条用内置兜底模板');
+            }
             const r = await replyOne({
               runner,
               url: `https://www.taptap.cn/moment/${asker.id}`,
@@ -530,6 +572,44 @@ async function checkAndEnqueue() {
       }
     } catch (e) {
       console.log(`  [撮合] 本轮跳过：${e.message}`);
+    }
+  }
+  // ---- 模板池补足：用掉的已移除（先落盘），剩太少就让 LLM 补到 targetTemplates ----
+  //      放在撮合门外 → 不管本轮有没有新帖都维护（消费在撮合里，补足在这里）
+  if (tplEnabled) {
+    try {
+      await savePool(tplFile, pool);
+      if (pool.length < minTemplates) {
+        const need = Math.max(1, targetTemplates - pool.length);
+        // 质量闸会筛掉一些（不同渠道合规率不一样）→ 多要几条（封顶 12），但只补到 target、不超
+        const askCount = Math.min(need + 4, 12);
+        console.log(`  [模板] 池里剩 ${pool.length} 条（< ${minTemplates}）→ LLM 预生成 ${askCount} 条、择优补到 ${targetTemplates}`);
+        const gen = await generateTemplates(config, {
+          count: askCount,
+          log: (m) => console.log(m),
+        });
+        if (gen.ok && gen.templates.length) {
+          const have = new Set(pool.map((x) => normalizeForCompare(x.text)));
+          const add = [];
+          for (const text of gen.templates) {
+            if (add.length >= need) break; // 只补到 target，不超
+            const key = normalizeForCompare(text);
+            if (!key || have.has(key)) continue;
+            have.add(key);
+            add.push({ text, createdAt: new Date(nowMs).toISOString() });
+          }
+          pool = pool.concat(add);
+          await savePool(tplFile, pool);
+          console.log(
+            `  [模板] 补入 ${add.length} 条（池 ${pool.length} 条）` +
+              (pool.length < targetTemplates ? `（还差 ${targetTemplates - pool.length} 条，下轮继续补）` : '')
+          );
+        } else {
+          console.log(`  [模板] 预生成失败（${gen.reason || '无有效产出'}）→ 下轮再试，期间用内置兜底模板`);
+        }
+      }
+    } catch (e) {
+      console.log(`  [模板] 补足本轮跳过：${e.message}`);
     }
   }
 

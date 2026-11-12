@@ -3,6 +3,13 @@
 // 用户原话：「如果有5分钟内新的发天宫码，把帖子链接发给30分钟内且求天宫码的帖子。
 //            并说明，保持签名。」
 //
+// 2026-11-12 用户调整：
+//   · **求码帖窗口 30 分钟 → 2 小时**（用户：「改为2小时内求天宫码的贴」）
+//   · **同一个求码帖最多被通知 N 次**（新增 maxSharesPerAsker，默认 1）
+//     ⚠️ 为什么必须加：窗口从 30 分钟放大到 2 小时后，同一个求码帖很容易被
+//        多个不同的发码帖各通知一次 → 同一个帖子被回复 2~3 次 = 又一种刷屏。
+//        用户 2026-11-12 专门处理过刷屏问题，这里不能自己又造一个。
+//
 // 边界（很重要，别越界）：
 //   · **只转达帖子链接**，不替人担保码能不能用、不承诺「一定有」
 //   · **不撮合私下交易**、不索要、不代替任何人允诺互换（`answerPromisesCode` 那套口径不变）
@@ -20,9 +27,10 @@ import { looksLikeCodeAsk, looksLikeCodeShare } from './code-guard.mjs';
  * @param {Array} o.items  feed 条目（每条至少 { id, title, text, publishTime }，单位 ms）
  * @param {number} [o.nowMs]
  * @param {number} [o.shareWindowMs] 发码帖的「新鲜度」窗口（默认 5 分钟）
- * @param {number} [o.askWindowMs]   求码帖的「有效期」窗口（默认 30 分钟）
+ * @param {number} [o.askWindowMs]   求码帖的「有效期」窗口（默认 2 小时）
  * @param {Function} [o.isDone] `(askerId, shareId) => boolean` 已经撮合过的对
  * @param {number} [o.maxAskersPerShare] 每条发码帖最多通知几个求码的人（用户 2026-11-10：最多 3 个）
+ * @param {number} [o.maxSharesPerAsker] 同一个求码帖最多被通知几次（默认 1；0 = 不限）
  * @param {number} [o.maxPairs]      单轮最多撮合几对（整体安全阀）
  * @returns {Array<{asker:object, share:object}>}
  */
@@ -30,9 +38,10 @@ export function pickCodeMatches({
   items = [],
   nowMs = Date.now(),
   shareWindowMs = 5 * 60 * 1000,
-  askWindowMs = 30 * 60 * 1000,
+  askWindowMs = 120 * 60 * 1000,
   isDone = () => false,
   maxAskersPerShare = 3,
+  maxSharesPerAsker = 1,
   maxPairs = 12,
 } = {}) {
   const norm = (x) => ({
@@ -65,6 +74,7 @@ export function pickCodeMatches({
     .sort((a, b) => b.publishTime - a.publishTime); // 新贴优先
 
   const out = [];
+  const askerSeen = new Map(); // 同一个求码帖被通知了几次
   for (const share of shares) {
     // 求码的人按「越新越优先」排序 —— 刚发的求码帖更可能还在等
     const targets = asks.slice().sort((a, b) => b.publishTime - a.publishTime);
@@ -74,8 +84,12 @@ export function pickCodeMatches({
       if (out.length >= maxPairs) return out;
       if (asker.id === share.id) continue; // 别自己撮合自己
       if (isDone(asker.id, share.id)) continue;
+      // 同一个求码帖最多被通知 maxSharesPerAsker 次（2 小时窗口下防重复刷屏）
+      const used = askerSeen.get(asker.id) || 0;
+      if (maxSharesPerAsker > 0 && used >= maxSharesPerAsker) continue;
       out.push({ asker, share });
       perShare++;
+      askerSeen.set(asker.id, used + 1);
     }
   }
   return out;

@@ -82,9 +82,17 @@
   "codeMatch": {
     "enabled": true,
     "shareWindowMinutes": 5,
-    "askWindowMinutes": 30,
+    "askWindowMinutes": 120,
     "maxAskersPerShare": 3,
-    "note": "天宫码撮合（用户 2026-11-10）：有人 5 分钟内贴了天宫码 → 把该帖链接发给 30 分钟内求码的帖子。每条发码帖最多通知 3 个求码的人，新贴优先。只转达链接：不担保码有效、不代替任何人交换、不索要；同一对（求码帖×发码帖）只撮合一次（凭据落 post_event.code_match）。签名由脚本统一追加"
+    "maxSharesPerAsker": 1,
+    "templates": {
+      "enabled": true,
+      "minTemplates": 4,
+      "targetTemplates": 8,
+      "maxAgeHours": 24,
+      "file": "code-match-templates.json"
+    },
+    "note": "天宫码撮合：有人 5 分钟内贴了天宫码 → 把该帖链接发给 2 小时内求码的帖子（用户 2026-11-12：30 分钟→2 小时）。每条发码帖最多通知 3 个求码的人，新贴优先；同一个求码帖最多被通知 maxSharesPerAsker 次（默认 1 —— 窗口放大后防同一帖被反复通知，那还是刷屏）。只转达链接：不担保码有效、不代替任何人交换、不索要；同一对（求码帖×发码帖）只撮合一次（凭据落 post_event.code_match）。文案模板池（templates）：LLM 预生成、用一条少一条，剩 <minTemplates 就补到 targetTemplates；池空或生成失败退回内置兜底模板。签名由脚本统一追加"
   },
   "comfort": {
     "enabled": true,

@@ -1560,15 +1560,22 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 - `DEFAULT_JUNK_PATTERNS` 增加求码正则，`qa-admin purge-junk` 可清理存量
 - 空草稿不发送（曾发出过「只有签名、没有正文」的空回复）
 
-### 2. 天宫码撮合（用户要求）
+### 2. 天宫码撮合（用户要求；2026-11-12 扩）
 ```
-5 分钟内新发码 → 把该帖链接发给 30 分钟内求码的帖子
-每码最多 3 人 · 新求码优先 · 无求贴不处理 · 超 5 分钟永不补发
+5 分钟内新发码 → 把该帖链接发给 2 小时内求码的帖子（30 分钟→2 小时，用户 2026-11-12）
+每码最多 3 人 · 同一求码帖最多被通知 1 次 · 新求码优先 · 无求贴不处理 · 超 5 分钟永不补发
 同一对（求码帖×发码帖）只撮合一次（post_event.code_match）
 ```
 - 逻辑：`lib/code-match.mjs`（`pickCodeMatches` / `buildCodeMatchText`）
-- 文案：4 种说法按发码帖 id 稳定散列轮换，**链接放最后**，自称「小鲸鱼」，带「趁热/快去领/记得谢谢大佬」
-- 配置：`config.codeMatch`
+- 文案：**LLM 预生成的模板池**（`lib/code-match-templates.mjs`）
+  - **用一条少一条**（用完即弃）→ 同一条模板不会被发两次
+  - 池里剩 < `minTemplates`(4) → 让 LLM 预生成补到 `targetTemplates`(8)
+  - 模板带 `createdAt`，超 `maxAgeHours`(24) 作废 → 触发补足（否则低频时池子永远不变，等于静态池）
+  - 池空 / LLM 挂 → 退回**内置兜底模板**（不能因为生成失败就发不出通知）
+  - 质量闸：承诺/引流词、真实网址、长度异常、缺人格自称、重复 → 不合格的丢掉
+  - 模板带 `{link}` 占位符，发送时替换成真实链接（**位置由模板决定**：LLM 多放在句中或句尾）
+- 配置：`config.codeMatch`（`askWindowMinutes` / `maxSharesPerAsker` / `templates`）
+- 池文件：`data/code-match-templates.json`（**独立文件**，watch 拥有 —— 不写 state.json）
 
 ### 3. 喊话分流（用户逐条指定的口气）
 | 形态 | 处理 |
