@@ -42,7 +42,19 @@ console.log('\n== 表情落位：位置不限，最多 1 个（2026-11-10）==')
 {
   const { applyEmojiPlacement } = await import('./lib/compose-reply.mjs');
   const config = { reply: { emoji: { enabled: true } } };
-  const run = (t, kind = 'comfort') => applyEmojiPlacement(t, { kind, config });
+  // ⚠️ 自带固定表情表，**不依赖运行时采集的 data/emoji-map.json**：
+  //    发布仓库里没有 data/（采集产物不进仓库），靠采集文件会测不成。
+  //    真实表的 id/url 由 buildContentsWithEmoji 用，这里只验「名字认不认得出」。
+  const FIXTURE_MAP = {
+    开心: { id: 71 },
+    比心: { id: 123 },
+    点赞: { id: 124 },
+    加油: { id: 126 },
+    叹气: { id: 95 },
+    微笑: { id: 70 },
+    星星眼: { id: 112 },
+  };
+  const run = (t, kind = 'comfort') => applyEmojiPlacement(t, { kind, config, map: FIXTURE_MAP });
 
   const mid = run('先把材料攒够[表情_加油]再冲一波');
   check('表情在句中 → 原位置保留', mid.text === '先把材料攒够[表情_加油]再冲一波', mid.text);

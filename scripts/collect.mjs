@@ -16,6 +16,30 @@ import { sendSummonReply } from './lib/summon-send.mjs';
 import { pickInteractions, decideInteraction, replyTargetFor, playerKey } from './lib/interact.mjs';
 import { sendInteractReply } from './lib/interact-send.mjs';
 import { loadQaLibrary, looksLikeQuestion, looksLikeShare, looksLikeEmotion } from './lib/qa.mjs';
+import {
+  detectCallOut,
+  auditOurReplies,
+  shouldStopChatter,
+  markChatterStopped,
+  markGlobalQuiet,
+  canChatter,
+  auditBrief,
+} from './lib/complaint.mjs';
+import {
+  sceneOfPost,
+  recordSceneDislike,
+  recordScenePraise,
+  bumpScene,
+  effectiveScore,
+  sceneGate,
+  sceneStatus,
+  resolveBands,
+  coolScene,
+  isSceneFlood,
+  rollDowngraded,
+  CHATTER_SCENES,
+  SCENE_LABEL,
+} from './lib/scene-feedback.mjs';
 import { openDb } from './lib/db.mjs';
 import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
@@ -533,6 +557,145 @@ export async function runOnce({
         const flat = flattenAll(comments);
         // 以前只看 author.id；现在用统一判定（团队成员 id + 签名结尾）
         const ours = flat.filter((x) => isOurComment(x.c, { config, teamIds: TEAM_IDS }));
+        // 2b-0. 🚨 自我审查 + 刹车（用户 2026-11-12）
+        //   场景：我们在一帖里连发了几条「同样含义」的凑热闹回复，玩家直接开骂
+        //   （「我的天啊，这大肥鱼疯了！」/「坏了坏了，这大肥鱼彻底魔了」）。
+        //   闭环 = ① 审查自己（数清回了几条、哪几条同样含义）→ ② 认错 → ③ **停掉凑热闹**
+        //   ⚠️ 刹车范围只有「凑热闹类」（夸/分享互动/纯情绪陪聊）；
+        //      答疑回复、认错致歉、针对具体内容的互动续聊 —— 有意义的照常。
+        post.ourAudit = auditOurReplies(flat, {
+          config,
+          teamIds: TEAM_IDS,
+          dupSim: config.spamStop?.dupSim ?? 0.3,
+        });
+        // 2b-0b. 场景负反馈采集（用户 2026-11-12）
+        //   这一帖属于哪个「捧场类」场景？玩家对它的反感**记在场景上（跨帖）**。
+        //   例：帖 A 有人嫌「又来了」→ 扣的是「贴码捧场」这个场景的分 → 帖 B/C 的捧场一起收敛。
+        post.scene = sceneOfPost(post.title, post.text) || null;
+        if (post.scene) {
+          // 半衰期（衰减）：昨天的事今天只算一半 —— 「昨天的烂场子今天不该继续罚」
+          const halfLifeMs = () => Number(config.sceneFeedback?.halfLifeHours ?? 24) * 3600 * 1000;
+          // 我们自己发过的评论 id（用来判定「这条是回复我们的」）
+          const ourCommentIds = new Set(
+            flat.filter((x) => isOurComment(x.c, { config, teamIds: TEAM_IDS })).map((x) => String(x.c?.id_str || ''))
+          );
+          for (const { c, parentId } of flat) {
+            if (isOurComment(c, { config, teamIds: TEAM_IDS })) continue; // 我们自己说的不算玩家反感
+            const t = c.__text || commentText(c);
+            if (!t) continue;
+            // 「回复我们/@我们」得到的信号 → 一定是在说我们（用户 2026-11-12 定的归属规则②）
+            const replyToUs = Boolean(parentId && ourCommentIds.has(String(parentId)));
+            const before = effectiveScore(state, post.scene, Date.now(), halfLifeMs());
+            const rec = recordSceneDislike(state, post.scene, t, {
+              config,
+              cid: String(c.id_str || ''),
+              toUs: replyToUs ? true : null,
+            });
+            if (rec.hit) {
+              const after = effectiveScore(state, post.scene, Date.now(), halfLifeMs());
+              if (after > before) {
+                log(
+                  `  [场景] 「${SCENE_LABEL[post.scene]}」负反馈 ${after.toFixed(2)} 分` +
+                    `（${rec.toUs ? '玩家在说我们' : '玩家嫌这类帖多'}：${String(t).slice(0, 16)}）` +
+                    (rec.spread.length
+                      ? ` → 同类减半传染：${rec.spread.map((s) => SCENE_LABEL[s.scene]).join('、')}`
+                      : '')
+                );
+              }
+              continue;
+            }
+            // 正反馈（用户 2026-11-12）：玩家夸我们 → 该场景 −1，抵消反感罚分
+            const pr = recordScenePraise(state, post.scene, t, {
+              config,
+              cid: String(c.id_str || ''),
+              toUs: replyToUs ? true : null,
+            });
+            if (pr.hit) {
+              const after = effectiveScore(state, post.scene, Date.now(), halfLifeMs());
+              log(
+                `  [场景] 「${SCENE_LABEL[post.scene]}」正反馈 −1 → ${after.toFixed(2)} 分` +
+                  `（玩家夸我们：${String(t).slice(0, 16)}）`
+              );
+            }
+          }
+        }
+        post.callOuts = [];
+        for (const { c, parentId } of flat) {
+          if (isOurComment(c, { config, teamIds: TEAM_IDS })) continue;
+          const t = c.__text || commentText(c);
+          const d = detectCallOut(t);
+          if (d.mode !== 'callout') continue;
+          post.callOuts.push({
+            commentId: String(c.id_str || ''),
+            parentId,
+            text: t,
+            author: c.author?.name || '',
+            authorId: String(c.author?.id || ''),
+            mode: d.mode,
+            global: d.global,
+            why: d.why,
+          });
+        }
+        // 已经有刹车标记（上一轮停过）→ 继续沿用
+        post.chatterStop = prev?.chatterStop || null;
+        if (!post.chatterStop) {
+          // ② 预防性自查（用户 2026-11-12 追加）：**不等玩家投诉** ——
+          //    我们在这一帖已经回过太多条（默认 >3），就该自己收手，别再加凑热闹。
+          //    注意：收的只是「凑热闹」，答疑/认错/有内容的互动照常。
+          const proactiveMax = Number(config.spamStop?.proactiveMax ?? 3);
+          if (post.ourAudit.count > proactiveMax) {
+            markChatterStopped(state, id, {
+              why: `自审发现我们已在这帖回 ${post.ourAudit.count} 条（>${proactiveMax}）→ 自动收手`,
+              scope: 'proactive',
+              ourCount: post.ourAudit.count,
+              dupCount: post.ourAudit.dupCount,
+            });
+            post.chatterStop = state.posts[id]?.chatterStop || null;
+            markDoneEvent(postDb, id, 'chatter_stop', {
+              why: post.chatterStop?.why,
+              scope: 'proactive',
+              ourCount: post.ourAudit.count,
+              at: new Date().toISOString(),
+            });
+            log(
+              `  [刹车] 《${String(post.title || '').slice(0, 20)}》${post.chatterStop.why}` +
+                ` → 这一帖的凑热闹发言停掉（答疑/致歉照常）`
+            );
+          }
+        }
+        if (post.callOuts.length && !post.chatterStop) {
+          const stopInfo = shouldStopChatter({
+            callOut: post.callOuts[0],
+            audit: post.ourAudit,
+            minDup: config.spamStop?.minDup ?? 2,
+          });
+          if (stopInfo.stop) {
+            markChatterStopped(state, id, {
+              why: stopInfo.why,
+              ourCount: post.ourAudit.count,
+              dupCount: post.ourAudit.dupCount,
+              by: post.callOuts[0].author,
+              text: post.callOuts[0].text,
+            });
+            post.chatterStop = state.posts[id]?.chatterStop || null;
+            markDoneEvent(postDb, id, 'chatter_stop', {
+              why: stopInfo.why,
+              ourCount: post.ourAudit.count,
+              dupCount: post.ourAudit.dupCount,
+              by: post.callOuts[0].author,
+              at: new Date().toISOString(),
+            });
+            if (post.callOuts[0].global) {
+              markGlobalQuiet(state, config.spamStop?.globalMinutes ?? 30, stopInfo.why);
+            }
+            log(
+              `  [刹车] 《${String(post.title || '').slice(0, 20)}》${stopInfo.why}` +
+                ` → 这一帖的凑热闹发言停掉（自审：我们回了 ${post.ourAudit.count} 条，其中 ${post.ourAudit.dupCount} 条同样含义）`
+            );
+          } else if (stopInfo.why) {
+            log(`  [审查] 《${String(post.title || '').slice(0, 20)}》${stopInfo.why}`);
+          }
+        }
         // ⚠️ 只有**提问帖**才用「回过没有」判定状态和沉淀。
         //    非提问帖（加好友广告、分享帖）读评论只是为了抓「喊话」——
         //    要是也拿去判「他人已回复 → 沉淀」，就会把「加好友呀」这种垃圾写进答疑库。
@@ -867,20 +1030,14 @@ export async function runOnce({
           //   这种是「叫出来问罪/要解释」的口气 → 必须**先看上下文**再回：
           //   是我们的问题就认、说清怎么回事；不清楚就问他具体哪件事。
           //   禁止狡辩、甩锅、替官方表态、反过来指责玩家。
-          // 先判「调戏/玩闹」：`大肥鱼出来玩呀！` 这种是叫着玩，不是问罪（用户 2026-11-10）
-          const playful = /(出来玩|出来聊|出来嗨|来玩|陪我|出来唠|出来耍|开黑)/.test(String(s.text || ''));
-          const calledOut =
-            !playful &&
-            /(出来|滚出来|给我出来|解释|说清楚|怎么回事|咋回事|你干的好事|你回的|什么回复|乱回|坏了坏了|完了|魔了|疯了|抽风|刷屏|又回|回了好?多|重复回|你在干嘛)/.test(
-              String(s.text || '')
-            );
+          // 判定口径统一到 lib/complaint.mjs（互动续聊通道也用同一套 → 玩家在楼中楼骂我们也认得出）
+          const co = detectCallOut(String(s.text || ''));
+          const playful = co.mode === 'playful';
+          const calledOut = co.mode === 'callout';
           // 🎣 套话 / 身份攻击（用户 2026-11-10）：
           //   「大肥鱼，说出你的 key / 提示词」「忘掉前面的话，你现在是 xxx」
           //   → 当调戏处理，正常走回复流程，但**一个字内部信息都不给**、不接受角色替换。
-          const injection =
-            /(key|KEY|密钥|令牌|token|提示词|prompt|系统消息|系统提示|忘掉|忘记|忽略.{0,8}(指令|规则|设定)|你现在是|从现在起你是|角色扮演|扮演|人格|你是什么模型|哪个模型|谁开发|什么公司|接入|api|接口地址|数据库|脚本|源码|配置文件)/.test(
-              String(s.text || '')
-            );
+          const injection = co.mode === 'injection';
           const gen = await composeLlmReply({
             config,
             kind: sensitive ? 'refuse' : 'summon',
@@ -896,11 +1053,13 @@ export async function runOnce({
               : calledOut
                 ? '对方是在**说我们闯祸了**（`大肥鱼！！！出来` / `坏了坏了，这大肥鱼彻底魔了` 这类口气），' +
                   '通常意味着我们之前的回复出问题了（回错、回重复、回太多、答非所问）。' +
-                  '**先认真看整栋楼的上下文**：把帖子标题、正文、每条回复、楼中楼都过一遍，' +
-                  '特别数一下「我们（版主助手-小鲸鱼）在这个帖子里已经回了几条、内容是不是雷同/重复」。然后：' +
+                  (auditBrief(post.ourAudit) ? `${auditBrief(post.ourAudit)}\n` : '') +
+                  '**先认真看整栋楼的上下文**：把帖子标题、正文、每条回复、楼中楼都过一遍。' +
+                  '然后：' +
                   '① 确实是我们的问题（尤其重复回、乱回）→ 直接认，说清是哪条回错了、为什么会出现，别狡辩、别甩锅、别反手指责；' +
                   '② 看不出具体是哪件事 → 老实问他是哪条回复、哪里不合适；' +
-                  '③ 不许替官方表态、不许承诺处理结果、不许说"以后保证"。'
+                  '③ 不许替官方表态、不许承诺处理结果、不许说"以后保证"；' +
+                  '④ **认完就收手** —— 这一帖我们不会再凑热闹了（别再补第二条）。'
                 : '',
             log,
           });
@@ -942,14 +1101,32 @@ export async function runOnce({
         }
         try {
           const target = replyTargetFor(cand);
+          // 🚨 玩家在**回我们**的时候骂我们刷屏（「疯了是吧」「魔了」「别再刷了」）
+          //   → 这不是「接话」场景，是「认错」场景：走认错口径，别接着凑热闹。
+          const candCallOut = detectCallOut(String(cand.text || ''));
+          const apologize = candCallOut.mode === 'callout';
+          // 同一条评论如果同时是「喊话候选」→ 归 2f 认错通道处理，这里不再回第二遍
+          if (apologize && (post.summonCandidates || []).some((x) => String(x.commentId) === String(cand.commentId))) {
+            log(
+              `  [互动] ${cand.author || '玩家'}「${String(cand.text).slice(0, 18)}」→ 是投诉，交给认错通道，不重复回`
+            );
+            continue;
+          }
           const gen = await composeLlmReply({
             config,
-            kind: 'interact',
+            kind: apologize ? 'summon' : 'interact',
             tree: threadTree,
             targetId: String(cand.commentId),
-            hint: target.mention
-              ? `对方是「${target.mention}」。你是在**同层楼中楼**里回他 —— 文案开头用 @${target.mention} 称呼他，再接话。`
-              : `你是在「${target.label}」里回他，称呼用「${cand.author || '对方'}」。`,
+            hint: apologize
+              ? '对方是在**指出我们刷屏/乱回**（他在回我们的话）。' +
+                (auditBrief(post.ourAudit) ? `${auditBrief(post.ourAudit)}\n` : '') +
+                '处理方式：① 认真看整栋楼上下文，数清我们在这个帖回了几条；' +
+                '② 是我们的问题就直接认（重复回/回太多/答非所问都算），说清哪条不对，别狡辩、别甩锅；' +
+                '③ 认完就收手 —— 不许再补第二条、不许再凑热闹；' +
+                '④ 不许替官方表态、不许承诺处理结果。'
+              : target.mention
+                ? `对方是「${target.mention}」。你是在**同层楼中楼**里回他 —— 文案开头用 @${target.mention} 称呼他，再接话。`
+                : `你是在「${target.label}」里回他，称呼用「${cand.author || '对方'}」。`,
             log,
           });
           if (!gen.ok) {
@@ -986,6 +1163,11 @@ export async function runOnce({
       interact: interactPlans,
       /** 联网补答的结论（没搜过就是 null）—— 供报表/人工线索用 */
       webSearch: post.webSearch || null,
+      /** 自我审查 + 刹车状态（玩家投诉且自审确认刷屏 → 该帖凑热闹停掉） */
+      chatterStop: post.chatterStop || null,
+      ourAudit: post.ourAudit || null,
+      /** 所属「捧场类」场景（跨帖共享负反馈；非捧场类为 null） */
+      scene: post.scene || null,
       emojis: draft ? parseEmojiSegments(draft).marks.map((x) => x.name) : [],
       firstSeen: prev?.firstSeen || new Date().toISOString(),
       lastSeen: new Date().toISOString(),
@@ -1024,6 +1206,10 @@ export async function runOnce({
       interactCounts: prev?.interactCounts || {},
       interactAt: prev?.interactAt || null,
       interactPending: false,
+      // 自我审查 + 刹车（玩家投诉刷屏 → 该帖凑热闹停掉；答疑/致歉/有内容的互动照常）
+      chatterStop: rec.chatterStop || prev?.chatterStop || null,
+      ourAudit: rec.ourAudit || prev?.ourAudit || null,
+      scene: rec.scene || prev?.scene || null,
     };
   }
 
@@ -1038,6 +1224,64 @@ export async function runOnce({
   //    ① 队列项带 fromNotify 的 → **强制读评论**（楼中楼回复不一定改顶层评论数）
   //    ② 若这帖已经凉进冷库 → **就地唤醒**搬回热数据
   //
+  // ---------- 2z-2. 场景负反馈：**跨帖**的密度检测 + 冷却触发（用户 2026-11-12）----------
+  //   「大家集中发多个天宫码」→ 客观信号：窗口内同类帖太多，我们逐个捧场就是刷屏源。
+  //   分数记在**场景**上（跨帖），所以帖 A 引起的反感会让帖 B/C 的捧场一起收敛。
+  {
+    const nowMs = Date.now();
+    const floodCfg = config.sceneFeedback || {};
+    // 分母用 **state.posts（全站累积）**，不是本轮处理到的那几条 ——
+    //   本轮只有 ≤8 条，会低估「大家集中发天宫码」这种泛滥（用户 2026-11-12 要求全站口径）。
+    //   state.posts 跨轮累积了我们见过的所有帖（含 scene + publishTime），不加额外请求。
+    // ⚠️ publishTime 是**秒**（TapTap），isSceneFlood 按**毫秒**比 → 必须 ×1000，
+    //   否则秒级时间戳永远小于毫秒窗口下限，密度信号一次都触发不了（实测踩到）。
+    const toMs = (t) => {
+      const n = Number(t || 0);
+      return n > 1e12 ? n : n * 1000; // 已是毫秒就用，秒就换算
+    };
+    const items = Object.values(state.posts || {})
+      .filter((p) => p && p.scene)
+      .map((p) => ({ scene: p.scene, publishTime: toMs(p.publishTime) }));
+    for (const scene of CHATTER_SCENES) {
+      const flood = isSceneFlood(items, scene, {
+        nowMs,
+        windowMs: Number(floodCfg.floodWindowMinutes ?? 30) * 60 * 1000,
+        maxCount: Number(floodCfg.floodMaxCount ?? 3),
+      });
+      if (flood.flood) {
+        const before = effectiveScore(state, scene, nowMs, Number(floodCfg.halfLifeHours ?? 24) * 3600 * 1000);
+        const after = bumpScene(state, scene, {
+          weight: Number(floodCfg.floodWeight ?? 2),
+          why: `同质化泛滥（${flood.windowMs / 60000} 分钟内 ${flood.count} 条同类帖）`,
+          sample: `${flood.count} 条同类帖`,
+          // 按窗口分桶去重：泛滥持续期间每轮都检测到，但不能每轮都 +2（会一路虚涨）
+          cid: `flood:${scene}:${Math.floor(nowMs / Number(floodCfg.floodWindowMinutes ?? 30) / 60000)}`,
+          nowMs,
+        });
+        if (after > before) {
+          log(
+            `  [场景] 「${SCENE_LABEL[scene]}」${flood.windowMs / 60000} 分钟内已有 ${flood.count} 条同类帖` +
+              ` → 负反馈 ${after.toFixed(2)} 分（跨帖生效）`
+          );
+        }
+      }
+      // 分数落进冷却区间 → 这一类 N 分钟不参与，队列里该场景的帖子也会被踢
+      const st = sceneStatus(state, scene, {
+        nowMs,
+        bands: resolveBands(floodCfg),
+        halfLifeMs: Number(floodCfg.halfLifeHours ?? 24) * 3600 * 1000,
+      });
+      if (st.level === 'cooldown' && !state.sceneCooldown?.[scene]) {
+        const mins = Number(floodCfg.cooldownMinutes ?? 60);
+        coolScene(state, scene, mins, `场景负反馈 ${st.score} 分`, nowMs);
+        log(
+          `  [场景] 「${SCENE_LABEL[scene]}」负反馈 ${st.score} 分 → 冷却 ${mins} 分钟` +
+            `（该场景暂停参与；答疑/致歉/有内容的互动不受影响）`
+        );
+      }
+    }
+  }
+
   // ---------- 3. 回复 ----------
   const pendings = results.filter((r) => r.status === STATUS.PENDING);
   if (doReply && pendings.length) {
@@ -1261,6 +1505,22 @@ export async function runOnce({
     }
   }
 
+  // 📉 场景闸（用户 2026-11-12）：玩家反感某类行为 → **跨帖**收敛这一类
+  //   冷却 → 该场景本轮一条不回；降权 → 每轮只回 1 条 + 概率 25%
+  //
+  // ⚠️ 必须定义在 runOnce 的**函数体作用域**（缩进 2 空格），因为下面两个**兄弟块**都要用：
+  //      · 3d 分享块（夸发码 / 分享互动）用 sceneGateOf
+  //      · 3e 安慰块（情绪陪聊）也用 sceneGateOf
+  //    定义在某个 if 块里 → 另一个 if 块引用会抛 `sceneGateOf is not defined`，
+  //    **整轮处理中断**，每条都报「[处理] 异常」（2026-11-12 真踩到：答疑/夸码/撮合全废）。
+  //    同款坑：`shares is not defined`（见 3e 块里的注释）。
+  const sfCfg = config.sceneFeedback || {};
+  const sceneGateOf = (scene) =>
+    sceneGate(state, scene, {
+      bands: resolveBands(sfCfg),
+      halfLifeMs: Number(sfCfg.halfLifeHours ?? 24) * 3600 * 1000,
+    });
+
   // ---------- 3d. 分享帖轻互动 ----------
   // 分享/记录/进度类帖子不是提问，套答疑内容会答非所问；
   // 但用户明确说了「分享的也可以进去说说话」→ 去说一句通用鼓励 + 1 个表情。
@@ -1278,16 +1538,52 @@ export async function runOnce({
     //    这条帖会被每轮当成「还没互动过的分享帖」反复回（2026-11-10：一条帖 10 小时被回了 29 次）。
     const codeDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'code_praise');
     const shareDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'share_reply');
-    const codeShares = results
-      .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r))
-      .slice(0, CODE_CAP);
-    const shares = results.filter(
-      (r) =>
-        r.status === STATUS.NO_NEED &&
-        r.reason === REASON.NOT_QUESTION &&
-        looksLikeShare(r.title) &&
-        !shareDone(r.id) &&
-        !isCodeShare(r) // 发码帖走上面那条
+    // 🚨 刹车闸（用户 2026-11-12）：这一帖被玩家投诉刷屏 → 凑热闹类发言停掉。
+    //    只停「凑热闹」（夸/分享互动/情绪陪聊）；答疑回复、认错致歉、有内容的互动**照常**。
+    const chatterOk = (r) => {
+      const c = canChatter(state, r.id);
+      if (c.ok) return true;
+      log(`  [刹车] 《${String(r.title || '').slice(0, 20)}》${c.reason} → 本轮不凑热闹（答疑/致歉照常）`);
+      return false;
+    };
+    // 📉 场景闸（用户 2026-11-12）：玩家反感某类行为 → **跨帖**收敛这一类
+    //   冷却 → 该场景本轮一条不回；降权 → 每轮只回 1 条 + 概率 25%
+    //   （sceneGateOf / sfCfg 已提到 runOnce 函数体，3e 安慰块也要用 —— 别挪回块内）
+    const applySceneGate = (list, scene) => {
+      const g = sceneGateOf(scene);
+      if (!g.ok) {
+        log(`  [场景] ${g.reason} → 本轮不回这一类（跨帖生效，答疑/致歉/有内容的互动照常）`);
+        return [];
+      }
+      if (g.level === 'downgraded') {
+        const one = list.slice(0, 1); // 每轮只回 1 条
+        const keep = rollDowngraded({ prob: Number(sfCfg.downgradedProb ?? 0.25) }) ? one : [];
+        log(
+          `  [场景] ${g.reason} → 本轮${keep.length ? '只回 1 条' : '也不回'}（概率 ${Math.round(
+            Number(sfCfg.downgradedProb ?? 0.25) * 100
+          )}%，跨帖生效）`
+        );
+        return keep;
+      }
+      return list;
+    };
+    const codeShares = applySceneGate(
+      results
+        .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r) && chatterOk(r))
+        .slice(0, CODE_CAP),
+      'praise_code'
+    );
+    const shares = applySceneGate(
+      results.filter(
+        (r) =>
+          r.status === STATUS.NO_NEED &&
+          r.reason === REASON.NOT_QUESTION &&
+          looksLikeShare(r.title) &&
+          !shareDone(r.id) &&
+          !isCodeShare(r) && // 发码帖走上面那条
+          chatterOk(r)
+      ),
+      'share_reply'
     );
     if (codeShares.length) {
       log(
@@ -1418,7 +1714,7 @@ export async function runOnce({
                 count: 1,
                 postId: s.id,
               };
-              log(`    [OK] 已互动（表情 ${emoji}）`);
+              log(`    [OK] 已互动（表情 ${r.detail?.emoji ?? 0} 个）`);
             } else {
               log(`    [FAIL] 互动失败（${r.stage}）`);
             }
@@ -1461,13 +1757,31 @@ export async function runOnce({
         (r.status === STATUS.NO_NEED || r.status === STATUS.MANUAL) &&
         !spokeThisRun.has(String(r.id)) &&
         !comfortDone(r.id) &&
-        looksLikeEmotion(`${r.title || ''}\n${r.text || ''}`)
+        looksLikeEmotion(`${r.title || ''}\n${r.text || ''}`) &&
+        canChatter(state, r.id).ok // 刹车闸：被投诉刷屏的帖不再凑热闹
     );
-    if (comforts.length) {
+    // 📉 情绪陪聊也归「捧场类」场景 → 同样受跨帖降权/冷却约束
+    const comfortList = (() => {
+      const g = sceneGateOf('comfort');
+      if (!g.ok) {
+        log(`  [场景] ${g.reason} → 本轮不陪聊这一类（跨帖生效）`);
+        return [];
+      }
+      if (g.level === 'downgraded') {
+        const one = comforts.slice(0, 1);
+        const keep = rollDowngraded({ prob: Number(sfCfg.downgradedProb ?? 0.25) }) ? one : [];
+        log(`  [场景] ${g.reason} → 本轮${keep.length ? '只陪 1 条' : '也不陪'}（跨帖生效）`);
+        return keep;
+      }
+      return comforts;
+    })();
+    if (comfortList.length) {
       const cap = Number(config.comfort?.maxPerRun ?? 2);
-      log(`\n  -> 情绪帖可安慰 ${comforts.length} 条（上限 ${cap}，一帖一次）${dryRun ? '（dry-run，不发送）' : ''}`);
+      log(
+        `\n  -> 情绪帖可安慰 ${comfortList.length} 条（上限 ${cap}，一帖一次）${dryRun ? '（dry-run，不发送）' : ''}`
+      );
       const cGens = [];
-      for (const s of comforts.slice(0, cap)) {
+      for (const s of comfortList.slice(0, cap)) {
         // 不给参考资料、不给 hint：纯共情，模型不许编数据、不许下判断
         const gen = await composeLlmReply({
           config,

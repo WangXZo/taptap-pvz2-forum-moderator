@@ -116,6 +116,42 @@
     "strongTextLen": 40,
     "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 3 次后，回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。**没有独立检查频率**：通知由 watch 每轮（intervalSeconds）拉取并入队。"
   },
+  "sceneFeedback": {
+    "enabled": true,
+    "bands": [
+      {
+        "level": "normal",
+        "min": null,
+        "max": 1.5
+      },
+      {
+        "level": "downgraded",
+        "min": 1.5,
+        "max": 2.5
+      },
+      {
+        "level": "cooldown",
+        "min": 2.5,
+        "max": null
+      }
+    ],
+    "cooldownMinutes": 60,
+    "downgradedProb": 0.25,
+    "halfLifeHours": 24,
+    "floodWindowMinutes": 30,
+    "floodMaxCount": 3,
+    "floodWeight": 2,
+    "skipMinutes": 60,
+    "note": "场景级负反馈（用户 2026-11-12）：玩家反感某类行为时，**跨帖**收敛这一类。范围=三个捧场场景：praise_code（贴码捧场）/ share_reply（分享凑热闹）/ comfort（情绪陪聊）。**三档用区间判断**（bands，min=null 为 −∞、max=null 为 ∞）：normal (−∞,1.5) 观察 / downgraded [1.5,2.5) 降权（每轮只回 1 条 + downgradedProb 概率）/ cooldown [2.5,∞) 冷却（cooldownMinutes 内该场景暂停；队列里该场景的帖子踢出、不再入队）。信号：① 玩家明说反感（归属：提到我们/回复我们→满权重，其余→0.5；涉及整类→同大类其它场景减半传染）② 同质化密度（floodWindowMinutes 内同类帖 ≥ floodMaxCount → +floodWeight，按窗口去重）③ **正反馈**：玩家夸我们→该场景 −1（不传染）。分数按 halfLifeHours 半衰期衰减。只影响捧场类 —— 答疑、认错致歉、有内容的互动续聊、天宫码撮合都不受影响。阈值是暂定值，可随时调 bands"
+  },
+  "spamStop": {
+    "enabled": true,
+    "dupSim": 0.3,
+    "minDup": 2,
+    "proactiveMax": 3,
+    "globalMinutes": 30,
+    "note": "自我审查 + 刹车（用户 2026-11-12）：① 自审：数我们在这一帖回了几条、其中几条「同样含义」（不同语句也算）② 认错（走回复流程，语气认错）③ **停掉这一帖的凑热闹类发言**（夸无私分享 / 分享互动 / 纯情绪陪聊）。答疑回复、认错致歉、针对具体内容的互动续聊**照常** —— 只停无意义刷屏，不是停止回复。两条触发路径：**(a) 玩家投诉**且自审发现重复（≥minDup 条）才停；**(b) 预防性自查**——不等投诉，我们在这帖已回 >proactiveMax 条就自动收手。dupSim=包含度阈值（≥ 判为同样含义，实测不同内容=0.000、同义凑热闹=0.15~0.67）；minDup=投诉路径下至少要看到几条重复才算刷屏；proactiveMax=预防性自查的条数上限；globalMinutes=玩家抱怨「到处刷」时全局冷静多久"
+  },
   "modTasks": {
     "enabled": true,
     "intervalSeconds": 120,

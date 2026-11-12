@@ -126,6 +126,97 @@ const saveQueue = async () => {
   await writeFile(QUEUE_FILE, JSON.stringify(queue, null, 1), 'utf8');
 };
 
+// ---------------- 📉 场景负反馈（跨帖）· 队列侧 ----------------
+// 用户 2026-11-12：玩家反感某类行为 → **跨帖**收敛这一类：
+//   ① 队列里该场景的帖子**踢出**（冷却：全踢；降权：只留最新一条，其余踢）
+//   ② 踢掉的帖子**不再入队**（写独立凭据文件，到期自动解禁）
+//   ③ 场景标签由 collect 写（state.posts[id].scene）—— 比按标题猜准
+//
+// ⚠️ 凭据**不能写 state.json**：state.json 归 collect.mjs 管，watch 长期持有会互相覆盖
+//    （两边各持一份 → 剪枝被撤销 → 同一批帖每 2 分钟重复处理，这个坑踩过）。
+//    所以用独立文件 data/watch-scene-skip.json，watch 独占读写。
+import { sceneGate, resolveBands, CHATTER_SCENES, SCENE_LABEL } from './lib/scene-feedback.mjs';
+
+const SCENE_SKIP_FILE = resolve(
+  config.paths.dataDir || resolve(ROOT_DIR(), 'data'),
+  'watch-scene-skip.json'
+);
+let sceneSkips = {};
+try {
+  sceneSkips = JSON.parse(await readFile(SCENE_SKIP_FILE, 'utf8')) || {};
+  if (typeof sceneSkips !== 'object' || Array.isArray(sceneSkips)) sceneSkips = {};
+} catch {}
+const saveSceneSkips = async () => {
+  await mkdir(dirname(SCENE_SKIP_FILE), { recursive: true }).catch(() => {});
+  await writeFile(SCENE_SKIP_FILE, JSON.stringify(sceneSkips, null, 1), 'utf8');
+};
+
+/** 这个帖是不是被「场景收敛」踢过、且还没解禁 */
+function sceneSkipActive(id, nowMs = Date.now()) {
+  const sk = sceneSkips[String(id || '')];
+  if (!sk) return false;
+  if (sk.until && nowMs < Number(sk.until)) return true;
+  if (sk.until) delete sceneSkips[String(id || '')]; // 过期 → 自动解禁
+  return false;
+}
+
+/**
+ * 按场景收敛队列（跨帖：按**场景**算，不按帖）
+ * @returns {{removed:number, kept:number}}
+ */
+function applySceneGateToQueue(q, state, { nowMs = Date.now(), log = console.log } = {}) {
+  const sf = config.sceneFeedback || {};
+  const bands = resolveBands(sf);
+  const skipMs = Number(sf.skipMinutes ?? 60) * 60 * 1000;
+  const halfLifeMs = Number(sf.halfLifeHours ?? 24) * 3600 * 1000;
+  const removed = [];
+  const seenScene = new Map(); // 降权时每个场景只留最新一条（队列已按新→旧排）
+  const keep = [];
+  for (const item of q) {
+    const id = String(item.id || '');
+    const scene = state?.posts?.[id]?.scene;
+    if (!scene || !CHATTER_SCENES.includes(scene)) {
+      keep.push(item);
+      continue;
+    }
+    const g = sceneGate(state, scene, { nowMs, bands, halfLifeMs });
+    if (!g.ok) {
+      removed.push({ item, scene, reason: g.reason }); // 冷却 → 该场景全踢
+      continue;
+    }
+    if (g.level === 'downgraded') {
+      if (!seenScene.has(scene)) {
+        seenScene.set(scene, true);
+        keep.push(item);
+      } else {
+        removed.push({ item, scene, reason: `场景「${SCENE_LABEL[scene]}」已降权 → 只回最新一条` });
+      }
+      continue;
+    }
+    keep.push(item);
+  }
+  for (const { item, scene, reason } of removed) {
+    sceneSkips[String(item.id || '')] = {
+      scene,
+      at: new Date().toISOString(),
+      until: nowMs + skipMs,
+      reason,
+    };
+  }
+  if (removed.length) {
+    const byScene = {};
+    for (const r of removed) byScene[r.scene] = (byScene[r.scene] || 0) + 1;
+    log(
+      `  [场景] 队列踢出 ${removed.length} 条（跨帖）：` +
+        Object.entries(byScene)
+          .map(([s, n]) => `${SCENE_LABEL[s] || s}×${n}`)
+          .join('、') +
+        ` → 解禁前不再入队`
+    );
+  }
+  return { removed: removed.length, kept: keep.length, keep };
+}
+
 // ---------------- 动态窗口游标（通用模块，2026-11-10） ----------------
 // 每个源记住「上次扫到的最老一条的时间」。下次从最新往回翻，翻到比它还老就停。
 // 存盘是为了**重启不丢**：否则每次重启都要从头翻，白烧接口。
@@ -163,6 +254,11 @@ async function checkAndEnqueue() {
   // ⚠️ 这里**不能**长期持有 state.json：collect.mjs 会剪枝 + 把老记录搬库，
   //    两边各持一份会互相覆盖（体检踩过：剪枝被撤销 → 同一批帖每 2 分钟重复处理）。
   const state = await loadState(config.paths.stateFile);
+  // 人工解除（scene-admin）可能改了踢出凭据 → 每轮重读，让解除即时生效，不用重启
+  try {
+    const fresh = JSON.parse(await readFile(SCENE_SKIP_FILE, 'utf8')) || {};
+    if (fresh && typeof fresh === 'object' && !Array.isArray(fresh)) sceneSkips = fresh;
+  } catch {}
   const queued = new Set(queue.map((q) => String(q.id)));
   const src = config.watch?.sources || {};
   const nowMs = Date.now();
@@ -246,6 +342,10 @@ async function checkAndEnqueue() {
     const p = state.posts[id];
     // 已经在库里处理过（老记录被搬进 SQLite 了，state.json 里没有）→ 不再重复处理
     if (!p && db && isHandled(db, state, id)) return;
+    // 📉 场景冷却中 → 这帖被踢出后就不再入队（用户 2026-11-12，跨帖按场景算）
+    if (sceneSkipActive(id, nowMs)) {
+      return;
+    }
     // 互动信号（用户 2026-11-05）：通知里有人说「回复了我 / @我」→ 这帖要重新读评论
     const interactSignal =
       Boolean(p?.interactPending) || Boolean(state.interactPending?.[String(id)]);
@@ -336,6 +436,8 @@ async function checkAndEnqueue() {
       // ⚠️ 通知列表是滚动保留的：已处理完的帖还一直在里面。
       //    不排除的话每轮都重新入队 → 队列永远清不空（2026-11-06 真踩到，队列从 5 条涨到 7 条）。
       const shouldSkipNotify = (id) => {
+        // 📉 被场景收敛踢出、还没解禁 → 不再入队（跨帖按场景算）
+        if (sceneSkipActive(id, Date.now())) return true;
         const p = state.posts[id];
         if (p) {
           const done = p.status === STATUS.REPLIED || p.status === STATUS.NO_NEED;
@@ -443,7 +545,7 @@ async function checkAndEnqueue() {
       (parts.length ? `（${parts.join(' + ')}）` : '') +
       `，队列 ${queue.length} 条（新→旧）`
   );
-  return { added: addedFeed + addedNotify, total: queue.length, scanned, notify: addedNotify, matched };
+  return { added: addedFeed + addedNotify, total: queue.length, scanned, notify: addedNotify, matched, state };
 }
 
 /** 处理队首一条（最新的那条）—— 严格**逐个**处理，处理完才出队 */
@@ -481,8 +583,19 @@ for (;;) {
   // ---------- ① 到点就检查一次（重新获取 + 重排队列） ----------
   const due = Date.now() - lastCheckAt >= intervalSec * 1000;
   if (due) {
-    await checkAndEnqueue();
+    const r = await checkAndEnqueue();
     lastCheckAt = Date.now();
+    // 📉 场景收敛（跨帖）：冷却 → 该场景的帖子全踢出；降权 → 只留最新一条
+    //    踢掉的写进独立凭据文件 → 解禁前不再入队
+    if (r?.state && config.sceneFeedback?.enabled !== false) {
+      const g = applySceneGateToQueue(queue, r.state, { nowMs: Date.now(), log: console.log });
+      if (g.removed) {
+        queue.length = 0;
+        queue.push(...g.keep);
+        await saveQueue();
+        await saveSceneSkips();
+      }
+    }
     if (once && !queue.length) {
       console.log('\n--once 模式，结束。');
       break;

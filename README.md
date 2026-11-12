@@ -54,6 +54,50 @@
 > ⚠️ **永远不要手工用仓库副本覆盖运行中的库** ——
 > 历史教训：一夜自动沉淀的 10 条被旧副本冲没了。
 
+## 玩家反感某类行为 → 跨帖收敛这一类
+
+三个「捧场类」场景各自独立计分：**贴码捧场**（天宫码）/ **分享凑热闹** / **情绪陪聊**。
+
+**三档用区间判断**（`config.sceneFeedback.bands`，可随时调）：
+
+| 档 | 区间 | 动作 |
+|---|---|---|
+| 观察 | `(−∞, 1.5)` | 只记账 |
+| 降权 | `[1.5, 2.5)` | 该场景**每轮只回 1 条** + **25% 概率** |
+| 冷却 | `[2.5, ∞)` | 该场景 60 分钟不参与；**队列里该场景的帖子踢出、解禁前不再入队** |
+
+- **信号归属**：提到我们（签名/别名）→ 满权重；**回复我们/@我们**得到的信号 → 一定是说我们的；其它（只是嫌这类帖多）→ 半权重 0.5。（第二人称「你/你们」不算对我们说）
+- **跨帖传染**：信号涉及整个类别（「捧场/一直/天天/到处…」）→ 同大类其它场景**减半**跟着降权
+  - 例：「小鲸鱼你别硬夸了，捧场了」×4 → 贴码捧场**完全停**，另两个场景**偶尔还回一下**
+- **正反馈**：玩家夸我们（「谢谢小鲸鱼」）→ 该场景 **−1**，抵消罚分（只认夸我们的，不传染）
+- **密度也算负反馈**（全站口径）：30 分钟内同类帖 ≥3 条（大家集中发天宫码）→ 该场景 +2 分
+- **衰减**：分数按 24h 半衰期衰减 —— 昨天的烂场子今天不该继续罚
+- 只影响捧场类：**答疑、认错致歉、有内容的互动续聊、天宫码撮合都不受影响**
+- 游戏语境已防误判：「刷副本/刷金币」不算反感，「这操作魔了」算赞叹不算反感
+
+**人工解除**：`node scripts/scene-admin.mjs list / reset <场景> / reset-all`（清分数+冷却+踢出凭据，即时生效不用重启）
+
+## 刷屏了怎么办：自我审查 + 刹车
+
+真出过事：两个帖子里连发了 **13 条**几乎一样的「恭喜恭喜」式凑热闹回复，玩家直接开骂
+（「我的天啊，这大肥鱼疯了！」），版主只能手动道歉救场。
+
+现在闭环了：
+
+| 步骤 | 做什么 |
+|---|---|
+| ① 审查自己 | 数我们在这一帖回了几条、其中几条**同样含义**（不同语句也算，用 char-ngram 包含度判） |
+| ② 认错 | 玩家指出我们闯祸 → 走回复流程、语气认错，把自审结论喂给模型（不许狡辩、甩锅、承诺） |
+| ③ 刹车 | **只停这一帖的「凑热闹」发言**（夸无私分享 / 分享互动 / 纯情绪陪聊） |
+
+- **答疑回复、认错致歉、针对具体内容的互动续聊照常** —— 只停无意义刷屏，不是停止回复
+- 判定口径有**两条路径**：
+  - **投诉触发**：玩家指出我们闯祸 + 自审确实发现重复（≥2 条）→ 停；只是被骂两句但我们回得正常 → **只认错，不停手**
+  - **预防性自查**：**不等玩家投诉** —— 我们在同一帖已回 > 3 条就自动收手（`config.spamStop.proactiveMax`）
+- 玩家在**楼中楼**骂我们也认得出（跟喊话通道共用一套判定）
+- 玩家抱怨「到处刷 / 多条帖」→ 该帖停 + 全局冷静 30 分钟（`config.spamStop.globalMinutes`）
+- 玩家喊「小鲸鱼别刷了」这类投诉，**认错只回一条**（不重复回），认完就收手
+
 ## 答疑库没命中时，可以联网补一句（可选）
 
 答疑库没命中 → 默认转「需人工」。装上 **`skills/baidu-websearch/`** 这个独立小技能后，
@@ -156,7 +200,7 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，21 套）
+### 自检（改规则前后必跑，22 套）
 
 ```bash
 node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
@@ -165,7 +209,8 @@ node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/
 node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
 node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
 node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
-node scripts/test-comfort.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
+node scripts/test-comfort.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs && \
+node scripts/test-complaint.mjs
 ```
 
 ## LLM 从哪来

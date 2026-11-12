@@ -102,8 +102,12 @@ function sanitize(raw, { maxChars }) {
   return t;
 }
 
-/** 按情绪选 1 个结尾表情（表情名必须在 emoji-map 里） */
-function pickEmoji(kind, text, config) {
+/**
+ * 按情绪选 1 个结尾表情（表情名必须在 emoji-map 里）
+ * @param {object|null} mapArg 注入的表情表；不给就用运行时采集的 data/emoji-map.json
+ *        （注入是为了让测试不依赖采集产物 —— 发布仓库里没有 data/，靠采集文件会测不成）
+ */
+function pickEmoji(kind, text, config, mapArg = null) {
   if (config?.reply?.emoji?.enabled === false) return null;
   const t = String(text || '');
   const pool = ['点赞', '比心', '开心', '可爱', '星星眼', '加油', '思考', '送花', '酷', '微笑'];
@@ -114,7 +118,7 @@ function pickEmoji(kind, text, config) {
   else if (kind === 'chat') want = ['微笑', '狗头', '吃瓜'];
   else if (kind === 'comfort') want = ['比心', '加油', '拥抱', '叹气', '祈祷', '星星眼'];
   else want = pool;
-  const map = loadEmojiMap();
+  const map = mapArg || loadEmojiMap();
   const usable = want.filter((n) => map && Object.prototype.hasOwnProperty.call(map, n));
   const list = usable.length ? usable : want;
   // 用文本长度做个稳定的散列，避免同一句话每次换表情
@@ -130,16 +134,17 @@ function pickEmoji(kind, text, config) {
  *   但 emoji-map 里没有的名字必须剔掉 —— 留着会让 UI 兜底插不进去、整条转人工。
  * · 模型没写 → 按情绪在结尾补一个（`pickEmoji`）。
  *
+ * @param {object|null} mapArg 注入的表情表（不给就用运行时采集的那份）
  * @returns {{text:string, emoji:string|null, modelPut:boolean}}
  */
-export function applyEmojiPlacement(text, { kind = 'answer', config = {} } = {}) {
-  const map = loadEmojiMap() || {};
+export function applyEmojiPlacement(text, { kind = 'answer', config = {}, map: mapArg = null } = {}) {
+  const map = mapArg || loadEmojiMap() || {};
   const cleaned = String(text || '')
     .replace(/\[表情_([^\]]+)\]/g, (m, name) => (map[name] ? m : ''))
     .replace(/\s{2,}/g, ' ')
     .trim();
   const modelPut = /\[表情_[^\]]+\]/.test(cleaned);
-  const emoji = modelPut ? null : pickEmoji(kind, cleaned, config);
+  const emoji = modelPut ? null : pickEmoji(kind, cleaned, config, map);
   const out = `${cleaned}${emoji ? `[表情_${emoji}]` : ''}`;
   return { text: out, emoji, modelPut };
 }
