@@ -13,6 +13,7 @@
 │  lib/cold-store     ← 帖子维度冷热分离（向量库 + 分类 TTL + 唤醒）  │
 │  lib/interact       ← 玩家回信后的继续互动                         │
 │  lib/review         ← 游戏评价接口（列/回/读回复/校验落库）           │
+│  lib/image          ← 图片识别流水线（门控→OCR/VLM/模板→回灌帖子文本）  │
 └───────────────────────────────────────────────────────────────┘
 ┌─ SKILL.md（给 AI 读）──────────────────────────────────────────┐
 │  判断规则、三层上下文、口吻规范、51 条硬约束、踩坑清单、排障流程      │
@@ -118,6 +119,25 @@
 > 搜索结果是**二手信息**，不是官方口径 —— 所以只按 **50% 置信度**讲，且不许补搜到之外的细节。
 > （这里的 50% 说的是**对这条二手信息的信任度**；跟答疑库条目的档位、跟互动续聊的回复概率是两回事。）
 
+## 帖子带图？图里的信息也能读（v1.4.0）
+
+论坛大量帖子带图（求助截图、**活动页面**、**植物图鉴**、晒卡），以前这些帖只能当「看不懂」处理。
+现在有一条**带门控**的流水线（`lib/image.mjs`）：
+
+| 步骤 | 做什么 | 用什么 |
+|---|---|---|
+| ① 意图门控 | **好友码/天宫码意图 → 直接跳过**（这类帖按码处理，不读图） | 规则 |
+| ② 相关性门控 | 无关配图（装饰/无关晒图）→ 跳过；相关图才识别 | 纯启发式起步 |
+| ③ 识别 | 文字/数字/错误文案 → 本地 OCR；游戏画面/开放语义 → 看图大模型；已知图标 → 模板匹配 | RapidOCR / VLM / opencv |
+| ④ 回灌 | 识别内容并进帖子文本 → **答疑库匹配 / 联网搜索 / 生成回复** 全部用得上 | 复用现有通道 |
+
+- **取图实测**：帖子配图在 `moment.topic.footer_images[]`，feed 层就带；匿名 + `X-UA` 头可读；图床无防盗链。
+- **本地 OCR**：`pip install rapidocr` → `python scripts/ocr_server.py`（监听 127.0.0.1:8790，`/ocr` 文字 + `/match` 模板）。
+- **看图模型**：跟 DSH 走（填 `config.llm.vision` 就用你自己的 Key，否则自动挑 DSH 里的视觉模型）；没有就降级跳过，不影响答疑。
+- **游戏特征模板库**：`assets/game-features/`（`features.json` + 模板图）—— 植物/奖励图标模板匹配，ms 级、离线、免费。
+- 识别结果按图缓存（`data/image-cache.json`），不重复花钱。
+- 详细说明：[references/image-recognition.md](references/image-recognition.md) ｜ 设计稿：`docs/图片识别-技术设计稿-20261116.md`
+
 ## 它会做什么、不会做什么
 
 **会**：
@@ -209,18 +229,10 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，28 套）
+### 自检（改规则前后必跑，33 套）
 
 ```bash
-node scripts/test-api-contents.mjs && node scripts/test-archive.mjs && node scripts/test-code-match-templates.mjs && \
-node scripts/test-cold-store.mjs && node scripts/test-collect-scope.mjs && node scripts/test-comfort.mjs && \
-node scripts/test-complaint.mjs && node scripts/test-doctor-ok.mjs && node scripts/test-interact.mjs && \
-node scripts/test-limits-codes.mjs && node scripts/test-match.mjs && node scripts/test-mod-task.mjs && \
-node scripts/test-post-records.mjs && node scripts/test-praise.mjs && node scripts/test-publish-mask.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-qa-vector.mjs && node scripts/test-question.mjs && \
-node scripts/test-removed-list.mjs && node scripts/test-review-api.mjs && node scripts/test-scene-feedback.mjs && \
-node scripts/test-summarize.mjs && node scripts/test-summon.mjs && node scripts/test-thread-context.mjs && \
-node scripts/test-variants.mjs && node scripts/test-watch-semantics.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
+npm test
 ```
 
 ## LLM 从哪来
@@ -295,9 +307,11 @@ node scripts\schedule.ps1 -Action doctor
 |---|---|
 | [SKILL.md](SKILL.md) | **给 AI 读**：判断规则、三层上下文、口吻规范、51 条硬约束、踩坑清单 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 怎么改代码、怎么提 PR、代码约定 |
-| [references/](references/) | 接口 / 表情 / 选择器 / 提问判定 / 喊话识别 / 夸答玩家 / 版主任务 / **游戏评价** / 运维 / 管理工具 |
+| [references/](references/) | 接口 / 表情 / 选择器 / 提问判定 / 喊话识别 / 夸答玩家 / 版主任务 / **游戏评价** / **图片识别** / 运维 / 管理工具 |
 | [docs/方案.md](docs/方案.md) | 初版方案与可行性边界（**历史文档，部分内容已过期**） |
 | [docs/github-survey.md](docs/github-survey.md) | GitHub 上有没有能用的现成项目（调研存档） |
+| [docs/图片识别-调研报告-20261116.md](docs/图片识别-调研报告-20261116.md) | 图片识别 6 条技术路线调研 + 游戏画面特征专项 |
+| [docs/图片识别-技术设计稿-20261116.md](docs/图片识别-技术设计稿-20261116.md) | 图片识别流水线设计（S1–S6 + 配置/验收） |
 
 ## 已知限制
 
@@ -308,6 +322,8 @@ node scripts\schedule.ps1 -Action doctor
 - **楼中楼也走接口**（`create-child`，参数是 `parent_id`，已用真实请求校准）；
   猜错参数名会把回复变成**顶层评论**，所以校验要同时看「一级评论数变没」+「child_posts 里有没有我们那条」
 - **接口回复是纯文本**：表情靠 `tap_emoji` 节点（需先跑一次 `emoji-map.mjs` 采 id 表）
+- **图片识别要额外装一次 OCR 依赖**（`pip install rapidocr`）；不装则 OCR/模板匹配自动跳过，
+  看图大模型（若已配 Key）仍可用 —— 三者都不影响纯文字答疑
 
 ## 许可
 
