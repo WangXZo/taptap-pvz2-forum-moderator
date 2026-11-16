@@ -112,9 +112,12 @@
 ```
 每轮：① 重新扫（游标增量，只取新增）→ 官方/版主跳过 → 命中的并进队列
       ② **整队按发布时间倒序重排**（不是只把新帖插队首 —— 那样顺序会随轮次漂移）
-      ③ 只处理队首 maxPerRound 条（默认 20）→ 一轮几分钟内结束
+      ③ 只处理队首 maxPerRound 条 → 一轮几分钟内结束
       ④ 队列存 state，中断/重启都不丢
 ```
+
+> ⚠️ `maxPerRound` 当前配置为 **0** = **一直处理到队列空**（`mod-task.mjs`：只有 >0 才限制）。
+> 文档旧版写「默认 20」已过时 —— 以 `scripts/config.json` 的实际值为准。
 
 队列 `state.modTask.backlog` 每轮都会**去重 + 重排**，所以「最新永远在最前」是恒定成立的。
 `publishTime` 缺失时用 moment id 倒序兜底（id 随时间递增）。
@@ -226,7 +229,7 @@ node scripts/api-write.mjs remove <momentId> --group 40173 --yes
     "via": "api",
     "scope": "today",
     "cooldownMs": 1000,
-    "maxPerRound": 20,
+    "maxPerRound": 0,
     "backlogMax": 500,
     "maxPages": 4,
     "maxSweepPages": 30,

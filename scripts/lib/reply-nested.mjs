@@ -33,8 +33,19 @@ function unwrap(raw) {
   const t = String(raw || '').trim();
   if (!t) return '';
   try {
-    const j = JSON.parse(t);
-    return typeof j === 'string' ? j : t;
+    let j = JSON.parse(t);
+    // 🔧 opencli 2.x（2026-11-13）：`browser eval` 输出变成 {ok, data} 信封，真值在 data 里
+    //    （通常是 JSON 字符串，要再 parse 一次）。不拆包会把整个信封当成返回值。
+    if (j && typeof j === 'object' && !Array.isArray(j) && 'ok' in j && 'data' in j) {
+      let d = j.data;
+      if (typeof d === 'string') {
+        try { d = JSON.parse(d); } catch { /* 不是 JSON 就保持字符串 */ }
+      }
+      j = d;
+    }
+    if (typeof j === 'string') return j;
+    if (j === null || j === undefined) return '';
+    return typeof j === 'object' ? JSON.stringify(j) : String(j);
   } catch {
     return t.replace(/^"|"$/g, '');
   }

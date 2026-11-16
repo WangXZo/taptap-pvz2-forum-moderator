@@ -104,6 +104,7 @@ const DEFAULT_FILES = [
   'scripts/test-scene-feedback.mjs',
   'scripts/test-collect-scope.mjs',
   'scripts/test-code-match-templates.mjs',
+  'scripts/test-doctor-ok.mjs',
   'scripts/cold-store.mjs',
   'scripts/watch.mjs',
   'scripts/waf.mjs',
@@ -162,6 +163,32 @@ const DEFAULT_FILES = [
   'scripts/lib/variants.mjs',
   'scripts/lib/waf-unlock.mjs',
   'scripts/lib/watch-queue.mjs',
+  // 图片识别流水线 v1.4.0（S1–S6）
+  'scripts/lib/image.mjs',
+  'scripts/lib/image-cache.mjs',
+  'scripts/lib/ocr.mjs',
+  'scripts/lib/vision.mjs',
+  'scripts/lib/features.mjs',
+  'scripts/ocr_server.py',
+  'scripts/test-image-gate.mjs',
+  'scripts/test-ocr-bridge.mjs',
+  'scripts/test-vision-channel.mjs',
+  'scripts/test-image-pipeline.mjs',
+  'scripts/test-features.mjs',
+  'assets/game-features/features.json',
+  'assets/game-features/templates/diamond.png',
+  'references/image-recognition.md',
+  'docs/图片识别-调研报告-20261116.md',
+  'docs/图片识别-技术设计稿-20261116.md',
+  'docs/evidence/06-图片取图schema实测-20261116.md',
+  // v1.3.4 评价接口 + 队列语义守卫（此前漏列，补齐保证仓库代码完整：taptap-api 依赖 review/text）
+  'scripts/lib/review.mjs',
+  'scripts/lib/text.mjs',
+  'scripts/test-review-api.mjs',
+  'scripts/test-watch-semantics.mjs',
+  'references/review-api.md',
+  'docs/方案-评价自动值守.md',
+  'docs/历史/方案-初版-20261026.md',
   'references/api.md',
   'references/admin.md',
   'references/emojis.md',
@@ -262,6 +289,7 @@ export function maskQa(text) {
     const badge = mm && mm[2] ? mm[2] : '';
     if (!name) return prefix + rest;
     if (name.includes('*')) return prefix + rest; // 已经遮过 → 保持幂等，别二次遮
+    if (/官方/.test(badge)) return prefix + rest; // 官方账号名（如「植物大战僵尸2（官方）」）公开，不遮不扫
     if (!meaningfulName(name)) return prefix + rest; // `123`/`我` 这种不遮（遮了没法读，也不算隐私）
     names.add(name);
     return prefix + maskValue(name) + badge;
@@ -432,6 +460,7 @@ async function main() {
       const src = join(SKILL, f);
       const dst = join(REPO, f);
       try {
+        await mkdir(dirname(dst), { recursive: true }); // 新目录（如 assets/game-features）也要建，否则 copyFile 静默跳过
         await copyFile(src, dst);
         console.log(`  复制 ${f}`);
       } catch (e) {

@@ -16,8 +16,14 @@
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripEmojiMarks } from './text.mjs';
+import { makeReviewApi } from './review.mjs';
 
 const ORIGIN = 'https://www.taptap.cn';
+
+// 表情标记剥离现在住在 text.mjs（2026-11-13 拆出，避免与 review.mjs 循环依赖）。
+// 这里再导出一次，老引用（replier / reply-nested / test-api-contents）不用改。
+export { stripEmojiMarks };
 
 // 表情名 → {id,url}（由 scripts/emoji-map.mjs 采集；没有表就自动退化成纯文本）
 const EMOJI_FILE = resolve(dirname(fileURLToPath(import.meta.url)), '../../data/emoji-map.json');
@@ -111,22 +117,69 @@ export function buildContentsWithEmoji(text, emojiMap = {}) {
 export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
   const S = runner.session;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  /** 同步 sleep（ensureOrigin 等同步函数里用；Atomics.wait 拿不到就用忙等兜底） */
+  const sleepSync = (ms) => {
+    try {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+    } catch {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        /* 忙等 */
+      }
+    }
+  };
   let authCache = null;
   let lastCallAt = 0;
 
   const oc = (args, timeout = 60000) => runner.oc(args, { timeout });
   const ev = (js, timeout = 45000) => {
     const r = oc(['browser', S, 'eval', js], timeout);
-    return { raw: `${r.out || ''}`, json: pickJson(r.out), code: r.code, err: r.err };
+    const raw = `${r.out || ''}`;
+    let json = pickJson(r.out);
+    // 🔧 opencli 2.x（2026-11-13）：`browser eval` 输出从**裸值**变成 **{ok, data} 信封**，
+    //    真正的返回值在 data 里（通常是 JSON 字符串，要再 parse 一次）。
+    //    不拆包 → auth() 读 v.xsrf 永远 undefined → 整个页面通道报「页面凭据不全」全废。
+    if (json && typeof json === 'object' && !Array.isArray(json) && 'ok' in json && 'data' in json) {
+      let d = json.data;
+      if (typeof d === 'string') {
+        try {
+          d = JSON.parse(d);
+        } catch {
+          /* 不是 JSON 就保持字符串 */
+        }
+      }
+      return { raw, json: d, code: r.code, err: r.err, envelope: json };
+    }
+    return { raw, json, code: r.code, err: r.err };
   };
 
   /** 保证当前标签页在 taptap 站内（页面内 fetch 才带得上 Cookie） */
   function ensureOrigin(url = `${ORIGIN}/`) {
     const st = oc(['browser', S, 'state'], 30000);
     const host = String(st.out || '').match(/URL:\s*(\S+)/)?.[1] || '';
-    if (host.includes('taptap.cn')) return { ok: true, navigated: false, url: host };
-    const o = oc(['browser', S, 'open', url], 90000);
-    return { ok: o.code === 0, navigated: true, url };
+    let navigated = false;
+    if (!host.includes('taptap.cn')) {
+      const o = oc(['browser', S, 'open', url], 90000);
+      if (o.code !== 0) return { ok: false, navigated: true, url };
+      navigated = true;
+    }
+    // ⚠️ `open` 只是**发起导航**，页面可能还没加载完 → 此刻 document.cookie 还是空的。
+    //    必须等凭据就绪，否则 auth() 拿到空值（2026-11-13 实测：启动瞬间报「页面凭据不全」）。
+    const ready = waitForCreds();
+    return { ok: ready, navigated, url };
+  }
+
+  /** 同步等待页面凭据就绪（XSRF + uid）—— ensureOrigin 是同步函数，这里用同步 sleep */
+  function waitForCreds(timeoutMs = 15000) {
+    const js = `(()=>{const c=document.cookie||'';return JSON.stringify({x:/XSRF-TOKEN=/.test(c),u:/(?:ACCOUNTS_USER_ID|user_id)=/.test(c)});})()`;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const r = ev(js, 15000);
+      const v = r.json || {};
+      if (v.x && v.u) return true;
+      if (Date.now() >= deadline) return false;
+      sleepSync(600);
+    }
   }
 
   /** 读页面凭据，拼 X-UA */
@@ -145,7 +198,15 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     const v = r.json || {};
     const xua = [XUA_HEAD, `UID=${v.uuid || ''}`, XUA_TAIL, `VID=${v.uid || ''}`].join('&');
     authCache = { ...v, xua, ok: Boolean(v.xsrf && v.uid) };
-    if (!authCache.ok) log('  ! 页面凭据不全（xsrf/uid 缺失），请确认浏览器已登录 TapTap');
+    if (!authCache.ok) {
+      // ⚠️ **不缓存失败**（2026-11-13）：启动瞬间页面可能还没加载完 / Cookie 未就绪，
+      //    若把失败结果缓存住，整个进程生命周期内页面通道永久失效（没有任何地方调 auth(true)）。
+      //    → 失败返回不缓存，下次调用自动重试。
+      log('  ! 页面凭据不全（xsrf/uid 缺失），请确认浏览器已登录 TapTap（下次调用会重试）');
+      const miss = authCache;
+      authCache = null;
+      return miss;
+    }
     return authCache;
   }
 
@@ -156,8 +217,19 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     lastCallAt = Date.now();
   }
 
-  /** 页面内 POST（multipart/form-data，自动带 Cookie） */
-  async function post(path, form, { referer } = {}) {
+  /**
+   * 页面内 POST（multipart/form-data，自动带 Cookie）
+   *
+   * @param {string} path
+   * @param {object} form
+   * @param {object} [opt]
+   * @param {string} [opt.runtimeEnv]  x-tap-webapp-next-runtime-env 头
+   *        默认 'release-gray'（论坛回复一直用它，实测可用）；
+   *        评价回复用 'release' —— 与大哥给的真实 cURL 完全一致。
+   * @param {string} [opt.referer]  仅作记录：**浏览器不允许脚本改 Referer 头**，
+   *        实际由页面当前地址自动带，所以这里不设置。
+   */
+  async function post(path, form, { runtimeEnv = 'release-gray', referer } = {}) {
     await throttle();
     const a = auth();
     if (!a.ok) return { ok: false, stage: 'no_auth', status: 0, body: '' };
@@ -171,7 +243,7 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
         for(const k of Object.keys(FORM)) fd.append(k, FORM[k]);
         const r=await fetch(u,{method:'POST',credentials:'include',
           headers:{'x-xsrf-token':${JSON.stringify(a.xsrf)},'x-requested-with':'XMLHttpRequest',
-                   'x-tap-webapp-next-runtime-env':'release-gray'},
+                   'x-tap-webapp-next-runtime-env':${JSON.stringify(runtimeEnv)}},
           body:fd});
         const t=await r.text();
         return JSON.stringify({status:r.status, ct:(r.headers.get('content-type')||''), body:t.slice(0,1500)});
@@ -392,6 +464,10 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     return { found: false, total: r.json?.data?.total };
   }
 
+  // ---------- 游戏评价（2026-11-13 新增） ----------
+  // 实现在 lib/review.mjs 的 makeReviewApi({get, post})：注入依赖 → 可离线单测。
+  const reviewApi = makeReviewApi({ get, post });
+
   /** 探测页面表情 name→{id,url}（只在需要发带表情的接口回复时调） */
   function emojiMap() {
     const js = `(()=>{
@@ -420,6 +496,8 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     hasReplyText,
     emojiMap,
     notifications,
+    // 游戏评价（2026-11-13 新增，实现在 lib/review.mjs）
+    ...reviewApi,
     sleep,
   };
 }
@@ -430,10 +508,7 @@ export function momentIdFromUrl(url) {
   return m ? m[1] : '';
 }
 
-/** 去掉文案里的 [表情_xx] 标记（接口纯文本回复用；表情节点格式另说） */
-export function stripEmojiMarks(text) {
-  return String(text ?? '').replace(/\[(?:表情_[^\]]+|TapTap×[^\]_]+_[^\]]+)\]/g, '');
-}
+/** 去掉文案里的 [表情_xx] 标记 → 已搬到 lib/text.mjs，这里再导出一次保持老引用可用 */
 
 // 每个 session 复用一个实例：鉴权信息、节流时间戳都跟着它，不必每次重建
 const apiPool = new Map();

@@ -333,12 +333,12 @@ try {
   ok('同帖同玩家没回过 → 直接回', d1.reply === true);
   const d2 = decideInteraction(
     { commentId: 'C1', authorId: 'u1', text: '在吗' },
-    { counts: { u1: { n: 3 } }, config: cfg, rng: () => 0.9 }
+    { counts: { u1: { n: 1 } }, config: cfg, rng: () => 0.9 }
   );
-  ok('同帖同玩家回过 3 次 → 降到 50%', d2.reply === false && d2.probability === 0.5);
+  ok('同帖同玩家回过 1 次 → 降到 50%', d2.reply === false && d2.probability === 0.5);
   const d3 = decideInteraction(
     { commentId: 'C1', authorId: 'u1', text: '在吗', atUs: true },
-    { counts: { u1: { n: 3 } }, config: cfg, rng: () => 0.99 }
+    { counts: { u1: { n: 1 } }, config: cfg, rng: () => 0.99 }
   );
   ok('情绪强烈 / 直接点名 → 例外必回', d3.reply === true);
 

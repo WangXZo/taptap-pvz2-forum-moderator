@@ -23,7 +23,7 @@
 //   node scripts/watch.mjs --interval 120  # 自定义检查间隔（秒）
 //   node scripts/watch.mjs --dry-run       # 判定但不真发
 //   node scripts/watch.mjs --no-reply      # 只采集判定，不回复
-//   node scripts/watch.mjs --top 20        # 覆盖每轮条数
+//   node scripts/watch.mjs --top 20        # 只扩大 feed 查找窗口（队列模式不控制每轮处理条数）
 
 import { loadConfig, argvOf, sleep } from './lib/paths.mjs';
 import { loadState, STATUS } from './lib/state.mjs';
@@ -76,7 +76,10 @@ const doReply = !has('--no-reply');
 const dryRun = has('--dry-run') ? true : config.reply.dryRun !== false;
 const top = argOf('--top', null);
 
-const TOP = Number(top ?? config.collect.topN ?? 8);
+// ⚠️ `TOP` 只是**feed 查找窗口大小**（一页翻多少条），**跟「每轮处理几条」毫无关系**。
+//    队列模式下每轮**只处理队首一条**（processHead），队列多长就慢慢处理多长。
+//    ⚠️ `config.collect.topN` 已移除（2026-11，队列模式）—— 别再加回来。
+const TOP = Math.max(Number(top ?? 10), 10);
 
 // ⚠️ 队列**单独存一个文件**，不塞进 state.json。
 //    原因（体检发现的真 bug）：state.json 由 collect.mjs 负责读写（它会剪枝、老记录搬库），
@@ -237,7 +240,7 @@ const saveCursor = () => CURSOR.save();
 
 console.log('═══════════════════════════════════════');
 console.log(
-  `  TapTap 论坛答疑守护  |  检查每 ${intervalSec}s  |  队列：新到旧、不打断当前  |  每轮 ${TOP} 条  |  回复 ${doReply ? (dryRun ? 'dry-run' : '开启') : '关闭'}`
+  `  TapTap 论坛答疑守护  |  检查每 ${intervalSec}s  |  队列：逐条处理，优先新到旧、不打断当前  |  回复 ${doReply ? (dryRun ? 'dry-run' : '开启') : '关闭'}`
 );
 console.log('  停止：Ctrl+C');
 console.log('═══════════════════════════════════════');

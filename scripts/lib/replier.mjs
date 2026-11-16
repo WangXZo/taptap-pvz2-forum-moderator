@@ -52,6 +52,44 @@ export function resolveOpencliMain(explicit) {
   return null;
 }
 
+/**
+ * opencli 的 `browser` 子命令把 session 放哪里？
+ *   · 1.x → 位置参数：`browser <session> <cmd>`
+ *   · 2.x → 旗标：`browser --session <name> <cmd>`（2.0.3 实测；旧写法报 unknown command）
+ * 缓存一次，避免每次调用都探版本。
+ * @returns {'flag'|'positional'}
+ */
+let _sessionStyle = null;
+export function detectSessionStyle(mainJs) {
+  if (_sessionStyle) return _sessionStyle;
+  try {
+    const r = spawnSync(process.execPath, [mainJs, '--version'], { encoding: 'utf8', timeout: 15000 });
+    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
+    _sessionStyle = m && Number(m[1]) >= 2 ? 'flag' : 'positional';
+  } catch {
+    _sessionStyle = 'positional'; // 探不到就按旧写法（不会更糟）
+  }
+  return _sessionStyle;
+}
+
+/**
+ * 把「旧写法参数」转成目标版本的写法（纯函数，便于回归测试）
+ *   toOpencliArgs(['browser','tap','open','https://x'], 'flag')
+ *     → ['browser','--session','tap','open','https://x']
+ *   toOpencliArgs(['browser','tap','open','https://x'], 'positional')
+ *     → 原样返回
+ */
+export function toOpencliArgs(args, style) {
+  if (!Array.isArray(args)) return args;
+  if (style !== 'flag') return args;
+  // 只处理 `browser <session> <cmd...>`：至少 3 段、第 2 段不是旗标、第 3 段是命令名
+  if (args[0] !== 'browser' || args.length < 3) return args;
+  if (String(args[1] || '').startsWith('-')) return args; // 已是 --session / --help 形式
+  if (String(args[2] || '').startsWith('-')) return args; // 形如 browser <session> --flag（罕见）
+  return ['browser', '--session', args[1], ...args.slice(2)];
+}
+
 export function makeRunner({ opencliMain, session = 'tap' } = {}) {
   const MAIN = resolveOpencliMain(opencliMain);
   if (!MAIN) {
@@ -62,7 +100,14 @@ export function makeRunner({ opencliMain, session = 'tap' } = {}) {
     };
   }
   const oc = (args, { timeout = 60000 } = {}) => {
-    const r = spawnSync(process.execPath, [MAIN, ...args], { encoding: 'utf8', timeout });
+    // 🔧 兼容 opencli 2.x（2026-11-13 实测）：`browser` 子命令的 session 从**位置参数**改成了 **--session 旗标**。
+    //    · 旧（1.x）：`opencli browser <session> <cmd> ...`
+    //    · 新（2.0.3）：`opencli browser --session <name> <cmd> ...`
+    //    2.x 下用旧写法会报 `unknown command '<session>'` → 所有浏览器操作（打开/填表/点表情/发评论）
+    //    全部失败，日志只显示 `[FAIL] 失败（open）`，很容易被误判成「扩展没连」。
+    //    41 处调用点都走这个 oc → **在这里统一转换**，调用方保持原样。
+    const argv = toOpencliArgs(args, detectSessionStyle(MAIN));
+    const r = spawnSync(process.execPath, [MAIN, ...argv], { encoding: 'utf8', timeout });
     const out = `${r.stdout || ''}`;
     const err = `${r.stderr || ''}`;
     let json = null;
@@ -77,10 +122,38 @@ export function makeRunner({ opencliMain, session = 'tap' } = {}) {
   return { available: true, main: MAIN, oc, session };
 }
 
+/**
+ * opencli 是否可用（**回复通道的前置闸门**）
+ *
+ * ⚠️ doctor 输出格式变过（2026-11-12，DSH 0.2.2-rc.2 / opencli 2.0.3）：
+ *   · 旧版：纯文本，含 `Extension: connected`
+ *   · 新版：**JSON** `{"ok":true,"data":{"extensionConnected":true,...,"issues":[]}}`
+ *   只认旧正则 → 新版永远判成「不可用」→ **所有浏览器通道操作被静默跳过**
+ *   （回复/夸码/撮合/版主任务全废，日志只显示 `[FAIL] opencli 不可用`）。
+ *   → 现在两种格式都认：优先解析 JSON，解析不了再退回旧正则。
+ */
 export function doctorOk(runner) {
   if (!runner.available) return { ok: false, text: runner.reason };
   const d = runner.oc(['doctor'], { timeout: 45000 });
-  return { ok: /Extension:\s*connected/.test(d.text), text: d.text };
+  const text = d.text || '';
+  // 新版：JSON
+  try {
+    const j = JSON.parse(text);
+    const data = j?.data || j;
+    const connected =
+      data?.extensionConnected === true ||
+      (Array.isArray(data?.profiles) && data.profiles.some((p) => p?.extensionConnected === true));
+    if (j?.ok === true && connected && !(data?.issues || []).length) {
+      return { ok: true, text };
+    }
+    // JSON 但不通 → 直接判不可用（别再退回正则，避免误判）
+    return { ok: false, text, reason: 'doctor JSON 报扩展未连接' };
+  } catch {
+    /* 不是 JSON → 走旧文本格式 */
+  }
+  // 旧版：文本
+  const ok = /Extension:\s*connected/i.test(text);
+  return { ok, text };
 }
 
 /** 找可见的编辑器输入框 */

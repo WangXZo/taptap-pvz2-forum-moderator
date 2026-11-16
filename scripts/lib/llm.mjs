@@ -191,8 +191,35 @@ export async function resolveChannels(config = {}) {
   return [...custom, ...dshCh];
 }
 
+/**
+ * 中性多模态 content → 各 API 风格（2026-11-16 图片识别 S4）。
+ *   string 原样返回（纯文本，完全兼容旧行为）；
+ *   数组块 {type:'text',text} / {type:'image',url?,base64?,mediaType?}
+ *   → openai image_url（url 或 data URI）/ anthropic image source（base64 或 url）。
+ */
+function toApiContent(content, api) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return String(content ?? '');
+  return content.map((b) => {
+    if (!b || typeof b !== 'object') return { type: 'text', text: String(b ?? '') };
+    if (b.type === 'image') {
+      const mediaType = b.mediaType || 'image/jpeg';
+      if (api === 'anthropic-messages') {
+        const source = b.base64
+          ? { type: 'base64', media_type: mediaType, data: b.base64 }
+          : { type: 'url', url: b.url };
+        return { type: 'image', source };
+      }
+      const url = b.url || `data:${mediaType};base64,${b.base64}`;
+      return { type: 'image_url', image_url: { url } };
+    }
+    return { type: 'text', text: b.text || '' };
+  });
+}
+
 /** 统一成一种"消息"格式后，按渠道的 api 风格发请求 */
 async function callOnce(ch, { system, messages, temperature, maxTokens, timeoutMs }) {
+  messages = (messages || []).map((m) => ({ role: m.role, content: toApiContent(m.content, ch.api) }));
   const ctrl = new AbortController();
   // ⚠️ anthropic 风格的渠道**强制 thinking**，思考长度波动很大，
   //    实测单次 11~60s 不等 → 给它们更宽的超时，别在 60s 就掐掉。
@@ -288,6 +315,92 @@ export async function chat(config, { system = '', messages = [], temperature = 0
     log(`      [LLM] 渠道 ${tried.length} 失败（${r.status || '异常'}）${r.error ? '：' + String(r.error).slice(0, 160) : ''}`);
   }
   return { ok: false, error: '所有渠道都失败', tried };
+}
+
+/** 模型是否支持视觉（图片识别 S4）。白名单优先，否则按能力词匹配（不写死具体模型名）。 */
+const VISION_RE = /vl|vision|omni|multimodal/i;
+export function isVisionModel(model, config = {}) {
+  const wl = config?.llm?.visionModels;
+  if (Array.isArray(wl) && wl.includes(model)) return true;
+  return VISION_RE.test(String(model || ''));
+}
+
+/**
+ * 视觉渠道解析（完全沿用 resolveChannels 的两条路）：
+ *   ① config.llm.vision（apiKey/baseURL/model 三项齐全）→ 直接用 —— **给别人用**（他人自己的 VLM key）
+ *   ② 否则复用 DSH 路由：providers + credentials，挑 vision-capable 模型 —— **跟随 DSH / 给自己用**
+ *   ③ 都没有 → []（调用方降级，绝不瞎编）
+ * 不在 skill 写死具体模型名：跟随 DSH 时按 isVisionModel 能力筛选，保持 DSH provider 顺序。
+ */
+export async function resolveVisionChannels(config = {}) {
+  const custom = [];
+  const dshCh = [];
+  const v = config?.llm?.vision || {};
+  if (v.apiKey && v.baseURL && v.model) {
+    custom.push({
+      source: 'config-vision',
+      provider: 'custom-vision',
+      model: v.model,
+      api: v.api || 'openai-completions',
+      baseURL: v.baseURL.replace(/\/$/, ''),
+      apiKey: v.apiKey,
+      maxTokens: Number(v.maxTokens || 1200),
+    });
+  }
+  if (config?.llm?.reuseDsh !== false) {
+    const dsh = await loadDshLLMConfig();
+    const wantModel = v.model || '';
+    // provider 优先级：先 DSH chain 出现顺序，再补其余 provider
+    const order = [...new Set(dsh.chain.map((c) => c.provider))];
+    for (const pid of Object.keys(dsh.providers)) if (!order.includes(pid)) order.push(pid);
+    const seen = new Set();
+    for (const pid of order) {
+      const p = dsh.providers[pid];
+      if (!p) continue;
+      const key = dsh.creds[p.apiKeyEnv];
+      if (!key || !p.baseURL) continue;
+      const models = wantModel ? [wantModel] : (p.models || []).filter((m) => isVisionModel(m, config));
+      for (const model of models) {
+        if (!model) continue;
+        if (!wantModel && !isVisionModel(model, config)) continue;
+        const sig = `${pid}/${model}`;
+        if (seen.has(sig)) continue;
+        seen.add(sig);
+        dshCh.push({
+          source: 'dsh',
+          provider: pid,
+          model,
+          api: p.api || 'openai-completions',
+          baseURL: String(p.baseURL).replace(/\/$/, ''),
+          apiKey: key,
+          maxTokens: Number(v.maxTokens || 1200),
+        });
+      }
+    }
+  }
+  return [...custom, ...dshCh];
+}
+
+/**
+ * 看图生成文本：按视觉渠道顺序尝试（多模态 messages 含 image 块）。
+ * 与 chat 同构，只是渠道来自 resolveVisionChannels、默认温度更低（看图要稳）。
+ */
+export async function chatVision(config, { system = '', messages = [], temperature = 0.3, maxTokens = 1200, timeoutMs = 90000, log = () => {} } = {}) {
+  const channels = await resolveVisionChannels(config);
+  if (!channels.length) {
+    return { ok: false, error: '没有可用的视觉渠道（config.llm.vision 未配 API Key，且 DSH 里没有 vision-capable 模型凭据）' };
+  }
+  const tried = [];
+  for (const ch of channels) {
+    const r = await callOnce(ch, { system, messages, temperature, maxTokens: maxTokens || ch.maxTokens, timeoutMs });
+    tried.push({ provider: ch.provider, model: ch.model, ok: r.ok, status: r.status, error: r.ok ? undefined : r.error });
+    if (r.ok && String(r.text || '').trim()) {
+      log(`      [VLM] 已生成（渠道 ${tried.length}）`);
+      return { ok: true, text: r.text.trim(), channel: ch.provider, model: ch.model, tried };
+    }
+    log(`      [VLM] 渠道 ${tried.length} 失败（${r.status || '异常'}）${r.error ? '：' + String(r.error).slice(0, 160) : ''}`);
+  }
+  return { ok: false, error: '所有视觉渠道都失败', tried };
 }
 
 /** 体检用：当前能用哪些渠道（不打印密钥） */

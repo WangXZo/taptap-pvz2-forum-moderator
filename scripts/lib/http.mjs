@@ -229,6 +229,29 @@ export function extractText(item) {
   };
 }
 
+/**
+ * 取帖子配图（实测 2026-11-16，evidence/06）：
+ *   图在 `moment.topic.footer_images[]`，**不在 contents.json**（topic 帖 type=2 无 contents.json）。
+ *   feed 层 list item 已带 footer_images → 取图无需额外 detail 请求。
+ *   匿名 + X-UA 即可读；CDN img2-tc.tapimg.com 无防盗链，裸 GET original_url 即 200。
+ * 返回 [{url(原图 original_url), mediumUrl, smallUrl, width, height, format, size}]。OCR/VLM 用 url。
+ */
+export function extractImages(item) {
+  const t = item?.moment?.topic || {};
+  const arr = Array.isArray(t.footer_images) ? t.footer_images : [];
+  return arr
+    .filter((im) => im && (im.original_url || im.url))
+    .map((im) => ({
+      url: im.original_url || im.url,
+      mediumUrl: im.medium_url || '',
+      smallUrl: im.small_url || '',
+      width: Number(im.width || 0),
+      height: Number(im.height || 0),
+      format: im.original_format || '',
+      size: Number(im.original_size || 0),
+    }));
+}
+
 /** 取帖子的「活动时间」：优先最后回复时间，其次发布时间 */
 export function activityTime(item) {
   const m = item.moment || {};

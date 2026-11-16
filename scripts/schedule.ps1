@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
   把 TapTap 答疑守护做成「登录即启动、崩溃自动重启」的计划任务（Windows）。
 
@@ -124,7 +124,19 @@ function Show-Doctor {
     } finally {
       $ErrorActionPreference = $prev
     }
-    if ($out -match 'Extension:\s*connected') { Write-Ok 'opencli 扩展已连接' }
+    # ⚠️ doctor 输出格式变过（2026-11-12，opencli 2.0.3）：
+    #    旧版纯文本 `Extension: connected`；新版 JSON `{"ok":true,"data":{"extensionConnected":true,...}}`
+    #    两种都认 —— 只认旧正则会把「已连接」误报成「可能未连接」。
+    $extConnected = $false
+    try {
+      $j = $out | ConvertFrom-Json -ErrorAction Stop
+      $data = if ($j.data) { $j.data } else { $j }
+      $extConnected = ($data.extensionConnected -eq $true) -or
+        (@($data.profiles) | Where-Object { $_.extensionConnected -eq $true }).Count -gt 0
+    } catch {
+      $extConnected = ($out -match 'Extension:\s*connected')
+    }
+    if ($extConnected) { Write-Ok 'opencli 扩展已连接' }
     else {
       Write-Warn2 '扩展可能未连接，输出如下：'
       Write-Host ($out.Trim() | Select-Object -First 1)
@@ -175,7 +187,7 @@ function Install-Task {
 
   Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal `
-    -Description 'TapTap 植物大战僵尸2 论坛答疑守护：每 10 分钟抓最新帖、答疑、夸答题玩家' | Out-Null
+    -Description 'TapTap 植物大战僵尸2 论坛答疑守护：每 2 分钟检查、队列逐条答疑（新到旧、不打断当前）、夸答题玩家' | Out-Null
 
   Write-Ok "已注册：$TaskName（登录后 $DelayMinutes 分钟启动，崩溃每 $RestartMinutes 分钟重启）"
   Write-Host "`n  立即试跑一次：powershell -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action start"

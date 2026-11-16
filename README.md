@@ -12,6 +12,7 @@
 │  lib/thread-context ← 三层树状上下文（帖子→回复→楼中楼）           │
 │  lib/cold-store     ← 帖子维度冷热分离（向量库 + 分类 TTL + 唤醒）  │
 │  lib/interact       ← 玩家回信后的继续互动                         │
+│  lib/review         ← 游戏评价接口（列/回/读回复/校验落库）           │
 └───────────────────────────────────────────────────────────────┘
 ┌─ SKILL.md（给 AI 读）──────────────────────────────────────────┐
 │  判断规则、三层上下文、口吻规范、51 条硬约束、踩坑清单、排障流程      │
@@ -154,6 +155,14 @@
 - 表情插不上就**不发送**，绝不发出错误内容
 - **不承诺换码**（求天宫码只陪聊）
 
+### 游戏评价接口（能力已入库，**暂未自动跑**）
+
+2026-11-13 新增：列评价 / 回评价 / 读评价回复 / 校验落库四个方法（`lib/review.mjs`），
+实测校准过端点与参数，手册见 [references/review-api.md](references/review-api.md)。
+
+> ⚠️ **目前只是「有能力」，守护循环还不会自动回评价** —— 评价不进队列、不进报表。
+> 自动值守的方案见 [docs/方案-评价自动值守.md](docs/方案-评价自动值守.md)，待确认后再实施。
+
 ## 三步跑起来
 
 ```bash
@@ -200,17 +209,18 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，22 套）
+### 自检（改规则前后必跑，28 套）
 
 ```bash
-node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
-node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
-node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
-node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
-node scripts/test-comfort.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs && \
-node scripts/test-complaint.mjs
+node scripts/test-api-contents.mjs && node scripts/test-archive.mjs && node scripts/test-code-match-templates.mjs && \
+node scripts/test-cold-store.mjs && node scripts/test-collect-scope.mjs && node scripts/test-comfort.mjs && \
+node scripts/test-complaint.mjs && node scripts/test-doctor-ok.mjs && node scripts/test-interact.mjs && \
+node scripts/test-limits-codes.mjs && node scripts/test-match.mjs && node scripts/test-mod-task.mjs && \
+node scripts/test-post-records.mjs && node scripts/test-praise.mjs && node scripts/test-publish-mask.mjs && \
+node scripts/test-qa-health.mjs && node scripts/test-qa-vector.mjs && node scripts/test-question.mjs && \
+node scripts/test-removed-list.mjs && node scripts/test-review-api.mjs && node scripts/test-scene-feedback.mjs && \
+node scripts/test-summarize.mjs && node scripts/test-summon.mjs && node scripts/test-thread-context.mjs && \
+node scripts/test-variants.mjs && node scripts/test-watch-semantics.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
 ```
 
 ## LLM 从哪来
@@ -285,7 +295,7 @@ node scripts\schedule.ps1 -Action doctor
 |---|---|
 | [SKILL.md](SKILL.md) | **给 AI 读**：判断规则、三层上下文、口吻规范、51 条硬约束、踩坑清单 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 怎么改代码、怎么提 PR、代码约定 |
-| [references/](references/) | 接口 / 表情 / 选择器 / 提问判定 / 喊话识别 / 夸答玩家 / 版主任务 / 运维 / 管理工具 |
+| [references/](references/) | 接口 / 表情 / 选择器 / 提问判定 / 喊话识别 / 夸答玩家 / 版主任务 / **游戏评价** / 运维 / 管理工具 |
 | [docs/方案.md](docs/方案.md) | 初版方案与可行性边界（**历史文档，部分内容已过期**） |
 | [docs/github-survey.md](docs/github-survey.md) | GitHub 上有没有能用的现成项目（调研存档） |
 

@@ -24,6 +24,14 @@
 | **发回复** | `/moment-comment/v1/create` | POST (multipart) | 需登录 Cookie + `x-xsrf-token` |
 | 楼中楼回复 | `/moment-comment/v1/create-child` | POST (multipart) | 需登录 Cookie + `x-xsrf-token` |
 | **移除（出板块）** | `/moment/v3/unlink-group` | POST (multipart) | 需登录 Cookie + `x-xsrf-token` |
+| **游戏评价列表** | `/review/v2/list-by-app` | GET | 匿名 |
+| **回一条评价** | `/review-comment/v1/create` | POST (multipart) | 需登录 Cookie + `x-xsrf-token` |
+| **评价的全量回复** | `/review-comment/v1/by-review` | GET | 匿名 |
+
+> 📌 **游戏评价（review）的完整手册见 [review-api.md](review-api.md)** ——
+> 那里记了实测校准的细节：`contents` 是**纯文本**（不是富文本 JSON）、`by-review` 的
+> `order` 必填且 `limit` 上限 10、列表里的 `review_comments` 只是预览子集不能用来校验落库、
+> `review/v2/detail` 的 `data.review` 是空壳（真数据在 `data.moment.review`）。
 
 ## 3. `/feed/v7/by-group` 参数（最重要）
 
@@ -108,22 +116,72 @@ comment.reply_to_user        被回复者
 - 对策：单次运行 1 个列表请求、间隔 ≥10 分钟、页间 ≥1.5s；命中拦截页时退避 15s/30s/45s 后跳过本轮
 - **浏览器（真实 Chrome + 登录 Cookie）不受此 WAF 影响**，可作兜底采集通道
 
-## 7. 官方 CLI 能做什么
+## 7. 官方 CLI 能做什么（2026-11-13 重新核实，**旧结论已过时**）
 
-`taptap-cli community-management` 共 8 个方法，**全部只读**：
+> ⚠️ 本节旧版写的是「共 8 个方法，**全部只读**」「官方 skill 原文：CLI 不支持写」。
+> 那是当时的版本。**2026-11-13 在 taptap-cli 0.2.2-rc.2 上实测：写方法已经出现了。**
+
+`taptap-cli community-management` 现有 **16 个命令**：
 
 ```
-list-community-moments / get-community-moment
-list-community-moment-replies / list-community-moment-child-replies
-list-community-group-labels
-get-community-moment-video-upload-token
-complete-community-moment-video-upload
-upload-community-moment-image
+只读：
+  list-community-moments / get-community-moment
+  list-community-moment-replies / list-community-moment-child-replies
+  list-community-group-labels
+  search-community-forums / get-community-forum-publish-options
+  get-community-moment-video-upload-token
+
+写（risk=write / high-risk-write）：
+  create-community-moment-reply           回复社区帖子（一级回复）
+  create-community-moment-reply-child     回复某条一级回复下的子回复（楼中楼）
+  create-community-topic-draft            创建帖子草稿
+  update-community-topic-draft            更新帖子草稿
+  publish-community-topic-draft           发布帖子草稿
+  upload-community-moment-image           上传帖子配图
+  +upload-image / +upload-video           发帖用图片 / 视频（不建素材库记录）
+  complete-community-moment-video-upload  完成帖子视频上传
 ```
 
-- 需要 `developer_id` + `app_id`，即**该游戏的开发者权限**
-- `list-community-moments` 支持 `--moment-intent`（`1`=问答求助，`2`=反馈建议），是官方意图标签，比关键词识别准得多
-- 官方 skill 原文：「要发帖、回帖、置顶、加精、删除或处理内容 → **CLI 不支持写**」
+### 7.1 正文节点：`contents` 支持 tap_emoji（关键）
+
+`create-community-moment-reply` 的 `contents` 是 JSON 字符串，**行内支持三种节点**：
+
+| 节点 | 写法 | 说明 |
+|---|---|---|
+| 纯文字 | `{"text":"..."}` | ≤20000 字符 |
+| mention | `{"type":"mention","info":{"id":"...","name":"..."}}` | @某人 |
+| **tap_emoji** | `{"type":"tap_emoji","info":{"id":71}}` | **表情，id 取自 `data/emoji-map.json`** |
+
+不支持：粗体/斜体/下划线/删除线/行内代码/高亮/颜色/段落对齐/引用块/嵌套片段/**link**/hashtag/list-item。
+顶层只支持 `paragraph` / `image`（图片 ≤9 张）。
+
+> 💡 **这意味着表情不必再驱动浏览器去点表情面板** —— 直接构造 tap_emoji 节点即可。
+> ⚠️ 但**不支持 link 节点** → 撮合通知里的链接只能当**纯文字 URL** 塞进 text（是否渲染成可点链接**待实测**）。
+
+### 7.2 前提：必须有开发者 scope（**当前账号没有**）
+
+所有 community-management 命令都要求 `--dev-id` + `--app-id`（调用 scope）；跨论坛查目标 App 还要 `forum_app_id`，但调用 scope 仍用已授权的 developer/app。
+
+**2026-11-13 实测（大哥已 `taptap-cli auth login`）：**
+
+```
+taptap-cli overview        → developers.count = 0，developer +list 为空
+taptap-cli community-management list-community-moments
+  → validation / failed_precondition
+    "no TapTap developer accounts are visible to the current credentials"
+```
+
+→ **连只读列表都调不动。** 写权限还要「论坛版主/主管理员」身份。
+
+### 7.3 结论与路线
+
+- ❗「回复只能靠 opencli 驱动浏览器」这个**结论仍然成立**，但**理由变了**：
+  不是「官方无写接口」，而是「**当前账号没有开发者 scope**」。
+- 拿到开发者账号后，API 直发是**更稳的方向**：
+  不受匿名接口 WAF 限流影响、不依赖浏览器窗口状态、能精确带 tap_emoji。
+- 切换前需要实测：① 楼中楼 `parent_reply_id` / `reply_to_reply_id` 语义；② mention 的 `info.id`/`info.name` 来源；
+  ③ 纯文字 URL 是否被渲染成可点链接；④ 与现有 `post_event` 幂等凭据如何对齐。
+- 现有 opencli 通道**保持不变**，API 直发作为**可选增强**，不替换。
 
 拿到开发者权限后，读接口可以换成 CLI，识别质量会明显提升。
 

@@ -48,6 +48,8 @@ import { composeReply as composeLlmReply, condenseMaterial } from './lib/compose
 import { archiveToCold, isCold, markWoken } from './lib/cold-store.mjs';
 import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
+import { enrichPostImages } from './lib/image.mjs';
+import { loadImageCache } from './lib/image-cache.mjs';
 import { classify } from './lib/classify.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { getTapApi } from './lib/taptap-api.mjs';
@@ -208,7 +210,11 @@ async function fetchItemsByIds(ids, { config, top, log = () => {} }) {
     const data = await listFeed({
       groupId: config.groupId,
       from: 0,
-      limit: Math.max(Number(top ?? config.collect.topN ?? 8), 10),
+      // ⚠️ 这里只是**拉取窗口大小**（一页取多少条），跟「回复几条」完全是两回事。
+      //    接口 limit 硬上限 10（feed/v7/by-group），所以至少 10。
+      //    ⚠️ `config.collect.topN` 已于 2026-11 移除（守护改成队列模式，不再有「目标 N 条」这概念）。
+      //    留着 `?? 8` 会读一个不存在的 key → 永远回落 8 → 让人以为「一轮只处理 8 条」。
+      limit: Math.max(Number(top ?? 10), 10),
       sort: config.collect.sort || 'created',
       type: config.collect.type,
     });
@@ -281,7 +287,17 @@ export async function runOnce({
   const qa = await loadQaLibrary(config.paths.qaFile);
   const usage = await loadUsage(config.paths.usageFile);
   const state = await loadState(config.paths.stateFile);
-  const TOP = Number(top ?? config.collect.topN ?? 8);
+  // 图片识别结果缓存（S5）：按图 url hash，避免重复 OCR/VLM 省钱
+  const imageCache = loadImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
+    ttlHours: Number(config.image?.vision?.cacheTtlHours ?? 168),
+  });
+  // ⚠️ `TOP` = **拉取窗口大小**（一页取多少条帖子），**不是「回复几条」**。
+  //    · 守护循环：每轮只处理**队首一条**（watch.processHead → collect with only=[id]），
+  //      单轮回复条数**没有上限概念** —— 队列有多长就处理多长（每条都走完整判定）。
+  //    · 单次手动跑 collect（无 only）：一轮最多回 `match.maxAutoReplyPerRun` 条（默认 8）。
+  //    ⚠️ `config.collect.topN` 已移除（2026-11，队列模式）。留着 `?? 8` 会读一个
+  //       不存在的 key → 永远回落 8 → 让人误以为「一轮只处理 8 条」。**别再加回来。**
+  const TOP = Math.max(Number(top ?? 10), 10);
   const log = (...a) => (quiet ? null : console.log(...a));
   /** 我们这边的人（我的 + config.teamUserIds 里列的其他成员） */
   const TEAM_IDS = teamUserIdsOf(config);
@@ -293,7 +309,14 @@ export async function runOnce({
   const webOn = config.websearch?.enabled !== false;
   const webTimeoutMs = Number(config.websearch?.timeoutMs ?? 60000);
 
-  log(`\n== ${new Date().toLocaleString('zh-CN')} 本轮开始（答疑库 ${qa.length} 条，目标最新 ${TOP} 条）`);
+  // ⚠️ 队列模式（only=[id]）只处理指定的那一条，**没有「目标最新 N 条」这回事** —— 别打印误导。
+  //    （守护每轮 processHead 就是 only 模式；旧日志一直印「目标最新 8 条」，跟实际行为对不上）
+  // ⚠️ 非队列模式（手动单次跑）才有「一轮最多回 maxAutoReplyPerRun 条」这个上限。
+  log(
+    only && only.length
+      ? `\n== ${new Date().toLocaleString('zh-CN')} 本轮开始（答疑库 ${qa.length} 条，队列单帖处理）`
+      : `\n== ${new Date().toLocaleString('zh-CN')} 本轮开始（答疑库 ${qa.length} 条，拉取窗口 ${TOP} 条，单轮回复上限 ${config.match?.maxAutoReplyPerRun ?? 8} 条）`
+  );
   // 单轮搜索配额归零（上限 2 次，配额与限速在 baidu-websearch 内部实现）
   if (webOn) await resetSearchRound(log);
 
@@ -476,7 +499,16 @@ export async function runOnce({
   for (const item of items) {
     const m = item.moment || {};
     const id = String(m.id_str || '');
-    const { title, text } = extractText(item);
+    const { title, text: baseText } = extractText(item);
+    // 图片流水线（S1–S5，2026-11-16）：码意图跳过 → 相关性门控 → OCR/VLM/模板识别 → 回灌 text。
+    //   识别内容并入 text 后，下游 looksQ / QA 匹配 / 联网搜索 / LLM 组答自动受益。
+    const imgEnrich = await enrichPostImages(item, { config, log, title, text: baseText, cache: imageCache });
+    const text = imgEnrich.text;
+    if (imgEnrich.imageText) {
+      log(`  [图片] 《${String(title || baseText).slice(0, 18)}》识别到内容（${imgEnrich.sources.join('+') || '识别'}）→ 并入帖子文本`);
+    } else if (imgEnrich.images.length && imgEnrich.skipped) {
+      log(`  [图片] 《${String(title || baseText).slice(0, 18)}》跳过：${imgEnrich.skipped}`);
+    }
     const prev = state.posts[id];
     const publishTime = Number(m.publish_time || m.created_time || 0);
     // 回复数在 moment.stat.comments（顶层 item.comment_count 不存在 → 永远是 0，
@@ -495,6 +527,9 @@ export async function runOnce({
       iReplied: false,
       othersReplied: false,
       replyCount: commentCount,
+      images: imgEnrich.images,
+      imageText: imgEnrich.imageText,
+      imageSources: imgEnrich.sources,
     };
 
     // 通知触发的帖（watch 入队时带 needsComments → runOnce 的 forceComments）如果已在冷库 → 就地唤醒
@@ -900,6 +935,15 @@ export async function runOnce({
     //   · 搜到 AI 答案 → 升为「待回复」，答案作参考资料，按 **50% 置信度**作答
     //   · 只有结果页（没 sseApi）/ 被风控 / 超时 → **不硬编答案**，维持「需人工」
     //   · 单轮最多 2 次查询（配额在 baidu-websearch 内部管），同一帖 24h 内不重复搜
+    // 🔧 兜底（2026-11-13）：新帖评论数=0 → needComments=false → threadTree=null，
+    //    会让下面的联网补答和回复组装**双双被跳过**（实测：秘宝求推荐帖因此没人答）。
+    //    这里给「待答疑」的帖补一个最小三层树（只有帖子本身、无评论），让兜底链路能走通。
+    if (!threadTree && finalStatus === STATUS.MANUAL && finalReason === REASON.NO_QA_MATCH && !codeAsking) {
+      threadTree = buildThreadTree(
+        { id, title: post.title, text: post.text, author: post.author, authorId: post.authorId },
+        comments || []
+      );
+    }
     let webNote = '';
     if (
       webOn &&
@@ -1993,7 +2037,9 @@ export async function runOnce({
       if (!state.posts[mid]?.interactPending) delete state.interactPending[mid];
     }
   }
-  state.runs = (state.runs || []).slice(-199);
+  // ⚠️ 上限只在这里设（50）。别在别处再写一个更大的数（曾有过 slice(-199)，
+    //    但开头 L337 已裁到 50，199 永远碰不到 → 死代码，且让文档误写「保留 199 轮」）。
+    state.runs = (state.runs || []).slice(-50);
   state.runs.push({
     at: new Date().toISOString(),
     scanned: results.length,
@@ -2006,6 +2052,7 @@ export async function runOnce({
   });
   await saveState(config.paths.stateFile, state);
   await saveUsage(config.paths.usageFile, usage);
+  imageCache.save();
 
   const { renderReport } = await import('./lib/report.mjs');
   await renderReport({

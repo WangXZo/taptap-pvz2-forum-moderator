@@ -1,0 +1,9 @@
+{
+  "note": "PVZ2 游戏画面特征模板库（S6，2026-11-16）。method=template 走 opencv 多尺度模板匹配（本地图像服务 /match）；模板图放 templates/。新植物/新 UI 补模板图+条目即可，自包含跟 skill 分发。threshold=相似度阈值（0.85 起，识别不到可降到 0.8/0.7）。pending=true 表示模板待采集（暂不参与匹配）。",
+  "features": [
+    { "id": "diamond", "name": "钻石", "category": "reward", "method": "template", "template": "templates/diamond.png", "threshold": 0.8, "aliases": ["钻石", "宝石"] },
+    { "id": "peashooter", "name": "豌豆射手", "category": "plant", "method": "template", "template": "templates/peashooter.png", "threshold": 0.85, "aliases": ["豌豆"], "pending": true },
+    { "id": "sunflower", "name": "向日葵", "category": "plant", "method": "template", "template": "templates/sunflower.png", "threshold": 0.85, "aliases": ["向日葵"], "pending": true },
+    { "id": "carnival_banner", "name": "狂欢嘉年华活动", "category": "activity", "method": "template", "template": "templates/carnival.png", "threshold": 0.8, "aliases": ["狂欢嘉年华"], "pending": true }
+  ]
+}

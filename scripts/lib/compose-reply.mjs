@@ -247,6 +247,9 @@ export async function composeReply({
     ...ctx.chain.map((n) => `${n.title || ''} ${n.text || ''}`),
   ].join(' ');
   const material = condenseMaterial(qaHits, { query: topicForMatch });
+  // 图片识别内容（S5，2026-11-16）：帖子文本里的 [图片内容] 是 OCR/看图来的二手信息，按 50% 置信度框定。
+  const hasImageContent =
+    /\[图片内容\]/.test(ctx.target?.text || '') || ctx.chain.some((n) => /\[图片内容\]/.test(n?.text || ''));
 
   const userMsg = [
     '## 这栋楼的三层结构（帖子 → 回复 → 楼中楼，越往下越贴近当前话题）',
@@ -268,6 +271,9 @@ export async function composeReply({
         `结尾提醒他自己那边实测为准；**只讲搜到的范围内**，不许补搜到之外的数字/时间/细节，别当定论。\n` +
         `（这里的 50% 指的是**对这条二手信息的信任度**，不是答疑库条目的匹配分，也不是互动续聊的回复概率。）\n\n` +
         `${String(webNote).slice(0, 1200)}`
+      : '',
+    hasImageContent
+      ? `\n## 关于帖子里的「[图片内容]」\n那是小鲸鱼从玩家截图里识别出来的（OCR/看图），属二手信息：只讲识别到的范围内，开口用「看图里大概是…」这类说法，细节以玩家自己实测为准，别补识别之外的数字/时间。\n`
       : '',
     avoidTexts && avoidTexts.length
       ? `\n## 你最近说过的话（**别重复这些说法**，换个说法、换个角度）\n${avoidTexts

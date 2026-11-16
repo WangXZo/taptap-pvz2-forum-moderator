@@ -22,7 +22,8 @@ const argv = process.argv.slice(2);
 const { has, argOf } = argvOf(argv);
 
 const config = await loadConfig();
-const TOP = Number(argOf('--top', config.collect.topN ?? 8));
+// ⚠️ `TOP` = 拉取条数（接口上限 10）。`config.collect.topN` 已移除（2026-11，队列模式）—— 别再加回来。
+const TOP = Math.max(Number(argOf('--top', 10)), 10);
 const OUT = argOf('--out', null);
 const QUIET = has('--quiet');
 

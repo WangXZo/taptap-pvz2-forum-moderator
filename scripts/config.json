@@ -23,7 +23,6 @@
     "note": "守护循环：2 分钟重排队列 + 处理（新到旧、不打断当前）。intervalSeconds 是**重排/处理**节奏；拉数据按 sources.*EverySeconds 错峰。"
   },
   "collect": {
-    "topN": 8,
     "sort": "created",
     "type": "feed",
     "commentDelayMs": 1500
@@ -54,7 +53,7 @@
     "refuseOnUnknown": false,
     "emoji": {
       "enabled": true,
-      "note": "表情只能放在文案结尾；写法 [表情_开心]。直接输入标识符无效，必须点选。可用表情由 data/emoji-map.json 采集，不在这里配白名单。"
+      "note": "表情位置不限（句中/句尾均可，2026-11-10 用户明确）；写法 [表情_开心]。直接输入标识符无效，必须点选。可用表情由 data/emoji-map.json 采集，不在这里配白名单。"
     },
     "note": "via=一级回复走接口直连（已实测）；nestedVia=楼中楼（夸奖/喊话/互动续聊）走接口 —— create-child 的参数是 parent_id（2026-11-03 真实 cURL 校准），猜错会错发成顶层评论",
     "via": "api",
@@ -122,7 +121,7 @@
     "samePlayerLimit": 1,
     "probabilityAfterLimit": 0.5,
     "strongTextLen": 40,
-    "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 3 次后，回复概率降到 50%；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。**没有独立检查频率**：通知由 watch 每轮（intervalSeconds）拉取并入队。"
+    "note": "互动续聊（2026-11-05）：玩家回应了我们（@你 / 回复你 / 喊你，含自己的其它别名）→ 可以继续接一句；纯客套（「哈哈谢谢」）自动排除。计数单元 = 同一帖 × 同一玩家：该玩家在这帖被回过 1 次后，第二次起回复概率降到 50%（samePlayerLimit=1，2026-11-06 改）；但「长文本 / 直接点名 / 连续追问 / 情绪激动」必回。maxPerPost=每帖每次最多回几条；maxPerRun=单轮上限。**没有独立检查频率**：通知由 watch 每轮（intervalSeconds）拉取并入队。"
   },
   "sceneFeedback": {
     "enabled": true,
@@ -239,6 +238,40 @@
     },
     "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
   },
+  "image": {
+    "enabled": true,
+    "skipIntents": [
+      "friendCode",
+      "tiangongCode"
+    ],
+    "bareCodeIsIntent": true,
+    "relevanceGate": {
+      "mode": "heuristic",
+      "shortTextLen": 30,
+      "longTextLen": 120,
+      "unknownAsRelevant": true
+    },
+    "ocr": {
+      "enabled": true,
+      "engine": "rapidocr",
+      "server": "http://127.0.0.1:8790",
+      "timeoutMs": 30000
+    },
+    "vision": {
+      "enabled": true,
+      "temperature": 0.3,
+      "maxTokens": 1200,
+      "timeoutMs": 90000,
+      "cacheTtlHours": 168
+    },
+    "features": {
+      "enabled": true,
+      "dir": "{{SKILL}}/assets/game-features",
+      "server": "http://127.0.0.1:8790",
+      "timeoutMs": 30000
+    },
+    "note": "图片识别流水线（2026-11-16，设计稿见任务目录 output/PVZ2图片识别-技术设计稿-20261116.md）：①码/好友意图跳过图片识别（isCodeIntent）②相关性门控纯启发式起步（无关配图跳过、相关图才识别）③识别内容并入 post.text → QA匹配/联网搜索/LLM组答自动受益。识别手段：S3 RapidOCR 本地 OCR（需起 scripts/ocr_server.py，pip install rapidocr）+ S4 VLM（跟随 DSH/他人 key，见 llm.vision）+ S6 模板匹配（assets/game-features，opencv /match）。结果缓存 data/image-cache.json（TTL cacheTtlHours）。OCR/VLM/模板服务未起或缺依赖 → 各自降级跳过，不阻断答疑。取图实测：图在 moment.topic.footer_images[]，匿名+X-UA 可读，CDN 无防盗链。"
+  },
   "llm": {
     "enabled": true,
     "note": "回复生成走 LLM（2026-11-04）。两条路子：①不填 apiKey → 复用 DSH 自己的模型配置（~/.dsh/profiles/web/cordis.patch.yml + ~/.dsh/.credentials.yaml），跟着你在 GUI 里切的模型走；②填 apiKey/baseURL/model → 用自己的（给其他成员用）。",
@@ -250,7 +283,14 @@
     "reuseDsh": true,
     "temperature": 0.85,
     "maxTokens": 600,
-    "timeoutMs": 60000,
-    "fallbackNote": "渠道按实测快慢排序：volcengine-plan → minimax → kimi → ollama。MiniMax/Kimi 强制 thinking，单次可能 30~90 秒，超时自动切下一个。"
+    "fallbackNote": "渠道顺序跟随 DSH 当前模型路由（不在 skill 写死模型名）；部分渠道强制 thinking，单次可能 30~90 秒，超时自动切下一个。",
+    "vision": {
+      "apiKey": "",
+      "baseURL": "",
+      "model": "",
+      "api": "openai-completions",
+      "maxTokens": 1200,
+      "note": "视觉渠道（图片识别 S4）：apiKey/baseURL/model 三项齐全 → 用他人自己的 VLM key；为空 → 跟随 DSH 路由挑 vision-capable 模型（isVisionModel 按能力词 vl/vision/omni 匹配，不写死模型名）。都无 → 降级跳过。"
+    }
   }
 }

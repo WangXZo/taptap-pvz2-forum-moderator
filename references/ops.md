@@ -90,7 +90,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 | 内容 | 位置 |
 |---|---|
 | 运行日志（计划任务写入） | `logs\watch.log`（超过 5MB 自动轮转为 `watch.log.1`） |
-| 每轮摘要 | `data\state.json` 的 `runs` 数组（保留最近 199 轮） |
+| 每轮摘要 | `data\state.json` 的 `runs` 数组（保留最近 50 轮） |
 | 人看的报表 | `reports\questions.md` |
 | Excel 报表 | `reports\questions.csv`（带 UTF-8 BOM） |
 | 已发文本记录（防重复） | `data\state.json` 的 `recentReplies` |
@@ -106,7 +106,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 **不要带**：`data/`、`reports/`、`logs/`、`scripts/node-path.txt`、`qa/答疑库.md.backup.md`、`qa/答疑库.md.before-*`、`qa/答疑库.md.before-purge-*`、`qa/归档/`
 
 > `scripts/` 里包含两个管理 CLI（`qa-admin.mjs` / `post-admin.mjs`）、DOM 探针（`probe-dom.mjs`）、
-> 七套回归测试，以及部署脚本（`schedule.ps1` / `run-watch.cmd`）—— 都随 skill 走，别人拿到就能用。
+> 28 套回归测试，以及部署脚本（`schedule.ps1` / `run-watch.cmd`）—— 都随 skill 走，别人拿到就能用。
 > 用法见 `references/admin.md`。
 
 > ⚠️ **答疑库的方向永远是「运行中的那份 → 构建源 / 留档」，不能反着来。**
@@ -176,8 +176,10 @@ Compress-Archive "$env:TEMP\pvz2-share\taptap-pvz2-forum-moderator" `
 ## 10. 风险控制
 
 - `reply.dryRun` 默认 `true`，确认后再改 `false`
-- `maxAutoReplyPerRun` 默认 8，防刷屏
+- ⚠️ **守护循环没有「每轮处理 N 条」这个概念** —— 它每轮**只处理队首一条**（队列多长就慢慢处理多长）
+- `match.maxAutoReplyPerRun` 默认 8 —— ⚠️ **只管手动单次跑 `collect.mjs`**，**不管守护循环**（守护走队列逐条处理）
 - `blacklistWords` 命中强制转人工（充值/申诉/封号等）
 - `minPostAgeMinutes` 默认 10，新帖冷却
 - `praise.maxPerRun` 默认 3，单轮最多夸 3 条
 - 每条回复带 `reply.signature`（「版主助手-小鲸鱼」），既是署名也是机器特征，酌情调整
+- ⚠️ `config.collect.topN` **已移除**（队列模式时代遗留）。代码里任何地方都不该再读它（2026-11 清理）

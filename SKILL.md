@@ -11,17 +11,18 @@ description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。
 >
 > 📜 **版本沿革与改造总结见 [CHANGELOG.md](CHANGELOG.md)**（含刷屏自查、场景级负反馈、踩坑记录）。
 > 行为治理细节：刷屏自查刹车见 §3b、场景负反馈见 §3c、喊话分流见 `references/summon.md`。
+> 🖼️ **图片识别流水线（v1.4.0）**：带门控（码意图跳过 / 相关性门控 / 识别内容进搜索+LLM），RapidOCR + VLM（跟随DSH/他人key）+ 模板匹配，见 `references/image-recognition.md`。
 
 ## 目录结构
 
 ```
 taptap-pvz2-forum-moderator/
 ├── SKILL.md                  本文件
-├── scripts/                  代码（零第三方依赖）
+├── scripts/                  代码（零第三方依赖；ocr_server.py 需 pip install rapidocr）
 │   └── lib/                    模块：接口 / 判定 / 文案 / 表情 / 状态 / 体检
 │       └── util.mjs            公共散列（stableHash / liteHash）与 entryKeyOf 之类的小工具
 ├── references/               接口 / 表情 / 选择器 / 提问判定规则 / 运维手册
-├── assets/                   空白模板
+├── assets/                   空白模板 + game-features/（游戏特征模板库 features.json+模板图）
 ├── qa/
 │   ├── 答疑库.md             ★ 答疑数据库（直接编辑这个）
 │   └── 归档/                 冷数据（超 30 天未引用，自动归档）
@@ -44,14 +45,16 @@ node scripts/whoami.mjs
 
 # 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
 
-# 4) 全部自检（改规则前后都要跑，19 套）
-node scripts/test-question.mjs && node scripts/test-praise.mjs && node scripts/test-variants.mjs && \
-node scripts/test-match.mjs && node scripts/test-summarize.mjs && node scripts/test-archive.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-summon.mjs && node scripts/test-mod-task.mjs && \
-node scripts/test-api-contents.mjs && node scripts/test-qa-vector.mjs && node scripts/test-post-records.mjs && \
-node scripts/test-removed-list.mjs && node scripts/test-limits-codes.mjs && node scripts/test-cold-store.mjs && \
-node scripts/test-thread-context.mjs && node scripts/test-interact.mjs && node scripts/test-publish-mask.mjs && \
-node scripts/test-watch-queue.mjs && node scripts/test-comfort.mjs
+# 4) 全部自检（改规则前后都要跑，28 套）
+node scripts/test-api-contents.mjs && node scripts/test-archive.mjs && node scripts/test-code-match-templates.mjs && \
+node scripts/test-cold-store.mjs && node scripts/test-collect-scope.mjs && node scripts/test-comfort.mjs && \
+node scripts/test-complaint.mjs && node scripts/test-doctor-ok.mjs && node scripts/test-interact.mjs && \
+node scripts/test-limits-codes.mjs && node scripts/test-match.mjs && node scripts/test-mod-task.mjs && \
+node scripts/test-post-records.mjs && node scripts/test-praise.mjs && node scripts/test-publish-mask.mjs && \
+node scripts/test-qa-health.mjs && node scripts/test-qa-vector.mjs && node scripts/test-question.mjs && \
+node scripts/test-removed-list.mjs && node scripts/test-review-api.mjs && node scripts/test-scene-feedback.mjs && \
+node scripts/test-summarize.mjs && node scripts/test-summon.mjs && node scripts/test-thread-context.mjs && \
+node scripts/test-variants.mjs && node scripts/test-watch-semantics.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run
@@ -74,6 +77,29 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 ```
 
 代价：**机器要保持登录状态**（锁屏 OK，注销/关机不跑）。完整方案见 `references/ops.md`。
+
+### 能不能用 DSH「自动化任务」托管守护？—— 不能，是概念错配（2026-11-13 核实）
+
+DSH 0.2.2-rc.2 的自动化任务（Schedule，`schedule_create`/自动化任务页面）性质是：
+**到点把一条指令投递到某个 Agent 会话，由 LLM 去执行**。它**不直接拉起 OS 进程**。
+
+拿它「到点启动守护」会踩三个坑：
+1. 每次触发在目标会话里起一个 **session 级后台进程** → 会话结束 / 宿主重启就死（跟 pwsh 背景任务一个毛病）。
+2. 端口锁（watch 45871 / mod-watch 45872）保证单实例 → 第二次触发**根本起不来**，只会制造「看着在跑、其实是僵尸」的混乱。
+3. 每次触发烧一次 LLM 额度，只为启动个进程。
+
+**反证**：DSH 一升级，守护全被杀；自动化任务自己也是宿主的一部分 → 一起死，救不回来。
+
+**正确分工**（各司其职，别混用）：
+
+| 职责 | 该用什么 | 说明 |
+|---|---|---|
+| 守护存活（登录自启、崩溃自动重启） | **Windows 计划任务**（`scripts/schedule.ps1`） | 唯一能跨 DSH 重启/升级活着的方案；不占 LLM 额度 |
+| 巡检（守护活着吗 / opencli 通吗 / 异常拉起） | DSH 自动化任务（如每 15 分钟，`new_once` 专用会话） | 可选；LLM 巡检，异常时才动手 |
+| 每日汇总报表 | DSH 自动化任务（每天一次） | 可选 |
+
+> 📌 **当前决策（用户 2026-11-13）**：Windows 计划任务**不装**、DSH 自动化任务**也先不建**。
+> 守护继续用会话后台进程跑；本节只作方案备查。要启用时按上表选对应机制，别把守护塞进 Schedule。
 
 ## 守护循环：**2 分钟检查 + 队列**（新到旧，不打断当前）
 
@@ -120,7 +146,7 @@ node scripts/watch.mjs --once          # 只跑一轮后退出
 node scripts/watch.mjs --interval 120  # 自定义检查间隔（秒）
 node scripts/watch.mjs --dry-run       # 判定但不真发
 node scripts/watch.mjs --no-reply      # 只采集判定，不回复
-node scripts/watch.mjs --top 20        # 覆盖每轮条数
+node scripts/watch.mjs --top 20        # 只扩大 feed 查找窗口（不控制每轮处理条数）
 ```
 
 ### ⚠️ 队列必须**独立文件**：`data/watch-queue.json`
@@ -988,8 +1014,11 @@ node scripts/mod-watch.mjs --once --dry-run  # 只跑一轮看看
 **新帖优先**（用户原话：「优先处理，新的帖子」「每轮都按照"新帖优先"重新获取，重排队列」）：
 命中先进**待办队列**（存 state），**每轮都重新获取并按发布时间倒序重排整队**
 （不是只把新帖插队首 —— 那样顺序会随轮次漂移）；
-每轮只处理队首 `maxPerRound`（默认 20）条 → 一轮几分钟内结束，新帖永远先处理，
+每轮只处理队首 `maxPerRound` 条 → 一轮几分钟内结束，新帖永远先处理，
 老待办往后排、慢慢消化，中断/重启都不丢。
+> ⚠️ `maxPerRound` 是**版主管理任务**（mod-watch）的参数，跟答疑守护无关。
+> 当前配置 `modTasks.friendRequest.maxPerRound = 0` = **一直处理到队列空**（不是 20）。
+> 答疑守护是**每轮只处理队首一条**，见上面「守护循环」那节。
 
 **游标**按发布时间记「上次扫到哪」，只处理新增的。三个坑：
 
@@ -1011,6 +1040,52 @@ node scripts/mod-watch.mjs --once --dry-run  # 只跑一轮看看
 
 ```bash
 node scripts/test-mod-task.mjs   # 78 条断言：现场真实标题（正例16 / 负例22 / 官方跳过6）
+```
+
+## 游戏评价（review）：接口能力已入库（2026-11-13）
+
+大哥给了两条**真实 cURL**（评价列表 / 评价回复），要求「学习验证，保存的 skill 中」。
+已逐条实测校准并入库。完整手册见 **[references/review-api.md](references/review-api.md)**。
+
+跟论坛用的是**同一套基建**（`webapiv2` + `X-UA` + 页面上下文 fetch），所以直接复用 `taptap-api.mjs`。
+
+| 方法 | 端点 | 说明 |
+|---|---|---|
+| `api.reviewList({appId, limit, sort})` | `GET /webapiv2/review/v2/list-by-app` | 拉评价列表（**匿名可读**） |
+| `api.reviewReply({reviewId, text, signature})` | `POST /webapiv2/review-comment/v1/create` | 回一条评价 |
+| `api.reviewComments({reviewId, limit, from, order})` | `GET /webapiv2/review-comment/v1/by-review` | 读**全量**回复 |
+| `api.hasReviewReplyText({reviewId, text})` | （基于上一条） | 校验回复是否落库 |
+
+### ⚠️ 评价接口跟论坛接口的四个坑（实测踩出来的）
+
+| # | 坑 | 正确做法 |
+|---|---|---|
+| 1 | **`contents` 是纯文本**，不是富文本 JSON | 论坛回帖发 `[{type:'paragraph',…}]`；评价回帖发**裸字符串**。表情节点在评价接口没验证过 → **一律剥掉** `[表情_xx]` |
+| 2 | `by-review` 的 **`order` 必填**（`asc\|desc`） | 漏了直接 400：`Field validation for 'order' failed on the 'oneof' tag`。校验落库用 `desc`（新→旧，我们刚发的排最前） |
+| 3 | `by-review` 的 **`limit` 上限 10** | 15 / 20 都 400：`failed on the 'max' tag` |
+| 4 | **列表里的 `review_comments` 只是预览子集** | 实测：列表 1 条 vs `by-review` 2 条 → 校验落库**必须**走 `by-review`，否则误判「没发出去」 |
+
+另外：`review/v2/detail` 的 `data.review` 是**空壳**，真数据在 `data.moment.review`。
+
+### 怎么验证「回复真的发出去了」
+
+跟论坛一样是「发完读回校验」，但读的是 `by-review`：
+
+```js
+const sent = await api.reviewReply({ reviewId, text, signature: config.reply.signature });
+const v = await api.hasReviewReplyText({ reviewId, text: sent.contents });
+// → { found: true, id: 36692150 }
+```
+
+签名规则不变：**由脚本加一次**（`clampReply`），LLM 不写签名。
+
+### 当前范围：只入库**能力**，**未接入自动值守**
+
+现在这四个方法**还没有**被守护循环调用 —— 评价不会自动回复、也不会自动进报表。
+自动值守（C 级）的方案见 `docs/方案-评价自动值守.md`，**待大哥确认后再实施**。
+
+```bash
+node scripts/test-review-api.mjs   # 74 条断言：端点常量/参数规范化/纯文本载荷/摊平/落库校验/失败路径
 ```
 
 ## 答疑库检索：从关键词匹配 → 向量检索
@@ -1374,7 +1449,14 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 
 ## 硬约束（踩过的坑）
 
-1. **官方无写接口**。`taptap-cli` 的 `community-management` 是纯只读，官方 skill 原文：「要发帖、回帖、置顶、加精、删除或处理内容 → CLI 不支持写」。所以回复只能靠 `opencli` 驱动真实浏览器模拟点击。
+1. **回复走浏览器 —— 但原因不是「官方无写接口」（2026-11-13 更正）**
+   - 旧结论「`taptap-cli` 的 community-management 是纯只读、CLI 不支持写」**已过时**：
+     taptap-cli 0.2.2-rc.2 实测有 16 个命令，含 `create-community-moment-reply`（回帖）、
+     `create-community-moment-reply-child`（楼中楼），且 `contents` 行内支持 **tap_emoji**（`info.id`）
+     → 表情本可直接用 API 发，不必驱动浏览器点表情面板。详见 `references/api.md` §7。
+   - **真正的拦路虎是账号没有开发者 scope**：实测 `developers.count=0`，所有命令要 `--dev-id/--app-id`，
+     报 `no TapTap developer accounts are visible to the current credentials` → 连只读列表都调不动。
+   - 所以**现状不变**：回复仍靠 `opencli` 驱动真实浏览器。拿到开发者账号后 API 直发是更稳的方向（可选增强，不替换）。
 2. **WAF 限流 —— 而且它不会自己恢复**（用户 2026-11-06 明确纠正）：
    匿名接口探测过密会返回 `<meta name="aliyun_waf_aa">`（HTTP 200 但内容是 HTML）。
    ⚠️ **没有自动解封时间，必须人工到浏览器完成人机验证才能解除。**
@@ -1456,7 +1538,7 @@ node scripts/reply.mjs --only <moment_id>     # 补发某一条
 44. **`qa/答疑库.md` 以「运行中」那份为准**。守护进程会持续往里沉淀，一天能长十几条；
     同步方向只能是 **运行中 → 构建源/留档**，反向覆盖过一次，一夜沉淀的 10 条全丢。
     兜底：每轮自动备份 `qa/答疑库.md.backup.md`，出事用 `node scripts/restore-qa.mjs --restore` 回退。
-45. **老帖子的错判不会自己翻案**。「翻案」只在扫描窗口（最新 8 条）内生效，
+45. **老帖子的错判不会自己翻案**。「翻案」只在扫描窗口（动态窗口 + 游标，非固定条数）内生效，
     旧帖早已滑出窗口，状态里的错判会永远留在报表里。
     规则改过之后跑一次 `node scripts/post-admin.mjs recheck --all 500` 批量重判（只看标题，不发内容），
     对变化过的帖子再 `recheck <id> --praise` 补做沉淀与夸奖。
@@ -1695,7 +1777,7 @@ node scripts/scene-admin.mjs reset-all         # 解除全部
 - `waf.mjs test` **必须走页面通道**（否则误报 + 把熔断标记重新落下）
 - 一帖一做的动作全部落 `post_event`（`share_reply` / `code_praise` / `praise_reply` / `interact_reply` / `summon_reply` / `comfort_reply` / `code_match`）
 - 已发布：v1.2.0
-- 测试：21 套全绿（test-watch-queue 73 条 / test-summon 38 条 / test-comfort 27 条 / test-post-records 34 条 / test-limits-codes 41 条 / test-publish-mask 33 条 / test-websearch 25 条）
+- 测试：28 套全绿（test-watch-queue 78 条 / test-watch-semantics 16 条 / test-summon 38 条 / test-comfort 27 条 / test-post-records 34 条 / test-limits-codes 41 条 / test-publish-mask 33 条 / test-websearch 25 条 / test-scene-feedback 68 条 / test-complaint 28 条 / test-code-match-templates 32 条 / test-doctor-ok 17 条 / test-collect-scope 107 条 / test-review-api 74 条）
 
 ---
 

@@ -5,6 +5,134 @@
 
 ---
 
+## v1.4.0 — 图片识别流水线（S1–S6，带门控）
+
+### 背景
+论坛大量帖子带图（求助截图 / 活动页面 / 植物图鉴 / 晒卡），此前 skill **零图片识别**：`flattenContents` 只抽文本丢图，好友码截图被标「码在图里取不到」。大哥 2026-11-16 拍板**带门控流水线**设计（调研 + 设计稿见任务目录 `output/PVZ2论坛图片识别调研报告-20261116.md` / `output/PVZ2图片识别-技术设计稿-20261116.md`）。
+
+### 三条规则
+1. **好友码/天宫码意图 → 跳过图片识别**（走原固定提醒/撮合流程，不读图）。
+2. **其他帖先判图片相关性**（纯启发式起步）：无关配图跳过、相关图才识别。
+3. **识别内容并入 `post.text`** → QA 匹配 / 联网搜索 / LLM 组答自动受益（现有通道，无需新建）。
+
+### 新增模块
+- `lib/image.mjs`：流水线编排（`isCodeIntent` / `imageRelevance` / `enrichPostImages` / `defaultRecognize`）。
+- `lib/ocr.mjs` + `scripts/ocr_server.py`：**S3 RapidOCR 本地 OCR** 微服务（`/ocr` + `/match`，`pip install rapidocr`）。
+- `lib/vision.mjs` + `llm.mjs` 多模态扩展：**S4 VLM 看图**（`resolveVisionChannels` / `chatVision` / `toApiContent`，**跟随 DSH + 他人 key**）。
+- `lib/features.mjs` + `assets/game-features/`：**S6 模板匹配**（`features.json` + 模板图，opencv 多尺度 `/match`）。
+- `lib/image-cache.mjs`：识别结果缓存（`data/image-cache.json`，TTL）。
+- `http.mjs` `extractImages`：取图（实测图在 `moment.topic.footer_images[]`，feed 层即带，匿名+X-UA，CDN 无防盗链）。
+- `collect.mjs` 接入 `enrichPostImages` + 缓存；`compose-reply.mjs` 图片二手信息置信度框定。
+
+### 配置
+`config.image`（enabled / skipIntents / relevanceGate / ocr / vision / features）+ `config.llm.vision`（他人 key / 跟随 DSH）。详见 `references/image-recognition.md`。
+
+### 测试
+新增 5 套（test-image-gate / test-ocr-bridge / test-vision-channel / test-image-pipeline / test-features），**共 33 套全绿**。OCR 与模板匹配经真实活动页面样本端到端验证（识别「获得奖励/狂欢嘉年华/钻石334」；钻石模板自匹配命中）。
+
+### 踩坑
+- 图片**不在 contents.json 而在 `topic.footer_images[]`**；匿名需 **X-UA 头**（否则 `INVALID_XUA`，非 WAF）；moment id 用 **`id_str`**。
+- `features.mjs` 在 `scripts/lib/`，`SKILL_ROOT` 要 `resolve('../..')` 才到 skill 根（少跳一级读不到资产库）。
+- `llm.mjs` `return /regex/i.test()` 触发 collect-scope 误报（`i` 标志被当变量）→ 正则提成模块常量 `VISION_RE`。
+- RapidOCR 3.x 返回 `RapidOCROutput.txts/.scores`。
+
+---
+
+## v1.3.4 — doctorOk 兼容新格式 + taptap-cli / 自动化任务结论更正
+
+### A. 修复：doctorOk 误判 opencli 不可用（DSH 升级引发，**严重**）
+- **事故**：DSH 升到 0.2.2-rc.2（opencli 2.0.3）后，`opencli doctor` 输出从**纯文本**改成 **JSON**
+  （`{"ok":true,"data":{"extensionConnected":true,...,"issues":[]}}`）。
+  `doctorOk` 只认旧正则 `/Extension:\s*connected/` → 永远判「不可用」→
+  **所有浏览器通道操作被静默跳过**（回复/夸码/撮合/版主任务全废，日志只有一行 `[FAIL] opencli 不可用`）。
+  mod-watch 甚至因此直接退出码 1。
+- **修法**：`lib/replier.mjs` 的 `doctorOk` 两种格式都认 —— 优先解析 JSON（`extensionConnected` 或
+  `profiles[].extensionConnected` 为 true 且 `issues` 为空），解析不了再退回旧文本正则。
+  `scripts/schedule.ps1` 的 doctor 自检同样兼容两种格式。
+- **新增 `test-doctor-ok.mjs`（9 项）**：新 JSON / 旧文本 / 真不通 / profiles 兜底 / 坏输出不崩，全锁住。
+- ⚠️ 教训：**上游 CLI 的输出格式是会变的**，凡是「解析外部命令输出」的判定都要兼容 + 有回归测试，
+  否则一次升级就静默废掉整条通道。
+
+### B. 文档更正：taptap-cli 写能力已出现，但当前账号无开发者 scope（2026-11-13 实测）
+- `references/api.md` §7 旧写「community-management 共 8 个方法，全部只读」→ **已过时**。
+  实测 taptap-cli 0.2.2-rc.2 有 **16 个命令**，含 `create-community-moment-reply`（回帖）、
+  `create-community-moment-reply-child`（楼中楼）、发帖草稿三件套、上传图片/视频。
+- **新能力**：`contents` 行内支持 **tap_emoji**（`info.id`）→ 表情本可直接经 API 发，不必驱动浏览器点表情面板。
+  （行内**不支持 link** → 撮合链接只能当纯文字 URL，是否渲染成可点链接待实测。）
+- **但当前账号调不动**：`developers.count=0`，所有命令要 `--dev-id/--app-id`，实调报
+  `no TapTap developer accounts are visible to the current credentials` → 连只读列表都调不动。
+- `SKILL.md` 硬约束①「官方无写接口」更正为：**结论（回复靠 opencli）不变，但理由是「账号无开发者 scope」，不是「官方无写接口」**。
+  拿到开发者账号后 API 直发是更稳方向（可选增强，不替换现有 opencli 通道）。
+
+### C. 文档新增：DSH「自动化任务」不能托管守护（概念错配）
+- DSH Schedule 的性质是「到点把指令投递到 Agent 会话由 LLM 执行」，**不直接拉起 OS 进程**。
+  拿它启动守护会踩：session 级进程随宿主死、端口锁致第二次起不来、每次烧 LLM 额度。
+- **正确分工**：守护存活 → Windows 计划任务（`schedule.ps1`，唯一能跨 DSH 重启/升级活着）；
+  巡检 / 日报 → DSH 自动化任务（可选）。
+- **当前决策（用户 2026-11-13）**：Windows 计划任务不装、DSH 自动化任务也先不建；守护继续用会话后台进程跑。
+
+### D. 新增：游戏评价（review）接口能力入库（2026-11-13）
+
+大哥提供两条**真实 cURL**（评价列表 / 评价回复），要求「学习验证，保存的 skill 中」。
+逐条实测校准后入库（**全程只读**，没额外发过任何回复）。
+
+**新增能力**（`scripts/lib/review.mjs` + `taptap-api.mjs` 四个方法）：
+
+| 方法 | 端点 | 说明 |
+|---|---|---|
+| `api.reviewList({appId, limit, sort})` | `GET /webapiv2/review/v2/list-by-app` | 评价列表（**匿名可读**） |
+| `api.reviewReply({reviewId, text, signature})` | `POST /webapiv2/review-comment/v1/create` | 回一条评价 |
+| `api.reviewComments({reviewId, limit, from, order})` | `GET /webapiv2/review-comment/v1/by-review` | 读**全量**回复 |
+| `api.hasReviewReplyText({reviewId, text})` | （基于上一条） | 校验回复是否落库 |
+
+**实测踩到的坑（都写进 `references/review-api.md`）**：
+
+1. ⚠️ **评价回复的 `contents` 是纯文本**，不是论坛那套富文本 JSON（`[{type:'paragraph',…}]`）。
+   落库形态 = `{text, raw_text}`。→ 表情标记一律**剥掉**再发（表情节点在评价接口没验证过）。
+2. ⚠️ `by-review` 的 **`order` 必填**（`asc|desc`，oneof 校验），漏了 400。
+3. ⚠️ `by-review` 的 **`limit` 上限是 10**（15 / 20 都 400：`failed on the 'max' tag`）。
+4. ⚠️ **列表里的 `review_comments` 只是预览子集**（实测：列表 1 条 vs by-review 2 条）
+   → 校验落库必须走 `by-review`，否则会误判「没发出去」。
+5. ⚠️ `review/v2/detail` 的 `data.review` 是**空壳**，真数据在 `data.moment.review`。
+6. 列表接口**不需要 Cookie**（匿名可读），但仍走页面上下文统一通道。
+
+**无损验证方式**：没真发新回复，而是**读回大哥手动发过的那条**（review `51123606` →
+comment `36692150`，作者 `63****64`）确认端点与参数正确。
+
+**顺带的结构改动**：`stripEmojiMarks` 从 `taptap-api.mjs` 挪到新模块 `lib/text.mjs`
+（`taptap-api.mjs` 再导出一次，老引用不用改）—— 否则 `taptap-api.mjs` ↔ `review.mjs`
+会形成**循环依赖**。新增单测 `test-review-api.mjs`（74 条断言），测试套数 26 → **27**。
+
+> 当前只入库**能力**（A 级），**尚未**接入自动值守（C 级方案见 `docs/方案-评价自动值守.md`）。
+
+### E. 清理失效内容 + 钉死「守护每轮只处理一条」语义（2026-11-13，用户强烈纠正后）
+
+**起因（我犯的错）**：给 TapTap 官方的确认文档里写了「配置上限：单轮答疑 8 条」——
+这是**替官方虚构了一个我们没做过的承诺**。真实情况：**答疑守护是队列模式，每轮只处理队首一条，
+没有「每轮 N 条」这概念**；`match.maxAutoReplyPerRun`(8) **只管手动单次跑 `collect.mjs`**，守护根本不读它。
+
+**「8 条」残留的根源**：`config.collect.topN` 早已随队列模式移除，但 `collect.mjs` / `watch.mjs` /
+`fetch-latest.mjs` 三处仍在 `config.collect.topN ?? 8` 回落 → 读一个不存在的 key，看着像「一轮 8 条」。
+
+**代码清理**：三处删掉 `config.collect.topN` 引用；`TOP` 统一为 `Math.max(Number(top ?? 10), 10)`
+并注明「**这是拉取窗口，不是回复条数**」；`collect` 日志区分队列模式（单帖处理）vs 手动模式（窗口 + 单轮上限）。
+
+**文档清理（失效内容移除，历史留副本）**：
+- `docs/方案.md` **重写为《架构总览（当前版本）》**；初版正文归档到 `docs/历史/方案-初版-20261026.md`
+- `docs/evidence/01-facts.md` 加「历史流水非当前规格」警示头 + 4 条已推翻结论更正表
+- `references/ops.md` 风险控制节明写「守护没有每轮 N 条」「maxAutoReplyPerRun 只管手动跑」「collect.topN 已移除别加回」
+- `references/mod-task.md` / `SKILL.md` 澄清 `maxPerRound` 是 **mod-watch** 的参数（实际值 0=处理到队列空，旧文档「默认 20」已过时）
+
+**新增护栏 `test-watch-semantics.mjs`（16 条断言）**：剥注释后检查三文件不含 `collect.topN`、
+config 无该键、watch 只取 `queue[0]`+`only:[head.id]`、watch 不读 `maxAutoReplyPerRun`、
+TOP 用 `??10`、ops.md 口径一致。**谁再把失效配置加回来 / 把守护改成批量，当场红。**
+测试套数 27 → **28**（`package.json` test 脚本同步补齐 review-api + watch-semantics）。
+
+> ⚠️ 教训：**给外部看的文档必须以代码实际行为为准**，不能照抄配置项字面意思；
+> 配置删/改后必须同步清理 references/docs/SKILL 里对它的所有描述。
+
+---
+
 ## v1.3.3 — 天宫码撮合扩容：模板池动态化 + 求码窗口 2 小时
 
 用户 2026-11-12 要求两条：
@@ -119,4 +247,4 @@ node scripts/scene-admin.mjs reset-all         # 解除全部
 ## 发布约定
 - 运行目录 `~/.dsh/skills/taptap-pvz2-forum-moderator/` 是**运行库**；仓库副本由 `publish-repo.mjs` 脱敏后生成。
 - **答疑库同步方向只能是 运行中→构建源**，反向覆盖会丢自动沉淀。
-- 发布前跑 `publish-repo.mjs`（个人信息扫描 + 覆盖度体检）；自检 24 套全绿再发。
+- 发布前跑 `publish-repo.mjs`（个人信息扫描 + 覆盖度体检）；自检 28 套全绿再发。
