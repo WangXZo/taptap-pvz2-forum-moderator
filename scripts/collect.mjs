@@ -7,6 +7,7 @@
 //   node scripts/collect.mjs --reply       # 采集 + 真发
 //   node scripts/collect.mjs --top 20      # 覆盖配置里的 N
 
+import { resolve } from 'node:path';
 import { loadConfig, argvOf, sleep, SKILL_ROOT } from './lib/paths.mjs';
 import { listFeed, listComments, extractText, MOMENT_URL, WafBlocked, setPageFetcher } from './lib/http.mjs';
 import { createPageFetcher } from './lib/page-fetch.mjs';

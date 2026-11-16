@@ -101,6 +101,15 @@ ok('ops.md 说明守护每轮只处理队首一条', /每轮.*只处理队首一
 ok('ops.md 说明 maxAutoReplyPerRun 只管手动跑', /只管手动|手动单次跑/.test(ops));
 ok('ops.md 标注 collect.topN 已移除', /collect\.topN.*已移除|已移除.*collect\.topN/.test(ops));
 
+// ---------- 6. collect 用到 node:path 函数必须真导入（2026-11-16 缺 resolve 真炸过）----------
+console.log('\n=== ⑥ collect 用 resolve/join 等必须导入（防 ReferenceError）===');
+for (const fn of ['resolve', 'join', 'dirname']) {
+  const used = new RegExp('(?<![.\\w$])' + fn + '\\s*\\(').test(collectSrc);
+  if (!used) continue;
+  const imported = new RegExp("import\\s*{[^}]*\\b" + fn + "\\b[^}]*}\\s*from\\s*'node:path'").test(collectSrc);
+  ok(`collect 用 ${fn}( 且已导入`, imported, '用了却没导入 → 运行时 ReferenceError');
+}
+
 // ---------- 结果 ----------
 console.log(`\n通过 ${pass} 条`);
 if (fails.length) {
