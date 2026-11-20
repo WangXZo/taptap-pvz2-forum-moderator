@@ -194,6 +194,9 @@ export function pruneStatePosts(state, db, { keepMax = 500 } = {}) {
   // ① 未处理完的一律留
   for (const [id, p] of byTime) {
     if (keepStatuses.has(p?.status)) keep.add(id);
+    // ①b O9（2026-11-19）：**带待办/幂等凭据的帖也不剪** —— 剪掉会让它在下一轮重新被判「未处理」，
+    //     出现重复回复/重复互动（2026-11-10 同类事故：一帖被回 29 次）。凭据帖数量有限，代价可接受。
+    else if (p?.summonPending || p?.interactPending || p?.chatterStop) keep.add(id);
   }
   // ② 再按时间留到 keepMax
   for (const [id] of byTime) {

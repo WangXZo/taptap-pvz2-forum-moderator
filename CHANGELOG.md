@@ -5,6 +5,58 @@
 
 ---
 
+## v2.0.0 — 官方 CLI 读通道 + 配置统一 + 性能重做（2026-11-20）
+
+### 背景
+三个问题同时逼到台面：① 回复「@ 两次」；② 长帖答偏（正文读不全）；③ 回复慢（6 秒/条限速）。排查后发现根因都不是表面现象——**是平台接口硬截断、配置三重语义、以及每步都 spawn 浏览器**。
+
+### 一、官方 CLI 读通道（解决「读不全」）
+旧接口两个**平台级硬截断**：
+- `moment/v3/detail` 的 `topic.summary` **恒定 200 字**（5 种参数组合都一样，无全文字段）→ 长帖答偏，我们曾自己回复「正文断在这儿了？」
+- `child_posts` 只返**前 2 条**，且 `by-comment` 400 / `child`、`by-parent` 404 → 自己发的子回复读不到（幂等门盲判）、漏读关键答案
+
+改用 `taptap-cli community-management`（`@taptap/cli`）：
+- `get-community-moment` → `content` **954 字全文**（同帖 summary 仍 200）
+- `list-community-moment-child-replies` → **total=5 全量**
+
+新增 `lib/taptap-cli.mjs`（读 5 个接口 + `listThread` 聚合 + `available`）、`lib/thread-source.mjs`（CLI 优先 + 旧接口**自动降级** + 结构适配）。
+**权限边界**：读只要「该论坛版主」；写要「论坛主管理员」（普通版主 403，换 token 无效）→ `taptapCli.writeEnabled` 默认 false，写继续走页面内 fetch。
+
+### 二、@ 双重修复
+线上实测 4/4 条 interact 回复全是 `@狐玖儿 @狐玖儿`——提示词让模型写 @，发送层又拼一次。
+三道保险：提示词禁止写 @ → `stripLeadingMention()` 剥开头所有 @ → `assertSingleMention()` 发送前断言同名只出现一次。
+
+### 三、配置统一（`scripts/config/schema.json`）
+以前一个功能有 **3 套开关**（`features.*` / `plugins.*` / 顶层 `x.enabled`），且 `plugins` 覆盖 `features`，读配置必然误判。
+- `schema.json` 为唯一权威（169 项字段：类型/默认/范围/enum/说明）
+- `lib/config.mjs`：迁移（双写保留旧键）+ 补默认（只补缺失）+ 环境变量覆盖 + 校验（不阻断运行）
+- `docs/config-reference.md` **自动生成**（`node scripts/config-doc.mjs`，`--check` 可校验过期）
+- 9 处硬编码变可配：`reply.apiIntervalMs` / `reply.maxChars.post|nested` / `collect.commentPageSize|commentMaxPages|childPageSize` / `exec.maxQueues` / `interact.strongTextLen` / `taptapCli.*`
+
+### 四、性能重做（实测数据驱动）
+| 项 | 改前 | 改后 |
+|---|---|---|
+| 限速 | 4 处叠加 ≈ 6 秒/条 | `mode=adaptive`：默认全速，检出 WAF 才 ×0.5 退避 + 硬刹车 |
+| 队列 | 硬编码 3 条（social 合并 4 通道） | `perPlugin` 每插件一条 + `maxQueues=32` |
+| `send` | 5578 ms | **~1700 ms** |
+| `fetch_comments` | 1880 ms | ~1600 ms（多回复帖 **3.1x**） |
+| 单帖合计 | ~9.8 秒 | **~5.6 秒（-43%）** |
+
+新增 `lib/perf.mjs`（分阶段打点）+ `scripts/report-perf.mjs`（p50/p90/瓶颈标注）+ `lib/rate-adapt.mjs`（AIMD 自适应限速）。
+
+### 五、修掉的三个隐藏 bug
+1. **`ingest` 不检查 `llm.enabled`**：LLM 关闭时仍逐条撞渠道 → 留下未收尾请求，进程退出触发 libuv 断言 `UV_HANDLE_CLOSING`，**测试 100% 崩**。
+2. **`ensureOrigin` 每次都跑 `browser state`**（实测 3327ms）：每条回复白跑一次。加 60 秒缓存后 → **1 ms**。
+3. **`engines.node` 写 `>=18`**：但代码用了 `node:sqlite`（需 **≥22.5**），照文档装会在**运行时**才崩，极易误判。
+
+### 六、文档
+新增 `docs/install.md`（TL;DR + 6 步 + 首次检查清单）、`docs/install-requirements.md`（依赖矩阵 + 版本兼容表）、`docs/install-services.md`（Python 服务 + 模型放置 + fp16 坑）、`docs/install-troubleshooting.md`（**8 大类实际踩过的坑**）、`docs/config-reference.md`（自动生成）。
+
+### 测试
+新增 8 个测试套件（`test-mention-dedup` / `test-taptap-cli` / `test-thread-source` / `test-config` / `test-perf` / `test-rate-adapt` / `test-multi-queue` 等），全套 **80 套件 0 失败**。
+
+---
+
 ## v1.4.0 — 图片识别流水线（S1–S6，带门控）
 
 ### 背景

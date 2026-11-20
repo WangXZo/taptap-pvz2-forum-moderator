@@ -45,12 +45,19 @@ import { openDb } from './lib/db.mjs';
 import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
 import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
 import { buildThreadTree } from './lib/thread-context.mjs';
-import { composeReply as composeLlmReply, condenseMaterial } from './lib/compose-reply.mjs';
+import { composeReply as composeLlmReply, condenseMaterial, stripLeadingMention, assertSingleMention } from './lib/compose-reply.mjs';
+import { createTapCli } from './lib/taptap-cli.mjs';
+import { createThreadSource } from './lib/thread-source.mjs';
 import { archiveToCold, isCold, markWoken } from './lib/cold-store.mjs';
 import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
 import { enrichPostImages } from './lib/image.mjs';
 import { loadImageCache } from './lib/image-cache.mjs';
+import { loadPlugins } from './lib/plugins.mjs';
+import { pluginOwns } from './lib/plugin-runner.mjs';
+import { governFacts } from './lib/govern.mjs';
+import { trace, pruneTrace } from './lib/trace.mjs';
+import { intentOf } from './lib/intent.mjs';
 import { classify } from './lib/classify.mjs';
 import { makeRunner, doctorOk, replyOne } from './lib/replier.mjs';
 import { getTapApi } from './lib/taptap-api.mjs';
@@ -292,6 +299,7 @@ export async function runOnce({
   const imageCache = loadImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
     ttlHours: Number(config.image?.vision?.cacheTtlHours ?? 168),
   });
+
   // ⚠️ `TOP` = **拉取窗口大小**（一页取多少条帖子），**不是「回复几条」**。
   //    · 守护循环：每轮只处理**队首一条**（watch.processHead → collect with only=[id]），
   //      单轮回复条数**没有上限概念** —— 队列有多长就处理多长（每条都走完整判定）。
@@ -434,12 +442,115 @@ export async function runOnce({
   if (config.archive?.enabled !== false && shouldArchive(usage)) {
     log('\n  [整理] 每日整理…');
     try {
+      const pruned = pruneTrace(config, { keepDays: Number(config.trace?.keepDays ?? 14) });
+      if (pruned.removed) log(`    trace 裁剪 ${pruned.removed} 个旧文件（保留 ${config.trace?.keepDays ?? 14} 天）`);
+    } catch {}
+    // P4-d（2026-11-19）：每周一次**规则模式**评测（零 LLM 成本）+ 与基线 diff
+    //   LLM 模式（--llm）成本高，仍由大哥手动跑；这里只跑路由/检索/静默等零成本指标，防回归。
+    if (config.evalWeekly?.enabled !== false) {
+      try {
+        const { shouldRunWeekly, runEval, renderReport } = await import('./lib/eval.mjs');
+        if (shouldRunWeekly(usage, { everyDays: Number(config.evalWeekly?.everyDays ?? 7) })) {
+          const { readFileSync, writeFileSync } = await import('node:fs');
+          const setFile = resolve(SKILL_ROOT, 'assets/eval-set.json');
+          const rawSet = JSON.parse(readFileSync(setFile, 'utf8'));
+          const set = rawSet.cases || rawSet;
+          const res = await runEval({ config, qa, db: postDb, set, llm: false, log: () => {} });
+          const md = renderReport(res, { mode: 'rule', config });
+          const day = new Date().toISOString().slice(0, 10);
+          writeFileSync(resolve(config.paths.reportsDir, `eval-weekly-${day}.md`), md);
+          usage.lastEvalAt = new Date().toISOString();
+          await saveUsage(config.paths.usageFile, usage);
+          const m = res.metrics;
+          log(
+            `  [评测] 周度规则评测 ${set.length} case：route ${m.routeAcc ?? '-'} / recall@5 ${m.recall5 ?? '-'} / source ${m.sourceAcc ?? '-'} → reports/eval-weekly-${day}.md`
+          );
+        }
+      } catch (e) {
+        log(`  [评测] 周度评测失败（${e.message}）→ 跳过`);
+      }
+    }
+    // P4-b（2026-11-19）：增量摄入（官方公告 url / 周报 md → facts），游标去重
+    //   只在显式开启时跑（config.ingest.enabled）。零风险源：不碰评价/评论接口。
+    if (config.ingest?.enabled === true) {
+      try {
+        const { default: ingestPlugin } = await import('./plugins/ingest.mjs');
+        const r = await ingestPlugin.scheduled({
+          config, log, db: postDb, dryRun: false,
+          weeklyDir: config.ingest?.sources?.weekly?.dir ? resolve(config.ingest.sources.weekly.dir) : config.paths.reportsDir,
+        });
+        if (r.items === 0) log('  [摄入] 无新增');
+      } catch (e) {
+        log(`  [摄入] 失败（${e.message}）→ 跳过`);
+      }
+    }
+    // P4-c（2026-11-19）：周报（每周一次，纯本地数据、零接口风险）
+    if (config.weekly?.enabled !== false) {
+      try {
+        const { default: weeklyPlugin } = await import('./plugins/weekly.mjs');
+        const r = await weeklyPlugin.scheduled({ config, log, usage });
+        if (r?.skipped === 'not_due') log('  [周报] 未到周期（跳过）');
+        else if (r?.out) {
+          usage.lastWeeklyAt = new Date().toISOString();
+          await saveUsage(config.paths.usageFile, usage);
+        }
+      } catch (e) {
+        log(`  [周报] 失败（${e.message}）→ 跳过`);
+      }
+    }
+    // P4-c：评价只读分析（默认关闭；开启后需调用方注入取数函数，collect 侧不擅自调评价接口）
+    if (config.review?.enabled === true && config.review?.autoAnalyze === true) {
+      try {
+        const { default: reviewPlugin } = await import('./plugins/review.mjs');
+        const r = await reviewPlugin.scheduled({ config, log });
+        if (r?.skipped) log(`  [评价] 跳过（${r.skipped}）`);
+      } catch (e) {
+        log(`  [评价] 失败（${e.message}）→ 跳过`);
+      }
+    }
+    // O3（2026-11-18）：QA 自治治理 —— 分层 junk 剔除 + 语义近重复合并（默认 auto，出报告）
+    let qaForArchive = qa;
+    if (config.qaGovern?.enabled !== false) {
+      try {
+        const { governQa } = await import('./lib/qa-govern.mjs');
+        const g = await governQa({
+          qaFile: config.paths.qaFile,
+          archiveDir: config.paths.archiveDir,
+          entries: qa,
+          usage,
+          config,
+          apply: config.qaGovern?.auto !== false,
+          now: new Date(),
+        });
+        if (g.changed) {
+          log(
+            `  [治理] 剔除 ${g.junk.length} 条 / 合并 ${g.groups.length} 组 → ${g.before}→${g.after} 条` +
+              (g.exempted ? `（噪声层豁免 ${g.exempted} 条）` : '')
+          );
+          qaForArchive = g.keep;
+          qa.length = 0;
+          qa.push(...(await loadQaLibrary(config.paths.qaFile)));
+        } else {
+          log('  [治理] 库干净（无需剔除/合并）');
+        }
+        try {
+          const { writeFileSync, mkdirSync } = await import('node:fs');
+          mkdirSync(config.paths.reportsDir, { recursive: true });
+          const d = new Date().toISOString().slice(0, 10);
+          writeFileSync(resolve(config.paths.reportsDir, `qa-govern-${d}.md`), g.report);
+        } catch {}
+      } catch (e) {
+        log(`  [治理] 失败（${e.message}）→ 跳过本次治理，库不变`);
+      }
+    }
+    try {
       const res = await archiveStale({
         qaFile: config.paths.qaFile,
         archiveDir: config.paths.archiveDir,
-        entries: qa,
+        entries: qaForArchive,
         usage,
         staleDays: config.archive?.staleDays ?? 30,
+        neverCitedDays: config.qaGovern?.neverCitedDays ?? 45,
       });
       usage.lastArchiveAt = new Date().toISOString();
       await saveUsage(config.paths.usageFile, usage);
@@ -492,6 +603,11 @@ export async function runOnce({
     return { skipped: true, reason: e.message };
   }
 
+  // C10：按需加载功能插件（image/review/weekly/comment/mod）
+  const plugins = await loadPlugins(config, { config, log });
+  // C2：自治治理（每轮一次，facts 量小开销低）：去重/冲突/时效/置信自校准
+  governFacts(postDb, { log });
+
   // ---------- 2. 逐条判定 ----------
   const results = [];
   const now = Math.floor(Date.now() / 1000);
@@ -503,7 +619,16 @@ export async function runOnce({
     const { title, text: baseText } = extractText(item);
     // 图片流水线（S1–S5，2026-11-16）：码意图跳过 → 相关性门控 → OCR/VLM/模板识别 → 回灌 text。
     //   识别内容并入 text 后，下游 looksQ / QA 匹配 / 联网搜索 / LLM 组答自动受益。
-    const imgEnrich = await enrichPostImages(item, { config, log, title, text: baseText, cache: imageCache });
+    // C10：image 走插件（可开关）；关闭则跳过，未拆出时回退内联
+    let imgEnrich;
+    if (config.features?.image === false) {
+      imgEnrich = { images: [], imageText: '', celebrate: false, sources: [], text: baseText, skipped: 'disabled' };
+    } else {
+      const ip = plugins.find((p) => p.id === 'image');
+      imgEnrich = ip
+        ? await ip.plugin.onPost(item, { config, log, cache: imageCache, title, text: baseText })
+        : await enrichPostImages(item, { config, log, title, text: baseText, cache: imageCache });
+    }
     const text = imgEnrich.text;
     if (imgEnrich.imageText) {
       log(`  [图片] 《${String(title || baseText).slice(0, 18)}》识别到内容（${imgEnrich.sources.join('+') || '识别'}）→ 并入帖子文本`);
@@ -531,6 +656,8 @@ export async function runOnce({
       images: imgEnrich.images,
       imageText: imgEnrich.imageText,
       imageSources: imgEnrich.sources,
+      imageCelebrate: Boolean(imgEnrich.celebrate),
+      imageEntities: imgEnrich.entities || [], // C8：模板实体 → facts 直连路由
     };
 
     // 通知触发的帖（watch 入队时带 needsComments → runOnce 的 forceComments）如果已在冷库 → 就地唤醒
@@ -577,8 +704,27 @@ export async function runOnce({
 
     if (needComments) {
       try {
-        const c = await listComments({ momentId: id, from: 0, limit: 30 });
-        comments = c.list || [];
+        // 讨论数据源（2026-11-20）：**官方 CLI 优先**，失败自动回退旧接口。
+        //   为什么换掉旧接口：它的 child_posts 只返前 2 条 ——
+        //     ① 我们自己发出去的子回复读不到 → 幂等门盲判
+        //     ② 曾因此漏读关键答案（872475707622556454 的第 3 条子回复才是正解）
+        //   CLI 依赖版主权限与本地安装，所以必须可降级：绝不因为 CLI 挂了就不回复玩家。
+        const threadSrc = createThreadSource({
+          cli: createTapCli({
+            binary: config?.taptapCli?.binary || 'taptap-cli',
+            root: SKILL_ROOT,
+            developerId: Number(config?.taptapCli?.developerId ?? 1),
+            timeoutMs: Number(config?.taptapCli?.timeoutMs ?? 30000),
+            log,
+          }),
+          config,
+          log,
+        });
+        const loaded = await threadSrc.load({ momentId: id, limit: 30 });
+        comments = loaded.comments;
+        if (loaded.source === 'cli') {
+          log(`    [讨论] 官方 CLI：${comments.length} 条一级 / ${loaded.childTotal ?? 0} 条子回复`);
+        }
         // 注入纯文本 + 建**三层树**（2026-11-04）
         //   帖子 → 一级回复 → 楼中楼。后面所有回复都按这个上下文喂给 LLM，
         //   不再从答疑库整段抽取、也不用模板。
@@ -785,6 +931,72 @@ export async function runOnce({
       }
     }
     const verdict = classify(post, { qa, config, state, vecScores, matchPath });
+    if (config.pipeline === 'v2') {
+      // M6 v2：facts优先检索 + 分档验证。仅覆盖 qa-match 阶段；前置 replied/非提问/重复/敏感 判定保留。
+      const qaStage =
+        verdict.status === STATUS.PENDING ||
+        (verdict.status === STATUS.MANUAL && (verdict.reason === REASON.LOW_CONFIDENCE || verdict.reason === REASON.NO_QA_MATCH));
+      if (qaStage) {
+        const { decideV2 } = await import('./lib/decision.mjs');
+        const dec = await decideV2({ post, qa, db: postDb, config, vecScores, log });
+        let rr = dec.rr || { entry: null, score: 0, candidates: [] };
+        let v = dec.v || { ok: false, tier: 'abstain', judgeOk: false };
+        if (dec.stage === 'nomatch') {
+          verdict.matchedEntry = null; verdict.status = STATUS.MANUAL; verdict.reason = REASON.NO_QA_MATCH;
+        } else if (v.ok) {
+          verdict.matchedEntry = rr.entry; verdict.score = rr.score; verdict.status = STATUS.PENDING; verdict.reason = null;
+          // O2：分档/judge 结果进 verdict，供 trace 归因
+          verdict.tier = v.tier; verdict.judgeOk = v.judgeOk;
+          // C6 结构化上下文组装（P2）：facts 全 attrs + 问答结构化摘要 + provenance/置信，多候选合成
+          const { assembleMaterial } = await import('./lib/assemble.mjs');
+          verdict.material = assembleMaterial({ entry: rr.entry, candidates: rr.candidates, db: postDb, config, query: `${post.title} ${post.text}` });
+        } else {
+          verdict.matchedEntry = null; verdict.score = 0;
+          // 弃答归类（2026-11-18 大哥决策「两者都做」）：真提问→需人工（版主可见）；非提问→无需回复
+          {
+            const { classifyAbstain, appendEvalCandidate } = await import('./lib/abstain.mjs');
+            const cls = classifyAbstain({ looksQ });
+            verdict.status = cls.status;
+            verdict.reason = cls.reason;
+            appendEvalCandidate(config, {
+              postId: id, title: post.title, text: post.text,
+              reason: cls.reason, tier: v.tier, entryId: rr.entry?.id, intent: intentOf(post),
+            });
+            log(`  [弃答] 《${String(post.title).slice(0, 20)}》judge 不达标 → ${cls.needsHuman ? '需人工（版主清单）' : '无需回复'} + 记入评测候选`);
+          }
+          verdict.tier = v.tier; verdict.judgeOk = v.judgeOk;
+        }
+      }
+    } else if (verdict.matchedEntry?.semanticConfirm) {
+      // v1 语义确认门：带标记条目命中后需综合语义判断才选用，防笼统套用
+      const { confirmSemantic } = await import('./lib/semantic-gate.mjs');
+      const okSem = await confirmSemantic(post, verdict.matchedEntry, { config, log });
+      if (!okSem) {
+        verdict.matchedEntry = null;
+        verdict.status = STATUS.MANUAL;
+        verdict.reason = 'semantic_unconfirmed';
+        verdict.score = 0;
+      }
+    }
+    // 动态置信（v2）：玩家反对我们已答结论 → 先降置信 + 重新核实(过时/更新) → 确认后重置
+    if (config.pipeline === 'v2' && verdict.matchedEntry && post.iReplied && Array.isArray(comments)) {
+      const { detectOpposition } = await import('./lib/feedback.mjs');
+      const { recordNegative, reverify } = await import('./lib/confidence.mjs');
+      const { lookupFact } = await import('./lib/facts.mjs');
+      const { chat } = await import('./lib/llm.mjs');
+      for (const cm of comments) {
+        const txt = cm.__text || '';
+        const uid = String(cm.author?.user?.id || '');
+        if (!txt || TEAM_IDS.includes(uid)) continue;
+        if (await detectOpposition(txt, verdict.matchedEntry.answer, { config, log })) {
+          const fact = lookupFact(postDb, verdict.matchedEntry.id);
+          if (fact) {
+            recordNegative(postDb, fact.id, { player: cm.author?.user?.name, postId: post.id, reason: txt.slice(0, 80) });
+            await reverify(postDb, fact, { config, log, chat });
+          }
+        }
+      }
+    }
     let finalStatus = verdict.status;
     let finalReason = verdict.reason;
 
@@ -818,6 +1030,22 @@ export async function runOnce({
         });
       } catch {}
     }
+
+    // O2 trace：判定结果（意图/来源/条目/分档/原因）→ reports/trace-<date>.jsonl
+    //   用户 2026-11-18 决策：只加 trace 观测，**不设每日发送闸**。
+    trace({
+      config,
+      event: 'verdict',
+      postId: id,
+      title: post.title,
+      intent: intentOf(post),
+      source: verdict.matchedEntry ? verdict.matchedEntry.source || 'qa' : null,
+      entryId: verdict.matchedEntry?.id || null,
+      score: Number((verdict.score || 0).toFixed(3)),
+      tier: verdict.tier || null,
+      judgeOk: verdict.judgeOk,
+      reason: finalReason || null,
+    });
 
     // 2c. 他人已回复 → 自动总结并沉淀进答疑库（每帖只做一次）
     //     ⚠️ 必须是**提问帖**：广告/分享帖的评论不是答案，沉淀进去就是污染答疑库
@@ -866,6 +1094,7 @@ export async function runOnce({
     let praisePlan = null;
     if (
       config.praise?.enabled !== false &&
+      !pluginOwns(config, 'praise') &&
       finalReason === REASON.OTHERS_REPLIED &&
       !codeAsking &&
       comments &&
@@ -936,10 +1165,16 @@ export async function runOnce({
     //   · 搜到 AI 答案 → 升为「待回复」，答案作参考资料，按 **50% 置信度**作答
     //   · 只有结果页（没 sseApi）/ 被风控 / 超时 → **不硬编答案**，维持「需人工」
     //   · 单轮最多 2 次查询（配额在 baidu-websearch 内部管），同一帖 24h 内不重复搜
-    // 🔧 兜底（2026-11-13）：新帖评论数=0 → needComments=false → threadTree=null，
-    //    会让下面的联网补答和回复组装**双双被跳过**（实测：秘宝求推荐帖因此没人答）。
-    //    这里给「待答疑」的帖补一个最小三层树（只有帖子本身、无评论），让兜底链路能走通。
-    if (!threadTree && finalStatus === STATUS.MANUAL && finalReason === REASON.NO_QA_MATCH && !codeAsking) {
+    // 🔧 兜底（2026-11-13；2026-11-19 扩到 PENDING）：
+    //    新帖评论数=0 → needComments=false → threadTree=null，会让下面的联网补答和回复组装**双双被跳过**。
+    //    ⚠️ 2026-11-19 实测漏网：v2 命中 fact → status=PENDING，但**没有评论** → threadTree=null
+    //       → compose 整块被跳过 → 空草稿进「待回复」（真发时才被"空草稿不发送"兜成转人工）。
+    //    所以 PENDING 也必须补最小三层树（只有帖子本身、无评论）。
+    if (
+      !threadTree &&
+      (finalStatus === STATUS.PENDING || (finalStatus === STATUS.MANUAL && finalReason === REASON.NO_QA_MATCH)) &&
+      !codeAsking
+    ) {
       threadTree = buildThreadTree(
         { id, title: post.title, text: post.text, author: post.author, authorId: post.authorId },
         comments || []
@@ -997,17 +1232,41 @@ export async function runOnce({
       .map((r) => r.text);
     let composed = null;
     if (finalStatus === STATUS.PENDING && threadTree && !codeAsking) {
+      const genT0 = Date.now();
       const gen = await composeLlmReply({
         config,
         kind: 'answer',
         tree: threadTree,
         targetId: threadTree.post.id,
         qaHits: verdict.matchedEntry ? [verdict.matchedEntry] : [],
+        material: verdict.material || null,
         webNote,
         log,
       });
       if (gen.ok) {
-        composed = { text: gen.text, fromLlm: true, channel: gen.channel };
+        // C7 生成后忠实度自检（P2）：事实内容须被资料支持；不达标 → 弃答转人工
+        let faithOk = true;
+        if (config.verify?.postCheck !== false && verdict.material) {
+          const { checkFaithfulness } = await import('./lib/verify.mjs');
+          faithOk = await checkFaithfulness(gen.text, verdict.material, { config, log });
+        }
+        if (faithOk) {
+          composed = { text: gen.text, fromLlm: true, channel: gen.channel };
+          trace({
+            config, event: 'gen', postId: id, title: post.title,
+            genMs: Date.now() - genT0, faithOk, sent: false,
+            channelsTried: Array.isArray(gen.tried) ? gen.tried.length : undefined,
+          });
+        } else {
+          log(`  [警告] 《${String(post.title).slice(0, 20)}》忠实度自检不达标 → 转人工`);
+          finalStatus = STATUS.MANUAL;
+          finalReason = 'faithfulness_fail';
+          trace({
+            config, event: 'gen', postId: id, title: post.title,
+            genMs: Date.now() - genT0, faithOk: false, reason: 'faithfulness_fail',
+            channelsTried: Array.isArray(gen.tried) ? gen.tried.length : undefined,
+          });
+        }
       } else {
         // 生成失败 → 转人工，**不退回模板**（用户 2026-11-04 明确要求）
         log(`  [警告] 《${String(post.title).slice(0, 20)}》回复生成失败（${gen.reason}）→ 转人工`);
@@ -1128,7 +1387,7 @@ export async function runOnce({
     //   纯客套（「哈哈谢谢」）已在 pickInteractions 里排除；
     //   同帖 × 同玩家回过 3 次后降到 50% 概率（情绪强烈 / 直接点名 → 例外必回）。
     let interactPlans = [];
-    if (interactOn && post.interactCandidates?.length && !codeAsking) {
+    if (interactOn && post.interactCandidates?.length && !codeAsking && !pluginOwns(config, 'interact')) {
       const maxPerPost = Number(config.interact?.maxPerPost ?? 1);
       for (const cand of post.interactCandidates) {
         if (interactPlans.length >= maxPerPost) {
@@ -1170,7 +1429,7 @@ export async function runOnce({
                 '③ 认完就收手 —— 不许再补第二条、不许再凑热闹；' +
                 '④ 不许替官方表态、不许承诺处理结果。'
               : target.mention
-                ? `对方是「${target.mention}」。你是在**同层楼中楼**里回他 —— 文案开头用 @${target.mention} 称呼他，再接话。`
+                ? `对方是「${target.mention}」。你是在**同层楼中楼**里回他 —— **直接接话，正文里不要写 @ 和对方名字**（系统会自动带上一次），也别在开头重复称呼。`
                 : `你是在「${target.label}」里回他，称呼用「${cand.author || '对方'}」。`,
             log,
           });
@@ -1182,7 +1441,14 @@ export async function runOnce({
           const safe = assertNoLeak(gen.body || gen.text);
           const blocked = !kindChk.ok ? kindChk.hit : !safe.ok ? `泄露自检命中「${safe.hit}」` : null;
           if (blocked) log(`  [拦截] 《${post.title}》的互动回复被护栏拦下（${blocked}）→ 不发`);
-          const text = target.mention ? `@${target.mention} ${gen.text}` : gen.text;
+          // @ 只拼一次（2026-11-20 修「同一回复重复 @」）：
+          //   提示词已禁止模型写 @，这里再加一道断言，万一模型仍写了就剥掉重拼。
+          let text = target.mention ? `@${target.mention} ${gen.text}` : gen.text;
+          const atChk = assertSingleMention(text, target.mention);
+          if (!atChk.ok) {
+            text = `@${target.mention} ${stripLeadingMention(gen.text)}`;
+            log(`    [修正] 《${String(post.title || '').slice(0, 18)}》${atChk.hit} → 收敛为 1 个`);
+          }
           interactPlans.push({ ...cand, text, blocked, decision: d, target });
         } catch (e) {
           interactPlans.push({ ...cand, text: null, blocked: `生成失败: ${e.message}`, decision: d });
@@ -1204,6 +1470,13 @@ export async function runOnce({
       replyVariant: composed ? { opener: composed.opener, closer: composed.closer } : null,
       learnedNow,
       praise: praisePlan,
+      // B4：插件规划所需的逐帖上下文（仅本轮内存，不进 state/报表）
+      //   praise 要挑「夸哪条评论」、share/interact 要看评论与历史，planBatch 只拿 results，
+      //   所以在这里把上下文带上（下划线前缀标明内部字段）。
+      _comments: comments,
+      _prev: prev,
+      _codeAsking: codeAsking,
+      _threadTree: threadTree,
       summons: summonPlans,
       interact: interactPlans,
       /** 联网补答的结论（没搜过就是 null）—— 供报表/人工线索用 */
@@ -1382,6 +1655,7 @@ export async function runOnce({
             sent++;
             const em = r.detail?.emojis?.length ? ` + 表情(${r.detail.emojis.join(',')})` : '';
             log(`    [OK] 已发送${em}`);
+            trace({ config, event: 'sent', postId: p.id, title: p.title, sent: true, kind: 'answer', entryId: p.matchedQa || null });
             state.posts[p.id].status = STATUS.REPLIED;
             state.posts[p.id].replied = true;
             state.posts[p.id].repliedAt = new Date().toISOString();
@@ -1566,11 +1840,52 @@ export async function runOnce({
       halfLifeMs: Number(sfCfg.halfLifeHours ?? 24) * 3600 * 1000,
     });
 
+  // ---------- 3c-9. 插件批量规划 + 执行（B4，2026-11-19）----------
+  // ⚠️ 必须放在**所有通道块之前**（3/3b/3c/3d/3d-2/3f）：插件接管时旧块让位，
+  //    若放后面会导致旧块先跑一遍 → 重复发送（拆 share 时发现的顺序坑）。
+  // 大哥决策：意图**并行规划**、执行走调度器（并发度可配）；config.plugins.<id>：
+  //   true     → 插件接管（旧块跳过）
+  //   'shadow' → 插件只规划不发送，日志对比（双轨验证）
+  //   false/undefined → 走旧块
+  let pluginRun = { mode: 'off', plans: [], sent: 0, failed: 0 };
+  if (Object.keys(config.plugins || {}).some((k) => config.plugins[k] === true || config.plugins[k] === 'shadow')) {
+    try {
+      const { runPluginPlans } = await import('./lib/plugin-runner.mjs');
+      const needRunner = doReply && !dryRun;
+      const pluginRunner = needRunner
+        ? (() => {
+            const r = makeRunner({ opencliMain: config.reply.opencliMain, session: config.reply.session });
+            return doctorOk(r).ok ? r : null;
+          })()
+        : null;
+      pluginRun = await runPluginPlans({
+        plugins,
+        results,
+        config,
+        state,
+        db: postDb,
+        usage,
+        runner: pluginRunner,
+        praiseDb,
+        dryRun,
+        log,
+        hasDoneEvent: (id, kind, opts) => hasDoneEvent(postDb, id, kind, opts),
+        compose: composeLlmReply,
+      });
+      if (pluginRun.mode === 'real' && !dryRun) {
+        log(`  [插件] 本轮执行 ${pluginRun.sent} 条（失败 ${pluginRun.failed}）`);
+        await saveState(config.paths.stateFile, state);
+      }
+    } catch (e) {
+      log(`  [插件] 执行失败（${e.message}）→ 本轮回退旧路径`);
+    }
+  }
+
   // ---------- 3d. 分享帖轻互动 ----------
   // 分享/记录/进度类帖子不是提问，套答疑内容会答非所问；
   // 但用户明确说了「分享的也可以进去说说话」→ 去说一句通用鼓励 + 1 个表情。
   // 硬约束：只说话不输出信息，不评价具体数值，不引用答疑库内容。
-  if (doReply && config.share?.enabled !== false) {
+  if (doReply && config.share?.enabled !== false && !pluginOwns(config, 'share')) {
     // 🎁 有人贴出天宫码（JFA…）= 无私分享 → 优先去**夸行为**（用户 2026-11-02）
     // 贴码 ≠ 分享：帖子里同时在「求码」的话，是在**要**码，不是在**给**码
     //   （事故：《蹲一个天宫码》被判成「无私分享」→ 我们把求码的人当成分享者夸了）
@@ -1623,7 +1938,7 @@ export async function runOnce({
         (r) =>
           r.status === STATUS.NO_NEED &&
           r.reason === REASON.NOT_QUESTION &&
-          looksLikeShare(r.title) &&
+          (looksLikeShare(r.title) || r.imageCelebrate) &&
           !shareDone(r.id) &&
           !isCodeShare(r) && // 发码帖走上面那条
           chatterOk(r)
@@ -1700,13 +2015,15 @@ export async function runOnce({
       for (const s of shares.slice(0, cap)) {
         const gen = await composeLlmReply({
           config,
-          kind: 'share',
+          kind: s.imageCelebrate ? 'celebrate' : 'share',
           tree: buildThreadTree(
             { id: s.id, title: s.title, text: s.text, author: s.author, authorId: s.authorId },
             []
           ),
           targetId: `post:${s.id}`,
-          hint: '他在分享进度或攻略。你去凑一句热闹。别评价具体数值对不对，别提任何攻略库内容，别说教。',
+          hint: s.imageCelebrate
+            ? '他抽到了稀有植物（看图/文字，如瓷砖萝卜）。替他高兴、夸他欧、接住兴奋。若提到688/2888钻，那是稀有/传奇宝箱十连（已知），别问单抽还是十连；留个别的话头（攒了多久钻/下一个想抽啥）。别讲攻略别扫兴别酸。'
+            : '他在分享进度或攻略。你去凑一句热闹。别评价具体数值对不对，别提任何攻略库内容，别说教。',
           log,
         });
         if (!gen.ok) {
@@ -1780,7 +2097,7 @@ export async function runOnce({
   //     · 楼主后面再回复 → 走**正常的互动续聊**判断（不是这条通道），
   //       可以针对他那条回复内容再回（互动按 commentId 去重，见 3f）
   //     · 涉维权/损失/加好友/寻码一律不插话；不承诺处理、不评价数值、不给攻略
-  if (doReply && config.comfort?.enabled !== false) {
+  if (doReply && config.comfort?.enabled !== false && !pluginOwns(config, 'comfort')) {
     // 分享互动 / 夸发码这一轮已经开口过的帖子不再安慰。
     // ⚠️ 这里**不能**引用 3d 那个 if 块里的 `shares` / `codeShares` —— 那是块内变量，
     //    跨块引用会抛 `shares is not defined`，整轮处理直接中断（2026-11-10 真踩到）。

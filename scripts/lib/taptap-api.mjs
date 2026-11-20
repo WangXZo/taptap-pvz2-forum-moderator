@@ -114,7 +114,31 @@ export function buildContentsWithEmoji(text, emojiMap = {}) {
   return { json: JSON.stringify(nodes), emojiHit: hit };
 }
 
-export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
+/**
+ * @param {object} [o]
+ * @param {number} [o.intervalMs=0] 同一实例内两次调用的最小间隔。
+ *   默认 **0（不节流）** —— 2026-11-20 起限速统一由 `exec.rateLimit` 管（mode=adaptive：默认全速，
+ *   检出 WAF 才退避）。以前这里写死 1000，与队列限速叠加后把吞吐压到 6 秒/条。
+ *   需要保守时由调用方显式传（如手动工具 emoji-map / api-write 仍传 1000）。
+ */
+/**
+ * 从写接口响应里抠出新评论 id
+ *
+ * 为什么重要（2026-11-20）：以前拿不到 id，只能靠 `hasReplyText` 再读一遍评论列表来"模糊搜"，
+ * 那是一次额外 spawn（≈900ms），而且子回复被折叠时根本搜不到（永远「未校验到」）。
+ * 只要响应里带 id，就能直接确认"发出去了"，省掉这次往返。
+ */
+function extractReplyId(json) {
+  if (!json || typeof json !== 'object') return '';
+  const d = json.data ?? json;
+  const cand =
+    d?.id_str || d?.id || d?.comment_id || d?.commentId ||
+    d?.comment?.id_str || d?.comment?.id ||
+    d?.reply?.id_str || d?.reply?.id;
+  return cand ? String(cand) : '';
+}
+
+export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
   const S = runner.session;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   /** 同步 sleep（ensureOrigin 等同步函数里用；Atomics.wait 拿不到就用忙等兜底） */
@@ -153,19 +177,37 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
     return { raw, json, code: r.code, err: r.err };
   };
 
-  /** 保证当前标签页在 taptap 站内（页面内 fetch 才带得上 Cookie） */
+  /**
+   * 保证当前标签页在 taptap 站内（页面内 fetch 才带得上 Cookie）
+   *
+   * ⚠️ 2026-11-20：加 60 秒缓存。
+   *   原来每次发送都调一次 `browser state`（一次 spawn ≈ 900ms），而一条回复要 2~3 次
+   *   ensureOrigin → 光这一步就浪费近 2 秒。既然是我们自己在控制这个 session，
+   *   页面不会被别人导航走，短时缓存是安全的；失败或超时才重新检查。
+   */
+  let originOkAt = 0;
+  const ORIGIN_TTL_MS = 60000;
+
   function ensureOrigin(url = `${ORIGIN}/`) {
+    if (originOkAt && Date.now() - originOkAt < ORIGIN_TTL_MS) {
+      return { ok: true, navigated: false, cached: true, url };
+    }
     const st = oc(['browser', S, 'state'], 30000);
     const host = String(st.out || '').match(/URL:\s*(\S+)/)?.[1] || '';
     let navigated = false;
     if (!host.includes('taptap.cn')) {
       const o = oc(['browser', S, 'open', url], 90000);
-      if (o.code !== 0) return { ok: false, navigated: true, url };
+      if (o.code !== 0) {
+        originOkAt = 0;
+        return { ok: false, navigated: true, url };
+      }
       navigated = true;
     }
     // ⚠️ `open` 只是**发起导航**，页面可能还没加载完 → 此刻 document.cookie 还是空的。
     //    必须等凭据就绪，否则 auth() 拿到空值（2026-11-13 实测：启动瞬间报「页面凭据不全」）。
     const ready = waitForCreds();
+    if (ready) originOkAt = Date.now();
+    else originOkAt = 0;
     return { ok: ready, navigated, url };
   }
 
@@ -322,9 +364,11 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
         contents: buildContents(stripEmojiMarks(text)),
       });
       plain.emojiFallback = true;
+      plain.commentId = extractReplyId(plain.json);
       return plain;
     }
     res.emojiHit = emojiHit;
+    res.commentId = extractReplyId(res.json);
     return res;
   }
 
@@ -359,9 +403,11 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
         contents: buildContents(stripEmojiMarks(text)),
       });
       plain.emojiFallback = true;
+      plain.commentId = extractReplyId(plain.json);
       return plain;
     }
     res.emojiHit = emojiHit;
+    res.commentId = extractReplyId(res.json);
     return res;
   }
 
@@ -512,7 +558,7 @@ export function momentIdFromUrl(url) {
 
 // 每个 session 复用一个实例：鉴权信息、节流时间戳都跟着它，不必每次重建
 const apiPool = new Map();
-export function getTapApi({ runner, log = () => {}, intervalMs = 1000 } = {}) {
+export function getTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
   const key = runner?.session || '__default__';
   let api = apiPool.get(key);
   if (!api) {

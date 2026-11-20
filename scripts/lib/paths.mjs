@@ -25,10 +25,39 @@ export function expand(p) {
   return resolve(s);
 }
 
-export async function loadConfig(file) {
+/**
+ * 读配置
+ *
+ * 2026-11-20（阶段 3）：加载后统一走 lib/config.mjs 的 resolveConfig ——
+ *   ① 旧键迁移（features.* / plugins.* → 各功能自己的 enabled，双写保留旧键）
+ *   ② 按 scripts/config/schema.json 补默认值（**只补缺失，绝不覆盖已写**）
+ *   ③ 环境变量覆盖 TAPTAP_CFG_<GROUP>_<FIELD>
+ *   ④ 类型/范围校验（只警告，不中断 —— 守护不能因为一个配置项写错就停）
+ *
+ * @param {string} [file]
+ * @param {object} [o]
+ * @param {Function} [o.log] 给了才打印迁移/校验摘要；不给静默（避免刷守护日志）
+ */
+export async function loadConfig(file, { log = null } = {}) {
   const f = file || resolve(SCRIPTS_DIR, 'config.json');
-  const cfg = JSON.parse(await readFile(f, 'utf8'));
+  let cfg = JSON.parse(await readFile(f, 'utf8'));
+  const { resolveConfig, deepMerge } = await import('./config.mjs');
+
+  // ① config.local.json：个人覆盖（不入库），深合并进去再统一解析
+  let localFile = null;
+  try {
+    const lf = resolve(dirname(f), 'config.local.json');
+    cfg = deepMerge(cfg, JSON.parse(await readFile(lf, 'utf8')));
+    localFile = lf;
+  } catch {
+    /* 没有 config.local.json 是常态 */
+  }
+
+  // ② 迁移 + 补默认 + env 覆盖 + 校验
+  cfg = resolveConfig(cfg, { log });
   cfg.__configFile = f;
+  if (localFile) cfg.__configLocal = localFile;
+
   for (const k of Object.keys(cfg.paths || {})) {
     cfg.paths[k] = expand(cfg.paths[k]);
   }

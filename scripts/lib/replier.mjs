@@ -60,17 +60,26 @@ export function resolveOpencliMain(explicit) {
  * @returns {'flag'|'positional'}
  */
 let _sessionStyle = null;
-export function detectSessionStyle(mainJs) {
-  if (_sessionStyle) return _sessionStyle;
+/**
+ * @param {string} mainJs opencli 入口
+ * @param {object} [opts]
+ * @param {Function} [opts.spawnImpl] 注入 spawn（测试用 stub；沙盒下 piped spawn 会被 EPERM）
+ * @param {boolean} [opts.useCache=true] 是否用/写全局缓存（测试传 false 避免互相影响）
+ */
+export function detectSessionStyle(mainJs, { spawnImpl = null, useCache = true } = {}) {
+  if (useCache && _sessionStyle) return _sessionStyle;
   try {
-    const r = spawnSync(process.execPath, [mainJs, '--version'], { encoding: 'utf8', timeout: 15000 });
-    const out = `${r.stdout || ''}${r.stderr || ''}`;
+    const spawner = spawnImpl || ((cmd, args, opts) => spawnSync(cmd, args, opts));
+    const r = spawner(process.execPath, [mainJs, '--version'], { encoding: 'utf8', timeout: 15000 });
+    const out = `${r?.stdout || ''}${r?.stderr || ''}`;
     const m = out.match(/(\d+)\.(\d+)\.(\d+)/);
-    _sessionStyle = m && Number(m[1]) >= 2 ? 'flag' : 'positional';
+    const style = m && Number(m[1]) >= 2 ? 'flag' : 'positional';
+    if (useCache) _sessionStyle = style;
+    return style;
   } catch {
-    _sessionStyle = 'positional'; // 探不到就按旧写法（不会更糟）
+    // 探不到就按旧写法（不会更糟）；沙盒 EPERM 也走这里
+    return 'positional';
   }
-  return _sessionStyle;
 }
 
 /**
@@ -234,7 +243,7 @@ export async function replyOne({
   //   比点 UI 快得多、不受 DOM 改版影响；失败自动退回下面的 UI 流程。
   //   接口回复是纯文本 → 表情标记先剥掉（tap_emoji 节点格式另行验证后再启用）。
   if (String(config?.reply?.via || 'api').toLowerCase() !== 'ui') {
-    const api = getTapApi({ runner, log, intervalMs: Number(config?.reply?.apiIntervalMs ?? 6000) });
+    const api = getTapApi({ runner, log, intervalMs: Number(config?.reply?.apiIntervalMs ?? 0) });
     const momentId = momentIdFromUrl(url);
     if (momentId && api.ensureOrigin().ok) {
       // 文案原样传进去：接口层会把 [表情_xx] 转成 tap_emoji 节点（查表 data/emoji-map.json）
@@ -243,12 +252,24 @@ export async function replyOne({
       const ar = await api.reply({ momentId, text: capped });
       if (ar.ok) {
         const plain = stripEmojiMarks(capped).trim();
-        const v = await api.hasReplyText({ momentId, text: plain });
-        log(
-          `      [接口] 已回复（表情 ${ar.emojiHit || 0} 个）` +
-            (v.found ? '（已校验落库）' : '（未校验到，按成功处理）')
-        );
-        return { ok: true, stage: 'api_sent', detail: { verified: v.found, body: plain, marks, emoji: ar.emojiHit } };
+        // 有 comment_id 就直接算落库，**不再多跑一次 hasReplyText**（那是额外一次 spawn ≈900ms）。
+        // 只有响应里没 id 时才退回文本搜索（折叠的子回复本来就搜不到，只能当参考）。
+        let verified = Boolean(ar.commentId);
+        if (!verified) {
+          const v = await api.hasReplyText({ momentId, text: plain });
+          verified = v.found;
+          log(
+            `      [接口] 已回复（表情 ${ar.emojiHit || 0} 个）` +
+              (verified ? '（已校验落库）' : '（未校验到，按成功处理）')
+          );
+        } else {
+          log(`      [接口] 已回复（表情 ${ar.emojiHit || 0} 个，id=${ar.commentId} 直接确认）`);
+        }
+        return {
+          ok: true,
+          stage: 'api_sent',
+          detail: { verified, commentId: ar.commentId || '', body: plain, marks, emoji: ar.emojiHit },
+        };
       }
       log(`      [接口] 回复失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);
     }

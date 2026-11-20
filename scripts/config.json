@@ -199,8 +199,8 @@
     "enabled": true,
     "staleDays": 30,
     "note": "每天整理一次（2026-11-02 起，从「每月1~5号」改的）。两个动作：①答疑库条目30天未引用→冷数据Markdown；②帖子按类别TTL冷藏→冷库(SQLite+向量)，冷帖被@或被呼唤会唤醒回热数据。",
-    "keepStatePosts": 500,
-    "olderThanDays": 45,
+    "keepStatePosts": 300,
+    "olderThanDays": 30,
     "coldDays": {
       "mine": 20,
       "friend": 1,
@@ -210,6 +210,7 @@
       "chat": 15
     },
     "coldDaysNote": "按帖子类别分别设置冷藏天数（单位天）。2026-11-05 按用户要求改为：加好友 1 天、提问 10 天、闲聊 15 天、我的帖 20 天、分享 30 天、官方 60 天。改这里立刻生效（config 优先于代码默认值）。",
+    "stateNote": "O9（2026-11-19）：state.json 瘦身 —— olderThanDays 45→30、keepStatePosts 500→300；带待办凭据（summonPending/interactPending/chatterStop）的帖子**不剪**（防重复回复）。recentReplies 仍留 state（仅 200 条上限、约 12KB，搬 SQLite 收益小于风险，暂不做）。",
     "wakeNote": "唤醒**没有独立开关/频率**了（2026-11-06 架构收敛）：唤醒信号由 watch 每轮检查（intervalSeconds，默认 120s）拉通知接口 /notification/v2/by-me?type=7 得到，直接并入队列；通知触发的帖若在冷库，处理时就地唤醒（markWoken）。要关掉通知源就设 watch.sources.notify=false。"
   },
   "qaHealth": {
@@ -237,6 +238,154 @@
       "note": "char=字符n-gram TF-IDF（默认，零依赖）；http=接本地 embeddings 服务（OpenAI 兼容接口），失败自动退回 char"
     },
     "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
+  },
+  "pipeline": "v2",
+  "pipelineNote": "M6 管线开关：v1=现稳定链路(语义门)；v2=facts优先检索+分档验证(影子对比无回归后切换)。",
+  "retrieve": {
+    "topK": 8,
+    "minScore": 0.2,
+    "rerank": true,
+    "denseBackend": "bge",
+    "embedModel": "bge-m3",
+    "embedEndpoint": "http://127.0.0.1:11434",
+    "embedTimeoutMs": 30000,
+    "maxMaterialChars": 1000,
+    "note": "P1/P2 检索：topK 供 rerank；minScore 无关门槛；denseBackend=bge→ollama bge-m3 真 embedding(SQLite 缓存 data/dense-cache.sqlite)，不可用自动 char-ngram 兜底；char=强制零依赖。maxMaterialChars=C6 结构化资料总预算。"
+  },
+  "verify": {
+    "cacheTtlHours": 24,
+    "postCheck": true,
+    "note": "C7：judge 缓存 TTL（仅 top1+缓存控费）；postCheck=生成后忠实度自检（事实内容须被资料支持，不达标弃答转人工）。O11：缓存键含 status/confidence/material 指纹（库改立即失效）+LRU 500。"
+  },
+  "trace": {
+    "enabled": true,
+    "keepDays": 14,
+    "note": "O2 结构化 trace（2026-11-18）：每帖 verdict/gen/sent 事件 append reports/trace-<date>.jsonl，供归因/成本/日报/评测候选；每日整理时裁 keepDays。用户决策：只观测，**不设每日发送闸**。"
+  },
+  "evalCandidates": {
+    "enabled": true,
+    "note": "弃答候选回收（2026-11-18）：C7 弃答的帖记 data/eval-candidates.jsonl（同 postId 去重），供后续补知识/扩评测集。与『真提问→需人工』同时生效（大哥决策两者都做）。"
+  },
+  "evalWeekly": {
+    "enabled": true,
+    "everyDays": 7,
+    "note": "P4-d（2026-11-19）：每周一次**规则模式**评测（零 LLM 成本：路由/静默/检索来源/recall@5），每日整理时按 everyDays 判断是否该跑，报告 → reports/eval-weekly-YYYY-MM-DD.md，上次时间记 usage.lastEvalAt。LLM 模式（分档/生成/口吻/忠实度）成本高，仍手动 `node scripts/eval.mjs --llm`。"
+  },
+  "ingest": {
+    "enabled": false,
+    "sources": {
+      "official": {
+        "enabled": false,
+        "urls": [],
+        "maxChars": 4000
+      },
+      "weekly": {
+        "enabled": false,
+        "maxChars": 6000
+      }
+    },
+    "note": "P4-b（2026-11-19）增量摄入：每日整理时把「官方公告 url / reports 下周报 md」的新增内容 → LLM 抽取 → facts + govern。游标 data/ingest-cursor.json 按源增量去重，成功才推进（失败下轮重试）。**默认全关**（避免自动摄入噪声）：填 official.urls 或把 weekly.enabled 置 true 后，再把 ingest.enabled 设 true 才会跑。只摄零风险源；评价/评论类源涉接口权限与 WAF，需单独确认再加。"
+  },
+  "qaGovern": {
+    "enabled": true,
+    "auto": true,
+    "dedupThreshold": 0.94,
+    "neverCitedDays": 45,
+    "note": "O3 QA 自治治理（2026-11-18，大哥决策直接 auto）：每日整理时 ① 分层 junk 剔除（junk 层=求码/加好友/广告，命中即剔不看引用；noise 层=超短/纯情绪标题，引用>0 豁免）② 语义近重复合并（阈值 dedupThreshold，关键数字冲突如困难6/困难8 不合并；保留者追加同义问法）③ 零引用条目用 neverCitedDays 宽松阈值归档。全部只移动不删除（归档可恢复），报告 → reports/qa-govern-<date>.md。junkPatterns/noisePatterns 可在 qa.qaGovern 下覆盖默认规则。"
+  },
+  "llmHealth": {
+    "enabled": true,
+    "baseCooldownMs": 120000,
+    "maxCooldownMs": 1800000,
+    "smallTaskPreferOpenai": true,
+    "note": "O1 渠道健康冷却（2026-11-18）：失败记冷却 base*2^(fails-1) 封顶 max，期内跳过，全冷却留最后一个探针。smallTaskPreferOpenai=judge/改写类(≤40 tokens)把 openai 风格渠道稳定前置（anthropic 强制 thinking 吃预算）。实际读 config.llm.health。[不要在这里写具体模型名]"
+  },
+  "rerank": {
+    "backend": "onnx",
+    "server": "http://127.0.0.1:8790",
+    "modelDir": "E:\\Ollama\\models\\bge-reranker-v2-m3",
+    "timeoutMs": 20000,
+    "note": "C4：backend=onnx(已启用,2026-11-17) / llm(过渡)。modelDir=用户指定位置 E:\\Ollama\\models\\bge-reranker-v2-m3；原 arnauld-a int8 包为 fp16 图 CPU 不兼容，已本地转 fp32 存 model_quantized.onnx（加载器优先认它，原文件未动）；tokenizers 0.20.3 已装。/rerank 在 ocr_server.py（改代码需重启 OCR）；失败回退 llm→RRF。collect 每轮读 config，切 backend 不需重启 watch。"
+  },
+  "features": {
+    "image": true,
+    "review": false,
+    "weekly": false,
+    "comment": false,
+    "mod": false,
+    "ingest": false,
+    "note": "C10 插件按需加载开关（P0-M1）。image 已模块化；review/weekly/comment/mod/ingest 拆出后置 true。内核(答疑/队列/护栏)不受开关影响。C11 摄入可用 scripts/ingest.mjs --file 手动喂源。"
+  },
+  "plugins": {
+    "comfort": true,
+    "share": true,
+    "praise": true,
+    "interact": true,
+    "comment": true,
+    "codematch": false,
+    "note": "B4 内核拆插件（2026-11-19）：true=插件接管该通道（旧块跳过）、'shadow'=插件只规划不发送（双轨对比）、false/未配=走旧块。目前 four 通道 + comment(纯分析不发) 已启用；codematch 在 watch.mjs 不需拆。"
+  },
+  "weekly": {
+    "enabled": true,
+    "everyDays": 7,
+    "days": 7,
+    "note": "P4-c 周报（2026-11-19）：每日整理时按 everyDays 判断，首次运行即生成；数据全部来自本地 reports/trace-*.jsonl + usage + 答疑库条数，**不调任何外部接口**。产出 reports/周报-<from>_<to>.md。手动：node scripts/report-weekly.mjs"
+  },
+  "comment": {
+    "enabled": true,
+    "note": "P4-c 评论分析（2026-11-19）：从本轮已读评论里用**规则**识别「反对/纠错」与「补充」，追加到 data/comment-analysis.jsonl（同 postId+commentId 去重）。**只分析不发送**（planBatch 恒返回 null），不额外调接口。供后续补知识/扩评测集。"
+  },
+  "review": {
+    "enabled": false,
+    "autoAnalyze": false,
+    "lowScoreMax": 2,
+    "note": "P4-c 评价分析（2026-11-19）：**只读分析 + 低分提醒，绝不自动回复评价**（评价对外公开、处置归人工，与『删评归人工』一致）。默认关闭；开启后 collect 侧也不擅自调评价接口（需注入 fetchReviews），建议用 scripts/review-analyze.mjs 手动跑。"
+  },
+  "taptapCli": {
+    "enabled": true,
+    "binary": "taptap-cli",
+    "developerId": 1,
+    "writeEnabled": false,
+    "fallbackToOpencli": true,
+    "timeoutMs": 30000,
+    "note": "官方 CLI 读通道（2026-11-20，见 output/PVZ2-官方CLI调查结论-20261120.md）：帖子**全文**（旧接口 summary 硬截 200 字）+ **全部子回复**（旧接口 child_posts 只返 2 条）走 `taptap-cli community-management`。实测：读接口只校验「你是该论坛版主」，developerId 填任意整数即可（默认 1）；**写接口需论坛主管理员**（普通版主 403，换 token 无效）→ writeEnabled 暂为 false，写继续走页面内 fetch。fallbackToOpencli=true 表示 CLI 失败自动回退旧接口（绝不因 CLI 挂了不回复）。"
+  },
+  "exec": {
+    "concurrency": 1,
+    "maxQueues": 32,
+    "rateLimit": {
+      "mode": "adaptive",
+      "perSecond": 0,
+      "waf": {
+        "cooldownMs": 60000,
+        "recoverEvery": 20,
+        "recoverFactor": 1.5,
+        "hardBrakeAfter": 3,
+        "pauseMinutes": 15,
+        "floorPerSecond": 0.1
+      }
+    },
+    "queues": {
+      "mode": "perPlugin",
+      "answer": {
+        "concurrency": 1,
+        "perSecond": 0
+      },
+      "social": {
+        "concurrency": 1,
+        "perSecond": 0
+      },
+      "summon": {
+        "concurrency": 1,
+        "perSecond": 0
+      }
+    },
+    "workerPool": {
+      "enabled": true,
+      "size": 4,
+      "taskTimeoutMs": 120000
+    },
+    "note": "执行调度（2026-11-20 改）：**语义 = 队列内串行、队列间并发**。① rateLimit.mode=adaptive → **默认全速**，只在检出 WAF 时 ×0.5 降速 + 冷却 60s，每 20 次成功 ×1.5 恢复，连 3 次失败硬刹车 15 分钟（限速不是产品需求，WAF 由大哥侧处理，见 output/PVZ2-五项任务方案 §2.3）；② queues.mode=perPlugin → 每插件一条队列（answer/praise/share/comfort/interact/summon），答疑不再被夸奖堵住；③ maxQueues=32（perPost 模式下每帖一条的上限）；④ 各队列 concurrency=1 = 队列内严格串行；⑤ 同一帖由 mutexKey 串行。硬约束：worker 只发送（persist:false），记账全部由父进程做。回退：rateLimit.mode=fixed + perSecond=0.17 即恢复旧行为。"
   },
   "image": {
     "enabled": true,
@@ -281,6 +430,9 @@
     "api": "openai-completions",
     "provider": "",
     "reuseDsh": true,
+    "dailyCallCap": 300,
+    "usagePersist": true,
+    "dailyCallCapNote": "P4-e（2026-11-19）：每日 LLM 调用上限（0=不限）。超闸后 chat() 直接返回 {ok:false,error:'llm_daily_cap'}，调用方转人工不硬编。计数在 data/llm-usage.json（按 UTC 日期重置），日报会显示今日调用数。注意这与「发送量」是两个维度：发送由各通道 maxPerRun 管，这里管成本。",
     "temperature": 0.85,
     "maxTokens": 600,
     "fallbackNote": "渠道顺序跟随 DSH 当前模型路由（不在 skill 写死模型名）；部分渠道强制 thinking，单次可能 30~90 秒，超时自动切下一个。",

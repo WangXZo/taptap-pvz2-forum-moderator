@@ -2,6 +2,10 @@
   "note": "PVZ2 游戏画面特征模板库（S6，2026-11-16）。method=template 走 opencv 多尺度模板匹配（本地图像服务 /match）；模板图放 templates/。新植物/新 UI 补模板图+条目即可，自包含跟 skill 分发。threshold=相似度阈值（0.85 起，识别不到可降到 0.8/0.7）。pending=true 表示模板待采集（暂不参与匹配）。",
   "features": [
     { "id": "diamond", "name": "钻石", "category": "reward", "method": "template", "template": "templates/diamond.png", "threshold": 0.8, "aliases": ["钻石", "宝石"] },
+    { "id": "tile_turnip_card", "name": "瓷砖萝卜", "category": "rare_plant", "method": "template", "template": "templates/tile_turnip_card.png", "threshold": 0.8, "trigger": "celebrate", "aliases": ["瓷砖萝卜", "瓷砖"] },
+    { "id": "tile_turnip_burst", "name": "瓷砖萝卜", "category": "rare_plant", "method": "template", "template": "templates/tile_turnip_burst.png", "threshold": 0.8, "trigger": "celebrate", "aliases": ["瓷砖萝卜", "瓷砖"] },
+    { "id": "zixuan_item", "name": "花盆挂件碎片自选", "category": "item", "method": "template", "template": "templates/zixuan_item.png", "threshold": 0.8, "aliases": ["花盆挂件", "花盆挂件碎片", "挂件碎片", "花盆碎片"] },
+    { "id": "zixuan_select", "name": "碎片五选一弹窗", "category": "item", "method": "template", "template": "templates/zixuan_select.png", "threshold": 0.8, "aliases": ["碎片五选一"] },
     { "id": "peashooter", "name": "豌豆射手", "category": "plant", "method": "template", "template": "templates/peashooter.png", "threshold": 0.85, "aliases": ["豌豆"], "pending": true },
     { "id": "sunflower", "name": "向日葵", "category": "plant", "method": "template", "template": "templates/sunflower.png", "threshold": 0.85, "aliases": ["向日葵"], "pending": true },
     { "id": "carnival_banner", "name": "狂欢嘉年华活动", "category": "activity", "method": "template", "template": "templates/carnival.png", "threshold": 0.8, "aliases": ["狂欢嘉年华"], "pending": true }

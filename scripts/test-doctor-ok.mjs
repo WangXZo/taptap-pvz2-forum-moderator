@@ -95,8 +95,19 @@ console.log('\n=== ⑥ opencli 2.x 参数语法转换（同一轮升级踩的第
   check('非 browser 命令不受影响', toOpencliArgs(['doctor'], 'flag').join(' ') === 'doctor');
   check('两段式 browser <cmd> 不误插 session', toOpencliArgs(['browser', 'state'], 'flag').join(' ') === 'browser state');
   check('空/异常输入不崩', toOpencliArgs(null, 'flag') === null && toOpencliArgs([], 'flag').length === 0);
-  check('真实 2.x 版本被识别为 flag 模式', detectSessionStyle(OPENCLI_MAIN || '') === 'flag' || !OPENCLI_MAIN,
-    `style=${OPENCLI_MAIN ? detectSessionStyle(OPENCLI_MAIN) : 'n/a(无 opencli)'}`);
+  // X1（2026-11-18）：注入 spawn 的确定断言 —— 不再依赖真实环境（沙盒 piped spawn 会 EPERM）
+  const stub = (out) => () => ({ stdout: out, stderr: '' });
+  check('stub: 2.0.3 → flag', detectSessionStyle('x', { spawnImpl: stub('2.0.3'), useCache: false }) === 'flag');
+  check('stub: 1.9.1 → positional', detectSessionStyle('x', { spawnImpl: stub('1.9.1'), useCache: false }) === 'positional');
+  check('stub: 输出乱码 → positional', detectSessionStyle('x', { spawnImpl: stub('no version'), useCache: false }) === 'positional');
+  check('stub: 抛错（沙盒 EPERM）→ positional 不崩', detectSessionStyle('x', { spawnImpl: () => { throw new Error('EPERM'); }, useCache: false }) === 'positional');
+  // 真环境断言降为可选：只有 --env 才跑（避免沙盒下必红）
+  if (process.argv.includes('--env')) {
+    check('真实 2.x 版本被识别为 flag 模式', detectSessionStyle(OPENCLI_MAIN || '', { useCache: false }) === 'flag' || !OPENCLI_MAIN,
+      `style=${OPENCLI_MAIN ? detectSessionStyle(OPENCLI_MAIN, { useCache: false }) : 'n/a(无 opencli)'}`);
+  } else {
+    console.log('  (真环境断言已跳过：加 --env 才跑)');
+  }
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

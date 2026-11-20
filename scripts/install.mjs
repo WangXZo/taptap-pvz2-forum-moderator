@@ -36,9 +36,17 @@ if (dry) say(`${C.y}(dry-run：不会写任何文件)${C.x}`);
 
 // ---------- ① 环境 ----------
 say(`\n${C.b}1. 检查环境${C.x}`);
-const nodeMajor = Number(process.versions.node.split('.')[0]);
-if (nodeMajor >= 18) say(`  ${C.g}✓${C.x} Node ${process.versions.node}`);
-else say(`  ${C.r}✗${C.x} Node ${process.versions.node} 太老，需要 18+`);
+// Node 版本硬门槛：lib/db.mjs 用 `node:sqlite`，**Node ≥22.5** 才有。
+// 以前 package.json 写 >=18，照着装会直接崩在第一次打开数据库（2026-11-20 修正）。
+const [nMajor, nMinor] = String(process.versions.node).split('.').map(Number);
+const nodeOk = nMajor > 22 || (nMajor === 22 && nMinor >= 5);
+if (nodeOk) {
+  say(`  ${C.g}✓${C.x} Node ${process.versions.node}`);
+} else {
+  say(`  ${C.r}✗${C.x} Node ${process.versions.node} 太老 —— 需要 **≥ 22.5**`);
+  say(`      ${C.d}原因：内置 node:sqlite（lib/db.mjs）在 22.5 之前不存在${C.x}`);
+  say(`      ${C.d}→ 去 https://nodejs.org 装 22.5+ 或 24.x，或 nvm install 24${C.x}`);
+}
 
 const opencliMain = resolveOpencliMain();
 if (opencliMain) {
@@ -53,6 +61,25 @@ if (opencliMain) {
     );
 } else {
   say(`  ${C.r}✗${C.x} 没找到 opencli\n      → npm i -g @jackwener/opencli`);
+}
+
+// 官方 CLI（2026-11-20）：帖**全文**与**全部子回复**只能靠它拿
+//   旧接口 summary 硬截 200 字、child_posts 只返 2 条 → 答偏、幂等盲判
+{
+  const { spawnSync } = await import('node:child_process');
+  const r = spawnSync('taptap-cli', ['auth', 'status'], { encoding: 'utf8', timeout: 20000, shell: true });
+  if (r?.error || r?.status !== 0) {
+    say(`  ${C.y}!${C.x} 没找到 taptap-cli（读全文/全子回复会降级到旧接口）`);
+    say(`      → npm i -g @taptap/cli && taptap-cli auth login`);
+  } else {
+    const txt = String(r.stdout || '');
+    if (/Bearer:\s*有效|有效（/.test(txt)) {
+      say(`  ${C.g}✓${C.x} taptap-cli 已登录`);
+    } else {
+      say(`  ${C.y}!${C.x} taptap-cli 已安装但未登录`);
+      say(`      → taptap-cli auth login（扫码授权）`);
+    }
+  }
 }
 
 // ---------- ② 配置 ----------
@@ -129,7 +156,17 @@ for (const d of dirs) {
   }
 }
 
-// ---------- ④ 落盘 ----------
+// ---------- ④ 功能就绪矩阵（O7，2026-11-19）----------
+say(`\n${C.b}4. 功能就绪矩阵${C.x}`);
+{
+  const { buildMatrix, renderMatrix } = await import('./lib/readiness.mjs');
+  const cfgNow = JSON.parse(await readFile(cfgPath, 'utf8').catch(() => '{}'));
+  const m = buildMatrix({ config: cfgNow });
+  say(renderMatrix(m, { color: C }));
+  say(`  ${C.d}（只提示不自动安装；缺失项对应功能会自行降级）${C.x}`);
+}
+
+// ---------- ⑤ 落盘 ----------
 if (changes.length) {
   if (dry) {
     say(`\n${C.y}dry-run：跳过写入${C.x}`);
@@ -139,8 +176,8 @@ if (changes.length) {
   }
 }
 
-// ---------- ⑤ doctor ----------
-say(`\n${C.b}4. 自检${C.x}`);
+// ---------- ⑥ doctor ----------
+say(`\n${C.b}5. 自检${C.x}`);
 if (!dry) {
   const { spawnSync } = await import('node:child_process');
   const r = spawnSync(process.execPath, [join(SCRIPTS_DIR, 'doctor.mjs')], { stdio: 'inherit' });

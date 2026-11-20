@@ -18,8 +18,10 @@
 // ⚠️ 凭证只在内存里用，不落盘、不打印、不进日志。
 
 import { readFile } from 'node:fs/promises';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { SKILL_ROOT } from './paths.mjs';
 
 const DSH_DIR = join(homedir(), '.dsh');
 const PATCH_PATHS = [
@@ -294,20 +296,135 @@ async function callOnce(ch, { system, messages, temperature, maxTokens, timeoutM
   }
 }
 
+// ── O1 渠道健康冷却（2026-11-18）：失败记冷却（指数退避），期内跳过，免每次白撞失败渠道 ──
+// 只用运行期 sig（provider/model），不写死模型名（用户 2026-11-09 规矩不变）。
+const _health = new Map();
+let _healthLoaded = false;
+const sigOf = (ch) => `${ch.provider}/${ch.model}`;
+const healthFile = () => join(SKILL_ROOT, 'data', 'llm-health.json');
+
+function loadHealth() {
+  if (_healthLoaded) return;
+  _healthLoaded = true;
+  let removed = 0;
+  try {
+    const j = JSON.parse(readFileSync(healthFile(), 'utf8'));
+    const now = Date.now();
+    for (const [k, v] of Object.entries(j || {})) {
+      // 2026-11-19 审查：**顺手清理已过期记录**（否则文件只增不减，长期缓慢膨胀）
+      if ((v?.cooldownUntil || 0) > now) _health.set(k, v);
+      else removed++;
+    }
+  } catch {}
+  // 清理过就落盘一次（避免每次启动都重复过滤同一批过期项）
+  if (removed > 0) saveHealth();
+}
+function saveHealth() {
+  try {
+    mkdirSync(dirname(healthFile()), { recursive: true });
+    writeFileSync(healthFile(), JSON.stringify(Object.fromEntries(_health)));
+  } catch {}
+}
+/** 失败→冷却 base*2^(fails-1) 封顶 max；成功→清零。纯逻辑便于测试。 */
+export function noteHealth(map, sig, ok, now, { baseCooldownMs = 120000, maxCooldownMs = 1800000 } = {}) {
+  if (ok) { map.delete(sig); return map; }
+  const cur = map.get(sig) || { fails: 0, cooldownUntil: 0 };
+  const fails = cur.fails + 1;
+  map.set(sig, { fails, failAt: now, cooldownUntil: now + Math.min(maxCooldownMs, baseCooldownMs * 2 ** (fails - 1)) });
+  return map;
+}
+/** 冷却过滤：期内跳过；全被冷却→留最后一个做探针（绝不返回空）。 */
+export function filterHealthy(channels, map, now) {
+  const active = channels.filter((ch) => !((map.get(sigOf(ch))?.cooldownUntil || 0) > now));
+  return active.length ? active : channels.slice(-1);
+}
+
+// ── P4-e 调用配额（2026-11-19）：每日 LLM 调用上限，超闸快速失败由调用方转人工 ──
+// 与「发送闸」不同：这里管的是**成本**（judge/改写/生成都会烧 token），发送量由各通道上限管。
+const usageFile = () => join(SKILL_ROOT, 'data', 'llm-usage.json');
+let _usage = null;
+const todayKey = () => new Date().toISOString().slice(0, 10);
+
+function loadUsageCount() {
+  if (_usage) return _usage;
+  let n = 0;
+  try {
+    const j = JSON.parse(readFileSync(usageFile(), 'utf8'));
+    if (j?.day === todayKey()) n = Number(j.calls) || 0;
+  } catch {}
+  _usage = { day: todayKey(), calls: n };
+  return _usage;
+}
+function bumpUsage(persist) {
+  const u = loadUsageCount();
+  if (u.day !== todayKey()) { u.day = todayKey(); u.calls = 0; } // 跨天重置
+  u.calls++;
+  if (persist) {
+    try {
+      mkdirSync(dirname(usageFile()), { recursive: true });
+      writeFileSync(usageFile(), JSON.stringify(u, null, 2));
+    } catch {}
+  }
+}
+/** 供日报/排障读取：{day, calls} */
+export function llmUsageCount() {
+  const u = loadUsageCount();
+  return u.day === todayKey() ? { ...u } : { day: todayKey(), calls: 0 };
+}
+
 /**
  * 生成一段文本：按渠道顺序尝试，第一个成功的返回
  * @returns {{ok:boolean, text?:string, channel?:string, model?:string, tried?:Array, error?:string}}
  */
-export async function chat(config, { system = '', messages = [], temperature = 0.7, maxTokens = 800, timeoutMs = 60000, log = () => {} } = {}) {
+export async function chat(config, opts = {}) {
   const channels = await resolveChannels(config);
+  return chatWithChannels(channels, opts, config);
+}
+
+/** 渠道列表注入 seam（测试用）；健康冷却+小任务偏好在此生效。 */
+export async function chatWithChannels(channels, { system = '', messages = [], temperature = 0.7, maxTokens = 800, timeoutMs = 60000, log = () => {} } = {}, config = {}) {
   if (!channels.length) {
     return { ok: false, error: '没有可用的 LLM 渠道（config.llm 未配 API Key，且 DSH 里没有可用凭据）' };
   }
+  // P4-e：日调用配额闸（0/未配 = 不限）
+  const hcfg0 = config?.llm?.health || config?.llmHealth || {};
+  const cap = Number(config?.llm?.dailyCallCap ?? 0);
+  const persistUsage = config?.llm?.usagePersist !== false;
+  if (cap > 0) {
+    const u = loadUsageCount();
+    const used = u.day === todayKey() ? u.calls : 0;
+    if (used >= cap) {
+      log(`      [LLM] 已达日调用上限 ${cap}（今日 ${used} 次）→ 本次不调用，调用方转人工`);
+      return { ok: false, error: 'llm_daily_cap', capped: true, used, cap };
+    }
+  }
+  const hcfg = config?.llm?.health || config?.llmHealth || {};
+  const enabled = hcfg.enabled !== false;
+  let list = channels;
+  if (enabled) {
+    const persist = hcfg.persist !== false;
+    if (persist) loadHealth(); // persist=false 时只用进程内内存表（测试/临时关盘）
+    const now = Date.now();
+    const active = filterHealthy(list, _health, now);
+    if (active.length < list.length) log(`      [LLM] 冷却跳过 ${list.length - active.length} 个渠道`);
+    list = active;
+  }
+  // 小任务（judge/改写类 ≤40 tokens）openai 风格稳定前置：anthropic 强制 thinking 吃预算（F2）。
+  // 与冷却开关解耦（独立生效）。默认开启，config.llm.health.smallTaskPreferOpenai=false 可关。
+  if (maxTokens <= 40 && hcfg.smallTaskPreferOpenai !== false) {
+    list = [...list.filter((c) => c.api === 'openai-completions'), ...list.filter((c) => c.api !== 'openai-completions')];
+  }
   const tried = [];
-  for (const ch of channels) {
+  for (const ch of list) {
+    bumpUsage(persistUsage); // P4-e：每发起一次真实请求就计数（含失败尝试）
     const r = await callOnce(ch, { system, messages, temperature, maxTokens: maxTokens || ch.maxTokens, timeoutMs });
+    const good = r.ok && String(r.text || '').trim();
     tried.push({ provider: ch.provider, model: ch.model, ok: r.ok, status: r.status, error: r.ok ? undefined : r.error });
-    if (r.ok && String(r.text || '').trim()) {
+    if (enabled) {
+      noteHealth(_health, sigOf(ch), Boolean(good), Date.now(), hcfg);
+      if (hcfg.persist !== false) saveHealth();
+    }
+    if (good) {
       // 用户 2026-11-09：不在 skill 里写/打具体模型名 —— 只报「第几个渠道」
       log(`      [LLM] 已生成（渠道 ${tried.length}）`);
       return { ok: true, text: r.text.trim(), channel: ch.provider, model: ch.model, tried };

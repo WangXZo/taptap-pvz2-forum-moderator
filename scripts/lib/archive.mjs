@@ -17,14 +17,21 @@ const DAY = 86400000;
 /**
  * 判断某条目是否该归档
  * 规则：最后引用（没有则用入库时间）距今 > staleDays 天 → 归档
+ * 2026-11-18（O3）：`neverCitedDays` —— 从未被引用的条目单独用更宽阈值（默认 null=原行为）。
+ *   理由：新沉淀条目 30 天没被用到很正常，45 天才算冷；已被引用过但 30 天没再用的按 staleDays。
  */
-export function isStale(stat, { staleDays = 30, now = Date.now() } = {}) {
+export function isStale(stat, { staleDays = 30, neverCitedDays = null, now = Date.now() } = {}) {
   const anchor = stat.lastCitedAt || stat.createdAt;
   if (!anchor) return false;
-  return now - Date.parse(anchor) > staleDays * DAY;
+  const cited = Number(stat.cited || 0);
+  const days = neverCitedDays != null && cited === 0 ? Number(neverCitedDays) : staleDays;
+  return now - Date.parse(anchor) > days * DAY;
 }
 
-/** 把解析出来的条目还原成标准 Markdown 块 */
+/** 把解析出来的条目还原成标准 Markdown 块
+ *  ⚠️ 2026-11-19 审查发现：这里是**字段白名单** —— 加新元数据字段（如 semanticConfirm）必须同步到这里，
+ *  否则治理/归档重写主库时会被**静默丢弃**（实测花盆挂件的「语义确认：true」就是这么丢的）。
+ *  v2 管线用 C7 verify 取代语义门，故丢失不影响当前行为；但回退 v1 会失效。 */
 export function renderEntry(e) {
   const lines = [`## 问：${e.question}`];
   const kw = (e.keywords || []).join(', ');
@@ -33,6 +40,7 @@ export function renderEntry(e) {
   if (e.signature) lines.push(`- 签名：${e.signature}`);
   if (e.source) lines.push(`- 来源：${e.source}`);
   if (e.summarizedAt) lines.push(`- 总结时间：${e.summarizedAt}`);
+  if (e.semanticConfirm) lines.push(`- 语义确认：true`);
   lines.push('---');
   lines.push(e.answer.trim());
   return lines.join('\n') + '\n';
@@ -48,6 +56,7 @@ export async function archiveStale({
   entries,
   usage,
   staleDays = 30,
+  neverCitedDays = null,
   now = new Date(),
 }) {
   const log = [];
@@ -70,7 +79,7 @@ export async function archiveStale({
       kept.push(e);
       continue;
     }
-    if (isStale(stat, { staleDays, now: now.getTime() })) {
+    if (isStale(stat, { staleDays, neverCitedDays, now: now.getTime() })) {
       archived.push(e);
       coldBlocks.push(
         `<!-- 归档于 ${fmt(now)}，最后引用 ${stat.lastCitedAt || '从未'}，累计引用 ${stat.cited || 0} 次 -->\n` +

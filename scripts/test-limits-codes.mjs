@@ -71,6 +71,11 @@ const SHORT = '差一点没完成的那种最憋屈';
 
   const e = clampReply(`${SHORT} ${sig}[表情_加油]`, { signature: sig });
   ok('签名+表情都已带 → 原样不重复', e.split(sig).length - 1 === 1, e);
+
+  // 2026-11-17：调用方误追加双签名 → 收敛为一个（防「签名重复」）
+  const f = clampReply(`${SHORT} ${sig} ${sig}`, { signature: sig });
+  ok('误追加双签名 → 收敛为一个', f.split(sig).length - 1 === 1, f);
+  ok('双签名收敛后内容没丢', f.includes(SHORT), f);
 }
 
 ok('标题超限能查出来', checkLimits({ title: 'x'.repeat(31) }).some((x) => x.field === 'title'));

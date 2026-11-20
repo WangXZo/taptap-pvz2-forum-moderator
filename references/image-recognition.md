@@ -86,7 +86,13 @@ python scripts/ocr_server.py --port 8790         # /health /ocr /match
 
 - 从游戏截图裁植物/奖励图标 PNG 放 `templates/`，加条目即可；`pending:true` 表示模板待采集（暂不参与）。
 - `threshold` 相似度阈值（0.85 起，识别不到降 0.8/0.7）；多尺度匹配（1.0/0.9/0.8/1.1/0.7/1.2）。
-- 游戏版本换 UI/新植物 → 补模板。已有样本：`templates/diamond.png`（钻石奖励图标，自匹配验证通过）。
+- 游戏版本换 UI/新植物 → 补模板。已有样本：`templates/diamond.png`（钻石）、`templates/tile_turnip_card.png` / `tile_turnip_burst.png`（瓷砖萝卜，trigger=celebrate）、`templates/zixuan_item.png` / `zixuan_select.png`（自选碎片/碎片五选一，真实帖图验证通过）。均经真实帖图验证。
+- **两类触发**：`trigger:"celebrate"`（瓷砖萝卜）→ 自动过去庆祝；**无 trigger**（花盆挂件碎片自选）→ 识别文本并入 `post.text` → QA 候选 → **语义确认门**再决定是否选用。
+- **特征要具体，别笼统**：`zixuan_item`=「花盆挂件碎片自选」（拼图+金盆+问号，令营/活动专属）；`zixuan_select`=「碎片五选一」通用使用弹窗，**不单独判定为花盆挂件**（游戏里还有其他自选）。
+- **语义确认门**（`lib/semantic-gate.mjs`）：QA 条目带 `- 语义确认：true` 时，命中后先让 LLM 综合语义（正文+图片识别）判断玩家是否真在问这条，确认才选用；不确认/LLM 挂 → 转人工，绝不笼统套用。
+- **celebrate 触发**：特征带 `trigger:"celebrate"`（如瓷砖萝卜）→ 识别到即标记 `imageCelebrate`；collect 把该帖纳入分享互动并以 `kind=celebrate` **自动过去庆祝**（不只回灌文本）。后续任何帖识别到瓷砖萝卜都会自动过去，不限于某两帖。
+- **已知抽取知识**：688 钻=稀有宝箱、2888 钻=传奇宝箱，均为十连 → celebrate 话头**别问「单抽还是十连」**（已是十连），改问「攒了多久钻/下一个想抽啥」。
+- 匹配尺度已放宽（0.6~3.0），小模板（用户给的截图截取）可放大匹配高分辨率帖图中的图标。
 
 ## 8. 置信度与隐私
 

@@ -69,5 +69,16 @@ console.log('\n== enrichPostImages 注入识别器（多源合并）==');
   t('sources 合并', r.sources.includes('ocr') && r.sources.includes('vlm'));
 }
 
+console.log('\n== C8 entities 透传（P3）==');
+{
+  const cfg = { image: { enabled: true } };
+  const rec = async () => ({ text: '图中识别到：瓷砖萝卜', sources: ['template'], celebrate: true, entities: ['瓷砖萝卜'] });
+  const r = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: rec });
+  t('entities 透传', Array.isArray(r.entities) && r.entities.includes('瓷砖萝卜'));
+  t('celebrate 保留', r.celebrate === true);
+  const r2 = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: async () => ({ text: '', sources: [] }) });
+  t('无识别 entities 空数组', Array.isArray(r2.entities) && r2.entities.length === 0);
+}
+
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

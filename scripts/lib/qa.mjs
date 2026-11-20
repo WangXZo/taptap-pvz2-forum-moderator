@@ -67,6 +67,10 @@ export function parseQa(raw) {
     let confidence = confPct ? Math.max(0, Math.min(100, Number(confPct[1]))) : null;
     if (confidence === null && confLegacy) confidence = LEGACY_PCT[confLegacy[1]] ?? null;
 
+    // 可选：语义确认门（2026-11-17）—— 命中后需 LLM 综合语义判断是否真在问本条才选用，防笼统套用
+    const semMatch = meta.match(/语义确认[:：]\s*(.+)/);
+    const semanticConfirm = semMatch ? /true|是|yes/i.test(semMatch[1]) : false;
+
     entries.push({
       question,
       keywords,
@@ -78,6 +82,7 @@ export function parseQa(raw) {
       confidence: confidence === null ? (source ? 50 : 95) : confidence,
       confidenceLabel: confLabelOf(confidence === null ? (source ? 50 : 95) : confidence),
       auto: !!source, // 自动沉淀 → 匹配时打折（低于人工条目）
+      semanticConfirm,
       answer,
       id: slug(question),
     });

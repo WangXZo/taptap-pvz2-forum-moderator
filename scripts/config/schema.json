@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": 1,
+  "generatedBy": "scripts/lib/config.mjs",
+  "about": "配置的唯一权威定义。键、类型、默认值、取值范围、说明都写在这里；docs/config-reference.md 由本文件自动生成，不要手改文档。改默认值 = 改这里，不需要动代码。",
+  "conventions": [
+    "每个功能只有一个 enabled 开关，放在该功能自己的分组下（旧键 features.* / plugins.* 会被自动迁移过来，且旧键暂时保留兼容）",
+    "优先级：schema 默认值 < config.json < config.local.json < 环境变量 TAPTAP_CFG_<GROUP>_<FIELD>",
+    "校验失败不会阻断运行（守护不能因为一个配置项写错就停），只打日志"
+  ],
+  "groups": {
+    "root": {
+      "label": "基础",
+      "description": "config.json 的**顶层**标量（这一组的字段不带前缀，直接就是顶层键）",
+      "fields": {
+        "appId": { "type": "integer", "default": 54031, "label": "App ID", "description": "TapTap 游戏 ID（PVZ2 = 54031）" },
+        "groupId": { "type": "integer", "default": 40173, "label": "论坛板块 ID" },
+        "appName": { "type": "string", "default": "植物大战僵尸2", "label": "游戏名" },
+        "forumUrl": { "type": "string", "default": "https://www.taptap.cn/app/54031/topic", "label": "论坛地址" },
+        "myUserId": { "type": "string", "default": "", "label": "我的 user_id", "description": "bot 自己的 TapTap 用户 ID，用于识别「哪些回复是我们发的」。用 node scripts/whoami.mjs 获取" },
+        "teamUserIds": { "type": "array", "default": [], "label": "队友 user_id 列表", "description": "多人协作时，队友发的回复也算「我们这边」" },
+        "pipeline": { "type": "string", "enum": ["v1", "v2"], "default": "v2", "label": "管线版本", "description": "v1 = 旧的纯语义匹配；v2 = facts 优先检索 + 分档验证" }
+      }
+    },
+
+    "reply": {
+      "label": "回复方式",
+      "description": "怎么把回复发出去、发多长、带什么签名",
+      "fields": {
+        "channel": { "type": "string", "enum": ["opencli"], "default": "opencli", "label": "发送通道" },
+        "session": { "type": "string", "default": "tap", "label": "opencli 会话名", "description": "浏览器会话标识，和 mod-watch 的 tapmod 分开，避免抢标签页" },
+        "via": { "type": "string", "enum": ["api", "ui"], "default": "api", "label": "一级回复走法", "description": "api = 页面内 fetch（快，约1s）；ui = 点按钮填编辑器（慢，5~15s）" },
+        "nestedVia": { "type": "string", "enum": ["api", "ui"], "default": "api", "label": "楼中楼走法" },
+        "signature": { "type": "string", "default": "「版主助手-小鲸鱼」", "label": "签名", "description": "由脚本统一追加一次，模型不许自己写" },
+        "delayMs": { "type": "integer", "default": 6000, "min": 0, "max": 600000, "label": "发送间隔(ms)", "description": "已废弃：限速改由 exec.rateLimit 统一管" },
+        "apiIntervalMs": { "type": "integer", "default": 0, "min": 0, "max": 60000, "label": "接口调用间隔(ms)", "description": "每次接口调用之间的最小间隔。0 = 不节流（2026-11-20 起默认放开，只在检出 WAF 时由 exec.rateLimit 自适应降速）" },
+        "maxChars": {
+          "type": "object",
+          "default": { "post": 130, "nested": 70 },
+          "label": "回复字数上限",
+          "description": "post = 一级回复；nested = 楼中楼。平台硬上限 1000，这里只是「说短点」的软限制"
+        },
+        "dryRun": { "type": "boolean", "default": false, "label": "试运行", "description": "true = 只生成不发" },
+        "refuseOnUnknown": { "type": "boolean", "default": false, "label": "不确定时婉拒" },
+        "blacklistWords": { "type": "array", "default": ["客服", "申诉", "退款", "充值失败", "封号", "举报", "官方补偿", "版号"], "label": "禁答词", "description": "命中这些词的帖子不自动回复，转人工" }
+      }
+    },
+
+    "exec": {
+      "label": "执行调度",
+      "description": "并发、限速、队列、线程池",
+      "fields": {
+        "concurrency": { "type": "integer", "default": 1, "min": 1, "max": 32, "label": "总并发度", "description": "单队列模式下的并发上限。多队列模式下各队列独立配置" },
+        "maxQueues": { "type": "integer", "default": 32, "min": 1, "max": 128, "label": "最大队列数", "description": "队列数不设硬上限（3 不是终点）：perPlugin 模式下每个插件一条，perPost 模式下每帖一条" },
+        "rateLimit.mode": { "type": "string", "enum": ["off", "fixed", "adaptive"], "default": "adaptive", "label": "限速模式", "description": "off = 不限速；fixed = 用 perSecond（旧行为）；adaptive = 默认全速，检出 WAF 才退避（推荐）" },
+        "rateLimit.perSecond": { "type": "number", "default": 0, "min": 0, "max": 100, "label": "每秒任务数", "description": "仅 mode=fixed 时生效。0 = 不限。旧的 0.17（≈1000/6000）实际把吞吐压到 6 秒/条" },
+        "rateLimit.waf.cooldownMs": { "type": "integer", "default": 60000, "min": 1000, "max": 3600000, "label": "WAF 冷却(ms)", "description": "adaptive 模式下检出 WAF 后的降速冷却时间" },
+        "rateLimit.waf.recoverEvery": { "type": "integer", "default": 20, "min": 1, "max": 1000, "label": "恢复试探间隔", "description": "每成功 N 次尝试提速一次" },
+        "rateLimit.waf.recoverFactor": { "type": "number", "default": 1.5, "min": 1, "max": 10, "label": "提速倍数" },
+        "rateLimit.waf.hardBrakeAfter": { "type": "integer", "default": 3, "min": 1, "max": 100, "label": "硬刹车阈值", "description": "连续 N 次 WAF → 暂停所有发送" },
+        "rateLimit.waf.pauseMinutes": { "type": "integer", "default": 15, "min": 1, "max": 1440, "label": "硬刹车时长(分钟)" },
+        "workerPool.enabled": { "type": "boolean", "default": false, "label": "启用线程池", "description": "worker_threads 真并行（实测 3 线程 2.97x）。硬约束：worker 只发送，记账归父进程" },
+        "workerPool.size": { "type": "integer", "default": 4, "min": 1, "max": 32, "label": "线程数" },
+        "workerPool.taskTimeoutMs": { "type": "integer", "default": 120000, "min": 1000, "max": 1800000, "label": "单任务超时(ms)", "description": "超时 → terminate 该线程并补一个" },
+        "queues.mode": { "type": "string", "enum": ["fixed", "perPlugin", "perPost"], "default": "fixed", "label": "队列划分方式", "description": "fixed = answer/social/summon 三条（旧行为）；perPlugin = 每个插件一条（互不阻塞）；perPost = 每帖一条（上限 maxQueues）" }
+      }
+    },
+
+    "taptapCli": {
+      "label": "官方 CLI 通道",
+      "description": "帖子全文与全部子回复只能靠官方 CLI 拿（旧接口 summary 硬截 200 字、child_posts 只返 2 条）",
+      "fields": {
+        "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "关闭则退回旧接口（会丢失全文与全子回复）" },
+        "binary": { "type": "string", "default": "taptap-cli", "label": "可执行名", "description": "npm i -g @taptap/cli 安装后的命令名" },
+        "developerId": { "type": "integer", "default": 1, "label": "developer_id", "description": "官方 CLI 要求必填整数；实测读接口不校验归属。等真实 dev_id 下来再换" },
+        "writeEnabled": { "type": "boolean", "default": false, "label": "用 CLI 发送", "description": "写接口需要「论坛主管理员」权限（普通版主 403，换 token 无效）。权限到位后再打开；现在写走页面内 fetch" },
+        "fallbackToOpencli": { "type": "boolean", "default": true, "label": "失败回退旧接口", "description": "true = CLI 挂了自动回退，绝不因为 CLI 不可用就不回复玩家。**建议永远保持 true**" },
+        "timeoutMs": { "type": "integer", "default": 30000, "min": 1000, "max": 600000, "label": "单次超时(ms)" }
+      }
+    },
+
+    "collect": {
+      "label": "采集",
+      "description": "怎么拉帖子与评论",
+      "fields": {
+        "sort": { "type": "string", "enum": ["created", "commented"], "default": "created", "label": "排序" },
+        "type": { "type": "string", "default": "feed", "label": "列表类型" },
+        "commentDelayMs": { "type": "integer", "default": 1500, "min": 0, "max": 60000, "label": "评论请求间隔(ms)" },
+        "commentPageSize": { "type": "integer", "default": 30, "min": 1, "max": 100, "label": "评论每页条数", "description": "旧接口的页大小。以前写死 30" },
+        "commentMaxPages": { "type": "integer", "default": 8, "min": 1, "max": 50, "label": "评论最大页数", "description": "防失控上限" },
+        "childPageSize": { "type": "integer", "default": 50, "min": 1, "max": 100, "label": "子回复每页条数", "description": "官方 CLI 的 child-replies 页大小" }
+      }
+    },
+
+    "match": {
+      "label": "匹配阈值",
+      "fields": {
+        "autoReplyScore": { "type": "number", "default": 0.65, "min": 0, "max": 1, "label": "自动回复阈值", "description": "相似度达到这个分才自动回" },
+        "suggestScore": { "type": "number", "default": 0.45, "min": 0, "max": 1, "label": "建议阈值", "description": "低于自动阈值但高于这个 → 出草稿给人工" },
+        "maxAutoReplyPerRun": { "type": "integer", "default": 8, "min": 1, "max": 100, "label": "单轮自动回复上限", "description": "只对「手动 collect」生效；守望队列模式每轮只处理 1 条" },
+        "minPostAgeMinutes": { "type": "integer", "default": 10, "min": 0, "max": 1440, "label": "最小帖子年龄(分钟)", "description": "太新的帖子先不抢答，给其他玩家机会" }
+      }
+    },
+
+    "image": {
+      "label": "图片识别",
+      "fields": {
+        "enabled": { "type": "boolean", "default": true, "label": "启用" },
+        "skipIntents": { "type": "array", "default": ["friendCode", "tiangongCode"], "label": "跳过意图", "description": "求码/好友码帖不识别图片" },
+        "bareCodeIsIntent": { "type": "boolean", "default": true, "label": "裸码也算求码" },
+        "ocr.enabled": { "type": "boolean", "default": true, "label": "OCR 启用", "description": "需要 python scripts/ocr_server.py（端口 8790）" },
+        "vision.enabled": { "type": "boolean", "default": true, "label": "VLM 启用" },
+        "features.enabled": { "type": "boolean", "default": true, "label": "模板匹配启用" }
+      }
+    },
+
+    "praise": { "label": "夸奖通道", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "提问帖里已有好答案 → 在那条评论下盖楼夸一句" },
+      "signature": { "type": "boolean", "default": true, "label": "带签名" },
+      "minScore": { "type": "integer", "default": 1, "min": 1, "max": 10, "label": "最低有效分" },
+      "maxPerRun": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "单轮上限" }
+    }},
+    "share": { "label": "分享互动", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "分享/记录/进度帖 → 去说一句鼓励，不答疑不评价数值" },
+      "signature": { "type": "boolean", "default": true, "label": "带签名" },
+      "maxPerRun": { "type": "integer", "default": 2, "min": 1, "max": 50, "label": "单轮上限" }
+    }},
+    "comfort": { "label": "情绪陪伴", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "纯情绪帖（绝了/可惜/憋屈）→ 陪一句共情，一帖一次" },
+      "signature": { "type": "boolean", "default": true, "label": "带签名" },
+      "maxPerRun": { "type": "integer", "default": 2, "min": 1, "max": 50, "label": "单轮上限" }
+    }},
+    "interact": { "label": "互动续聊", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "玩家回应了我们 → 接一句" },
+      "maxPerPost": { "type": "integer", "default": 1, "min": 1, "max": 20, "label": "单帖上限" },
+      "maxPerRun": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "单轮上限" },
+      "samePlayerLimit": { "type": "integer", "default": 1, "min": 1, "max": 20, "label": "同玩家免降级次数" },
+      "probabilityAfterLimit": { "type": "number", "default": 0.5, "min": 0, "max": 1, "label": "超限后回复概率" },
+      "strongTextLen": { "type": "integer", "default": 40, "min": 1, "max": 500, "label": "长文本必回阈值", "description": "正文长度达到这个值 → 不受概率限制，必回" }
+    }},
+    "summon": { "label": "喊话通道", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "玩家 @ 我们/喊别名 → 应一声" },
+      "aliases": { "type": "array", "default": ["大肥鱼", "胖鱼", "吃白米饭的"], "label": "其它别名" },
+      "matchRoles": { "type": "boolean", "default": true, "label": "匹配版主语气" },
+      "signature": { "type": "boolean", "default": true, "label": "带签名" },
+      "answerFromQa": { "type": "boolean", "default": true, "label": "允许用答疑库作答" },
+      "qaScore": { "type": "number", "default": 0.6, "min": 0, "max": 1, "label": "喊话场景匹配阈值" },
+      "maxPerRun": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "单轮上限" },
+      "maxPerPost": { "type": "integer", "default": 1, "min": 1, "max": 20, "label": "单帖上限" }
+    }},
+    "codeMatch": { "label": "天宫码撮合", "fields": {
+      "enabled": { "type": "boolean", "default": false, "label": "启用", "description": "有人贴码 → 把帖链接发给求码的人（只转达，不担保码有效）。⚠️ 键名是 codeMatch（大写 M），与 config.json 一致，勿改成小写" },
+      "shareWindowMinutes": { "type": "integer", "default": 5, "min": 1, "max": 1440, "label": "发码窗口(分钟)" },
+      "askWindowMinutes": { "type": "integer", "default": 120, "min": 1, "max": 2880, "label": "求码窗口(分钟)" },
+      "maxAskersPerShare": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "每帖最多通知几人" },
+      "maxSharesPerAsker": { "type": "integer", "default": 1, "min": 1, "max": 20, "label": "每个求码者最多被通知几次" },
+      "templates.enabled": { "type": "boolean", "default": true, "label": "启用文案模板池" },
+      "templates.minTemplates": { "type": "integer", "default": 4, "min": 1, "max": 50, "label": "低于此数量就补" },
+      "templates.targetTemplates": { "type": "integer", "default": 8, "min": 1, "max": 100, "label": "补到多少条" },
+      "templates.maxAgeHours": { "type": "integer", "default": 24, "min": 1, "max": 720, "label": "模板最长寿命(小时)" }
+    }},
+    "comment": { "label": "评论分析", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "用规则识别「反对/纠错」与「补充」→ 写 data/comment-analysis.jsonl。**只分析不发送**" }
+    }},
+    "weekly": { "label": "周报", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "每周生成运营周报，数据全部来自本地 trace/usage，不调外部接口" },
+      "everyDays": { "type": "integer", "default": 7, "min": 1, "max": 90, "label": "间隔天数" },
+      "days": { "type": "integer", "default": 7, "min": 1, "max": 90, "label": "统计窗口天数" }
+    }},
+    "ingest": { "label": "增量摄入", "fields": {
+      "enabled": { "type": "boolean", "default": false, "label": "启用", "description": "默认关闭（避免自动摄入噪声）。填了官方 url 或开启 weekly 源后才建议打开" },
+      "sources.official.enabled": { "type": "boolean", "default": false, "label": "官方公告源" },
+      "sources.official.urls": { "type": "array", "default": [], "label": "官方公告 URL 列表" },
+      "sources.weekly.enabled": { "type": "boolean", "default": false, "label": "周报 md 源" }
+    }},
+    "review": { "label": "评价分析", "fields": {
+      "enabled": { "type": "boolean", "default": false, "label": "启用", "description": "**只读分析，绝不自动回复评价**（评价处置归人工）" },
+      "autoAnalyze": { "type": "boolean", "default": false, "label": "自动分析" },
+      "lowScoreMax": { "type": "integer", "default": 2, "min": 1, "max": 5, "label": "低分阈值" }
+    }},
+    "modTasks": { "label": "管理任务", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "常驻 mod-watch：好友码帖识别与回复。**删除动作永不自动执行**" },
+      "intervalSeconds": { "type": "integer", "default": 120, "min": 30, "max": 3600, "label": "轮询间隔(秒)" },
+      "session": { "type": "string", "default": "tapmod", "label": "opencli 会话名" }
+    }},
+    "archive": { "label": "归档", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "每天整理一次：答疑库冷数据 + 帖子冷热分离" },
+      "staleDays": { "type": "integer", "default": 30, "min": 1, "max": 365, "label": "冷数据天数" },
+      "keepStatePosts": { "type": "integer", "default": 300, "min": 50, "max": 5000, "label": "state 保留帖子数" },
+      "olderThanDays": { "type": "integer", "default": 30, "min": 1, "max": 365, "label": "帖子冷归档天数" }
+    }},
+    "qaHealth": { "label": "答疑库体检", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用" },
+      "everyHours": { "type": "integer", "default": 24, "min": 1, "max": 720, "label": "间隔小时" },
+      "autoPurge": { "type": "boolean", "default": true, "label": "自动剔除", "description": "正文里带我们签名（不该出现在库里）→ 移到归档。只移动不删除" }
+    }},
+    "qaGovern": { "label": "答疑库自治治理", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用" },
+      "auto": { "type": "boolean", "default": true, "label": "自动执行", "description": "true = 直接改库并可回滚；false = 只出报告" },
+      "dedupThreshold": { "type": "number", "default": 0.94, "min": 0.5, "max": 1, "label": "去重阈值", "description": "包含度达到这个值判为重复" },
+      "neverCitedDays": { "type": "integer", "default": 45, "min": 1, "max": 365, "label": "零引用归档天数" }
+    }},
+    "retrieve": { "label": "检索", "fields": {
+      "topK": { "type": "integer", "default": 8, "min": 1, "max": 50, "label": "召回条数" },
+      "minScore": { "type": "number", "default": 0.2, "min": 0, "max": 1, "label": "最低分" },
+      "rerank": { "type": "boolean", "default": true, "label": "启用重排" },
+      "denseBackend": { "type": "string", "enum": ["bge", "char"], "default": "bge", "label": "向量后端", "description": "bge = Ollama bge-m3（更准，需 ollama serve）；char = 字符 n-gram（零依赖兜底）" },
+      "embedModel": { "type": "string", "default": "bge-m3", "label": "embedding 模型" },
+      "embedEndpoint": { "type": "string", "default": "http://127.0.0.1:11434", "label": "embedding 服务地址" },
+      "maxMaterialChars": { "type": "integer", "default": 1000, "min": 100, "max": 10000, "label": "资料块预算(字符)" }
+    }},
+    "rerank": { "label": "重排模型", "fields": {
+      "backend": { "type": "string", "enum": ["onnx", "llm", "off"], "default": "onnx", "label": "后端" },
+      "server": { "type": "string", "default": "http://127.0.0.1:8790", "label": "服务地址", "description": "由 scripts/ocr_server.py 提供 /rerank" },
+      "modelDir": { "type": "string", "default": "E:\\Ollama\\models\\bge-reranker-v2-m3", "label": "模型目录", "description": "需手动放置，agent 不会自动下载" },
+      "timeoutMs": { "type": "integer", "default": 20000, "min": 1000, "max": 300000, "label": "超时(ms)" }
+    }},
+    "llm": { "label": "大模型", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用" },
+      "reuseDsh": { "type": "boolean", "default": true, "label": "复用 DSH 模型配置", "description": "true = 跟随 GUI 里选的模型，不用自己填 key" },
+      "apiKey": { "type": "string", "default": "", "label": "API Key", "description": "reuseDsh=false 时才需要" },
+      "baseURL": { "type": "string", "default": "", "label": "Base URL" },
+      "model": { "type": "string", "default": "", "label": "模型名" },
+      "dailyCallCap": { "type": "integer", "default": 300, "min": 0, "max": 100000, "label": "每日调用上限", "description": "0 = 不限。超闸后快速失败转人工，不硬编" },
+      "usagePersist": { "type": "boolean", "default": true, "label": "调用计数落盘" },
+      "temperature": { "type": "number", "default": 0.85, "min": 0, "max": 2, "label": "温度" },
+      "maxTokens": { "type": "integer", "default": 600, "min": 50, "max": 8000, "label": "最大输出 token" }
+    }},
+    "trace": { "label": "结构化追踪", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "每帖 verdict/gen/sent 事件写 reports/trace-<date>.jsonl" },
+      "keepDays": { "type": "integer", "default": 14, "min": 1, "max": 365, "label": "保留天数" }
+    }},
+    "evalWeekly": { "label": "周度评测", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "每周一次**规则模式**评测（零 LLM 成本）" },
+      "everyDays": { "type": "integer", "default": 7, "min": 1, "max": 90, "label": "间隔天数" }
+    }},
+    "evalCandidates": { "label": "弃答回收", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "C7 弃答的帖记 data/eval-candidates.jsonl，供后续补知识" }
+    }},
+    "llmHealth": { "label": "渠道健康", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用" },
+      "baseCooldownMs": { "type": "integer", "default": 120000, "min": 1000, "max": 3600000, "label": "基础冷却(ms)" },
+      "maxCooldownMs": { "type": "integer", "default": 1800000, "min": 1000, "max": 86400000, "label": "最大冷却(ms)" },
+      "smallTaskPreferOpenai": { "type": "boolean", "default": true, "label": "小任务优先 openai 风格渠道" }
+    }},
+    "sceneFeedback": { "label": "场景负反馈", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "玩家反感某类行为时，跨帖收敛这一类" },
+      "cooldownMinutes": { "type": "integer", "default": 60, "min": 1, "max": 10080, "label": "冷却分钟" },
+      "downgradedProb": { "type": "number", "default": 0.25, "min": 0, "max": 1, "label": "降权后概率" },
+      "halfLifeHours": { "type": "integer", "default": 24, "min": 1, "max": 720, "label": "半衰期(小时)" },
+      "skipMinutes": { "type": "integer", "default": 60, "min": 1, "max": 10080, "label": "跳过分钟" }
+    }},
+    "spamStop": { "label": "刷屏自审", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "自查我们在这帖回了几条、几条同样含义 → 认错 + 停掉凑热闹类" },
+      "dupSim": { "type": "number", "default": 0.3, "min": 0, "max": 1, "label": "同样含义阈值" },
+      "minDup": { "type": "integer", "default": 2, "min": 1, "max": 20, "label": "最少重复条数" },
+      "proactiveMax": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "预防性上限" },
+      "globalMinutes": { "type": "integer", "default": 30, "min": 1, "max": 10080, "label": "全局冷静分钟" }
+    }},
+    "verify": { "label": "验证", "fields": {
+      "cacheTtlHours": { "type": "integer", "default": 24, "min": 1, "max": 720, "label": "判定缓存 TTL(小时)" },
+      "postCheck": { "type": "boolean", "default": true, "label": "生成后忠实度自检" }
+    }},
+    "websearch": { "label": "联网补答", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "答疑库没命中时联网搜一次，按 50% 置信度作答。依赖 baidu-websearch skill" },
+      "timeoutMs": { "type": "integer", "default": 60000, "min": 1000, "max": 300000, "label": "超时(ms)" }
+    }},
+    "watch": { "label": "守护循环", "fields": {
+      "intervalSeconds": { "type": "integer", "default": 120, "min": 30, "max": 3600, "label": "轮询间隔(秒)" },
+      "minOpGapMs": { "type": "integer", "default": 300, "min": 0, "max": 60000, "label": "操作最小间隔(ms)" },
+      "wafCooldownMinutes": { "type": "integer", "default": 15, "min": 1, "max": 1440, "label": "WAF 冷却分钟" }
+    }},
+    "paths": { "label": "文件路径（内部）", "description": "⚠️ 内部字段，一般不用改。`{{SKILL}}` 会展开成 skill 根目录，所以 skill 换位置也不用改这里", "fields": {
+      "dataDir": { "type": "string", "default": "{{SKILL}}/data", "label": "数据目录" },
+      "qaFile": { "type": "string", "default": "{{SKILL}}/qa/答疑库.md", "label": "答疑库文件" },
+      "usageFile": { "type": "string", "default": "{{SKILL}}/data/qa-usage.json", "label": "引用统计" },
+      "archiveDir": { "type": "string", "default": "{{SKILL}}/qa/归档", "label": "归档目录" },
+      "stateFile": { "type": "string", "default": "{{SKILL}}/data/state.json", "label": "守护状态" },
+      "modStateFile": { "type": "string", "default": "{{SKILL}}/data/mod-state.json", "label": "管理任务状态" },
+      "reportsDir": { "type": "string", "default": "{{SKILL}}/reports", "label": "报告目录" },
+      "qaIndexFile": { "type": "string", "default": "{{SKILL}}/data/qa-index.sqlite", "label": "答疑库索引" },
+      "postDbFile": { "type": "string", "default": "{{SKILL}}/data/post-records.sqlite", "label": "帖子记录库" }
+    }},
+    "qa": { "label": "答疑库检索", "description": "答疑库相似度检索的向量设置", "fields": {
+      "vector.backend": { "type": "string", "enum": ["char", "http"], "default": "char", "label": "向量后端", "description": "char = 字符 n-gram TF-IDF（零依赖）；http = 接本地 embeddings 服务，失败自动退回 char" },
+      "vector.endpoint": { "type": "string", "default": "", "label": "向量服务地址" },
+      "vector.model": { "type": "string", "default": "", "label": "向量模型名" }
+    }}
+  }
+}

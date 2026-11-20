@@ -43,8 +43,12 @@ export function charLen(s) {
  * @param {string} [o.signature]  签名（要保留/补在结尾，表情之前）
  */
 export function clampReply(text, { max = LIMITS.reply, signature = '' } = {}) {
-  const s = String(text ?? '');
+  let s = String(text ?? '');
   const sig = String(signature || '').trim();
+  // 防重复签名（2026-11-17）：调用方误追加致签名出现多次时收敛为一个（留结尾），杜绝「签名重复」
+  if (sig && s.split(sig).length - 1 > 1) {
+    s = s.split(sig).join('').replace(/\s+$/, '') + ' ' + sig;
+  }
   /** 结尾的表情标记（如果有）—— 签名要插在它**前面** */
   const tailOf = (str) => {
     const m = str.match(/(?:\s*\[(?:表情_[^\]]+|TapTap×[^\]_]+_[^\]]+)\])*\s*$/);

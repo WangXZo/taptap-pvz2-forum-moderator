@@ -60,12 +60,15 @@ export async function matchFeatures(images, { config = {}, log = () => {}, cache
   const server = (fc.server || config?.image?.ocr?.server || 'http://127.0.0.1:8790').replace(/\/$/, '');
   const timeoutMs = Number(fc.timeoutMs ?? 30000);
   const found = new Map();
+  const defById = new Map(defs.map((d) => [d.id, d]));
+  let celebrate = false;
   for (const im of images || []) {
     if (!im?.url) continue;
     const key = 'feat:' + createHash('sha1').update(im.url + templates.map((t) => t.id).join(',')).digest('hex');
     const cached = cache?.get?.(key);
     if (cached) {
       (cached.names || []).forEach((n) => found.set(n, true));
+      if (cached.celebrate) celebrate = true;
       continue;
     }
     try {
@@ -78,14 +81,17 @@ export async function matchFeatures(images, { config = {}, log = () => {}, cache
       });
       if (!r.ok) throw new Error(`match HTTP ${r.status}`);
       const j = await r.json();
-      const names = (j.matches || []).map((m) => m.name).filter(Boolean);
-      cache?.set?.(key, { names });
+      const ms = j.matches || [];
+      const names = ms.map((m) => m.name).filter(Boolean);
+      const cel = ms.some((m) => defById.get(m.id)?.trigger === 'celebrate');
+      cache?.set?.(key, { names, celebrate: cel });
+      if (cel) celebrate = true;
       names.forEach((n) => found.set(n, true));
     } catch (e) {
       log(`  [特征] 跳过 ${String(im.url).slice(0, 40)}…：${e.message}`);
     }
   }
   const names = [...found.keys()];
-  if (!names.length) return { text: '', sources: [] };
-  return { text: `图中识别到：${names.join('、')}`, sources: ['template'] };
+  if (!names.length) return { text: '', sources: [], celebrate: false, features: [] };
+  return { text: `图中识别到：${names.join('、')}`, sources: ['template'], celebrate, features: names };
 }

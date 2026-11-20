@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """S3 本地 OCR 微服务（RapidOCR，2026-11-16）。
 
-依赖：pip install rapidocr onnxruntime pillow numpy
+依赖：pip install rapidocr onnxruntime pillow numpy；/rerank 另需 pip install tokenizers
 启动：python scripts/ocr_server.py [--port 8790] [--host 127.0.0.1]
 接口：
   GET  /health        → {"ok": true, "engine": "rapidocr"}
   POST /ocr           ← {"image": "<base64>"}  → {"text": "...", "boxes": [{"text","conf"}]}
+  POST /rerank        ← {"query", "candidates": [...], "modelDir"}  → {"scores": [...]}
+      C4 cross-encoder（bge-reranker-v2-m3 ONNX，2026-11-17 P2 轮）。modelDir 需含
+      model.onnx/model_quantized.onnx + tokenizer.json。lazy 加载，缺依赖只影响 /rerank。
 说明：仅监听本地回环；图片由 Node 侧下载后传 base64（CDN 无防盗链）。
 """
 import argparse
@@ -63,7 +66,7 @@ def match_templates(scene, templates):
             tgray = cv2.cvtColor(tarr, cv2.COLOR_RGB2GRAY)
             threshold = float(tpl.get("threshold", 0.85))
             best, best_loc, best_scale = 0.0, None, 1.0
-            for scale in (1.0, 0.9, 0.8, 1.1, 0.7, 1.2):
+            for scale in (0.6, 0.8, 1.0, 1.2, 1.5, 2.0, 2.5, 3.0):
                 tw, th = int(tgray.shape[1] * scale), int(tgray.shape[0] * scale)
                 if tw < 8 or th < 8 or tw > sw or th > sh:
                     continue
@@ -81,6 +84,47 @@ def match_templates(scene, templates):
         except Exception:
             continue
     return matches
+
+
+RERANK_SESSIONS = {}  # modelDir -> (session, tokenizer)，lazy 加载缓存
+
+
+def get_reranker(model_dir):
+    """C4：onnxruntime + tokenizers 加载 bge-reranker-v2-m3（cross-encoder）。"""
+    if model_dir in RERANK_SESSIONS:
+        return RERANK_SESSIONS[model_dir]
+    import os
+    import onnxruntime as ort
+    from tokenizers import Tokenizer
+    onnx_path = None
+    for name in ("model_quantized.onnx", "model_quant.onnx", "model.onnx"):
+        p = os.path.join(model_dir or "", name)
+        if os.path.exists(p):
+            onnx_path = p
+            break
+    if not onnx_path:
+        raise FileNotFoundError("model.onnx/model_quantized.onnx not found in %s" % model_dir)
+    tok = Tokenizer.from_file(os.path.join(model_dir, "tokenizer.json"))
+    tok.enable_truncation(max_length=512)
+    tok.enable_padding()  # batch 内动态 pad
+    sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
+    RERANK_SESSIONS[model_dir] = (sess, tok)
+    return sess, tok
+
+
+def rerank_scores(query, candidates, model_dir):
+    """query×每个候选 配对打分，logits 越高越相关。"""
+    import numpy as np
+    sess, tok = get_reranker(model_dir)
+    enc = tok.encode_batch([(query, c) for c in candidates])
+    input_ids = np.array([e.ids for e in enc], dtype=np.int64)
+    attention = np.array([e.attention_mask for e in enc], dtype=np.int64)
+    feeds = {"input_ids": input_ids, "attention_mask": attention}
+    names = [i.name for i in sess.get_inputs()]
+    if "token_type_ids" in names:
+        feeds["token_type_ids"] = np.zeros_like(input_ids)
+    out = sess.run(None, feeds)[0]
+    return [float(x) for x in out.reshape(-1)]
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -103,6 +147,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.rstrip("/")
+        if path == "/rerank":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                scores = rerank_scores(
+                    payload.get("query", ""), payload.get("candidates", []), payload.get("modelDir", "")
+                )
+                self._send(200, {"ok": True, "scores": scores})
+            except Exception as e:
+                self._send(500, {"ok": False, "error": str(e)})
+            return
         if path not in ("/ocr", "/match"):
             self._send(404, {"ok": False, "error": "not found"})
             return

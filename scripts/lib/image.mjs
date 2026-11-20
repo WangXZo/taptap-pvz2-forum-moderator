@@ -62,9 +62,11 @@ export function imageRelevance({ title = '', text = '', images = [] } = {}, conf
 export async function defaultRecognize(images, { config = {}, log = () => {}, cache = null } = {}) {
   const parts = [];
   const sources = [];
+  let celebrate = false;
+  const entities = []; // C8：模板命中的实体名（→ facts 直连路由）
   const ic = config?.image || {};
 
-  // S6 模板匹配（本地特征库，优先免费快）
+  // S6 模板匹配（本地特征库，优先免费快）；trigger=celebrate 的特征（如瓷砖萝卜）→ 标记庆祝
   if (ic.features?.enabled) {
     try {
       const { matchFeatures } = await import('./features.mjs');
@@ -73,6 +75,8 @@ export async function defaultRecognize(images, { config = {}, log = () => {}, ca
         parts.push(r.text);
         sources.push('template');
       }
+      if (r?.celebrate) celebrate = true;
+      if (Array.isArray(r?.features)) entities.push(...r.features);
     } catch (e) {
       log(`  [图片] 模板匹配跳过：${e.message}`);
     }
@@ -106,7 +110,7 @@ export async function defaultRecognize(images, { config = {}, log = () => {}, ca
     }
   }
 
-  return { text: parts.join('\n').trim(), sources };
+  return { text: parts.join('\n').trim(), sources, celebrate, entities: [...new Set(entities)] };
 }
 
 /**
@@ -118,7 +122,7 @@ export async function defaultRecognize(images, { config = {}, log = () => {}, ca
  */
 export async function enrichPostImages(item, { config = {}, log = () => {}, title = '', text = '', recognize = null, cache = null } = {}) {
   const images = extractImages(item);
-  const base = { images, imageText: '', relevance: 'none', skipped: '', sources: [] };
+  const base = { images, imageText: '', relevance: 'none', skipped: '', sources: [], celebrate: false, entities: [] };
   if (config?.image?.enabled === false) return { ...base, text, skipped: 'disabled' };
   if (!images.length) return { ...base, text, skipped: 'no-image' };
 
@@ -142,9 +146,10 @@ export async function enrichPostImages(item, { config = {}, log = () => {}, titl
   }
   const imageText = String(result?.text || '').trim();
   const sources = result?.sources || [];
-  if (!imageText) return { ...base, text, relevance, skipped: 'empty-recognition', sources };
+  const entities = Array.isArray(result?.entities) ? result.entities : [];
+  if (!imageText) return { ...base, text, relevance, skipped: 'empty-recognition', sources, entities };
 
   // 规则3：回灌（识别内容并入帖子文本，下游 QA/搜索/组答自动受益）
   const merged = `${text || ''}\n[图片内容] ${imageText}`.trim();
-  return { text: merged, imageText, images, relevance: 'relevant', skipped: '', sources };
+  return { text: merged, imageText, images, relevance: 'relevant', skipped: '', sources, celebrate: Boolean(result?.celebrate), entities };
 }
