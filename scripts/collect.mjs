@@ -42,7 +42,7 @@ import {
   SCENE_LABEL,
 } from './lib/scene-feedback.mjs';
 import { openDb } from './lib/db.mjs';
-import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
+import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent, ourSentCommentIds } from './lib/post-records.mjs';
 import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
 import { buildThreadTree } from './lib/thread-context.mjs';
 import { composeReply as composeLlmReply, condenseMaterial, stripLeadingMention, assertSingleMention } from './lib/compose-reply.mjs';
@@ -70,6 +70,7 @@ import { assertNoLeak } from './lib/variants.mjs';
 import { answerPromisesCode, looksLikeCodeAsk, looksLikeCodeShare } from './lib/code-guard.mjs';
 import { websearch, resetSearchRound } from './lib/websearch.mjs';
 import { liteHash } from './lib/util.mjs';
+import { createSendLayer } from './lib/send-layer.mjs';
 import { loadUsage, saveUsage, recordCitation, statOf, shouldArchive, entryKeyOf } from './lib/usage.mjs';
 import { archiveStale } from './lib/archive.mjs';
 import { shouldHealthCheck, purgeTagged, tagsFromConfig } from './lib/qa-health.mjs';
@@ -295,6 +296,10 @@ export async function runOnce({
   const qa = await loadQaLibrary(config.paths.qaFile);
   const usage = await loadUsage(config.paths.usageFile);
   const state = await loadState(config.paths.stateFile);
+  // T32（2026-11-20）：**统一发送层** —— 答疑与婉拒都走它。
+  //   记账（幂等事件 / state 标记 / recentReplies / 引用统计 / trace）一处收口，
+  //   避免 core 自己写一套、其他通道写另一套（历史上漏过幂等门 → 同帖被回多次）。
+  const layer = createSendLayer();
   // 图片识别结果缓存（S5）：按图 url hash，避免重复 OCR/VLM 省钱
   const imageCache = loadImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
     ttlHours: Number(config.image?.vision?.cacheTtlHours ?? 168),
@@ -377,16 +382,6 @@ export async function runOnce({
     log(`  [记录] SQLite 不可用（${e.message}）→ 只用 state.json 记账`);
   }
 
-  // ---------- 0x. 夸奖向量库：跨天/跨帖避免重复用同一句（用户 2026-11-02） ----------
-  let praiseDb = null;
-  let praiseHistoryTexts = [];
-  try {
-    praiseDb = openPraiseDb(config);
-    praiseHistoryTexts = recentPraiseTexts(praiseDb, 500);
-  } catch (e) {
-    praiseDb = null;
-    log(`  [夸库] 不可用（${e.message}）→ 只在内存里去重`);
-  }
 
   // ---------- 0. 答疑库备份（每轮一份，防误覆盖） ----------
   // 教训：曾用「构建源」的旧副本覆盖运行中的答疑库，一夜沉淀的 10 条全丢。
@@ -758,9 +753,14 @@ export async function runOnce({
           // 半衰期（衰减）：昨天的事今天只算一半 —— 「昨天的烂场子今天不该继续罚」
           const halfLifeMs = () => Number(config.sceneFeedback?.halfLifeHours ?? 24) * 3600 * 1000;
           // 我们自己发过的评论 id（用来判定「这条是回复我们的」）
-          const ourCommentIds = new Set(
-            flat.filter((x) => isOurComment(x.c, { config, teamIds: TEAM_IDS })).map((x) => String(x.c?.id_str || ''))
-          );
+          // T15（2026-11-20）：**数据库优先** —— 发送时已把我们的评论 id 落进
+          //   post_event.detail.sentCommentId，这里直接查库，跨轮次也在。
+          //   列表反查（按作者 id）只作兜底：我们的子回复常常不在列表里（旧接口
+          //   child_posts 只返前 2 条），靠列表会漏判「玩家在回我们」。
+          const ourCommentIds = new Set([
+            ...ourSentCommentIds(postDb, id),
+            ...flat.filter((x) => isOurComment(x.c, { config, teamIds: TEAM_IDS })).map((x) => String(x.c?.id_str || '')),
+          ].filter(Boolean));
           for (const { c, parentId } of flat) {
             if (isOurComment(c, { config, teamIds: TEAM_IDS })) continue; // 我们自己说的不算玩家反感
             const t = c.__text || commentText(c);
@@ -900,12 +900,10 @@ export async function runOnce({
           : [];
         // 互动续聊候选（用户 2026-11-05）：**@你 / 回复你 / 喊你** → 可以继续互动；
         // 纯客套（「哈哈谢谢」）自动排除。
-        const ourIds = new Set(ours.map((x) => String(x.c?.id_str || '')).filter(Boolean));
-        post.interactCandidates = interactOn
-          ? pickInteractions(flat, { config, ourCommentIds: ourIds, prev }).filter(
-              (x) => !repliedByEvent('interact_reply', x.commentId)
-            )
-          : [];
+        // T15：同样**数据库优先**（见上面 ourCommentIds 的说明）——
+        //   这是「玩家回信了但我们没接上」那个 bug 的根因所在。
+        // T33：互动候选改由**插件自己算**（plugins/interact.mjs 的 pickCandidates），
+        //   core 不再计算、不再持有 ourIds —— 那段计算已随旧块删除。
         await sleep(config.collect.commentDelayMs ?? 1500);
       } catch (e) {
         post.commentError = e.message;
@@ -1090,69 +1088,6 @@ export async function runOnce({
       }
     }
 
-    // 2d. 社区已有人回答 → 挑出「最值得夸的那条回答」（夸奖走楼中楼，发送在第 3b 步）
-    let praisePlan = null;
-    if (
-      config.praise?.enabled !== false &&
-      !pluginOwns(config, 'praise') &&
-      finalReason === REASON.OTHERS_REPLIED &&
-      !codeAsking &&
-      comments &&
-      !prev?.praised &&
-      // 幂等门：这条帖已经夸过谁了？（state 被搬库后查不到，靠事件流水兜住）
-      !hasDoneEvent(postDb, id, 'praise_reply') &&
-      // 失败次数上限：楼中楼 UI 偶尔找不到目标/发送按钮（体检见 comment_not_found / no_send_button），
-      // 不能每轮都重试同一个失败目标 —— 白烧时间，还让日志一直红。
-      Number(prev?.praiseFailCount || 0) < Number(config.praise?.maxFailRetries ?? 3)
-    ) {
-      try {
-        const target = pickPraiseTarget(comments, {
-          myUserId: config.myUserId,
-          minScore: config.praise?.minScore ?? 1,
-        });
-        // 同一条回答只夸一次（praisedComments 记着已夸过的评论 ID）
-        const done = prev?.praisedComments || [];
-        const praiseAlready =
-          Boolean(
-            target &&
-              (done.includes(String(target.targetCommentId)) ||
-                hasDoneEvent(postDb, id, 'praise_reply', {
-                  key: 'commentId',
-                  value: target.targetCommentId,
-                }))
-          );
-        if (praiseAlready) {
-          log(`  [跳过] 《${post.title}》的这条回答 ${target.targetCommentId} 之前已夸过`);
-        } else if (target) {
-          // 夸奖也走 LLM（2026-11-04 起不用模板）：按三层上下文夸到具体点上
-          const gen = await composeLlmReply({
-            config,
-            kind: 'praise',
-            tree: threadTree,
-            targetId: String(target.targetCommentId),
-            // 最近夸过的话 → 让模型避开同样的说法（用户 2026-11-02：「不建议多次直接使用」）
-            avoidTexts: praiseHistoryTexts,
-            log,
-          });
-          if (!gen.ok) {
-            log(`  [跳过] 夸奖生成失败（${gen.reason}）→ 不夸，不退回模板`);
-          } else {
-            praisePlan = {
-              commentId: target.targetCommentId,
-              author: target.author,
-              authorId: target.authorId,
-              answerExcerpt: target.text.slice(0, 40),
-              commentText: target.text,
-              point: '',
-              emoji: gen.emoji,
-              text: gen.text,
-            };
-          }
-        }
-      } catch (e) {
-        post.note = `夸奖准备失败: ${e.message}`;
-      }
-    }
 
     // 2e. 新帖冷却
     const ageMin = publishTime ? (now - publishTime) / 60 : 1e9;
@@ -1387,74 +1322,6 @@ export async function runOnce({
     //   纯客套（「哈哈谢谢」）已在 pickInteractions 里排除；
     //   同帖 × 同玩家回过 3 次后降到 50% 概率（情绪强烈 / 直接点名 → 例外必回）。
     let interactPlans = [];
-    if (interactOn && post.interactCandidates?.length && !codeAsking && !pluginOwns(config, 'interact')) {
-      const maxPerPost = Number(config.interact?.maxPerPost ?? 1);
-      for (const cand of post.interactCandidates) {
-        if (interactPlans.length >= maxPerPost) {
-          log(
-            `  [互动] 《${String(post.title).slice(0, 18)}》本帖互动已达上限 ${maxPerPost} → 其余留到下一轮`
-          );
-          break;
-        }
-        const counts = prev?.interactCounts || {};
-        const followUps = countFollowUps(post.interactCandidates, cand);
-        const d = decideInteraction(cand, { counts, config, followUps });
-        if (!d.reply) {
-          log(`  [互动] ${cand.author || '玩家'}「${String(cand.text).slice(0, 18)}」→ 不回（${d.reason}）`);
-          continue;
-        }
-        try {
-          const target = replyTargetFor(cand);
-          // 🚨 玩家在**回我们**的时候骂我们刷屏（「疯了是吧」「魔了」「别再刷了」）
-          //   → 这不是「接话」场景，是「认错」场景：走认错口径，别接着凑热闹。
-          const candCallOut = detectCallOut(String(cand.text || ''));
-          const apologize = candCallOut.mode === 'callout';
-          // 同一条评论如果同时是「喊话候选」→ 归 2f 认错通道处理，这里不再回第二遍
-          if (apologize && (post.summonCandidates || []).some((x) => String(x.commentId) === String(cand.commentId))) {
-            log(
-              `  [互动] ${cand.author || '玩家'}「${String(cand.text).slice(0, 18)}」→ 是投诉，交给认错通道，不重复回`
-            );
-            continue;
-          }
-          const gen = await composeLlmReply({
-            config,
-            kind: apologize ? 'summon' : 'interact',
-            tree: threadTree,
-            targetId: String(cand.commentId),
-            hint: apologize
-              ? '对方是在**指出我们刷屏/乱回**（他在回我们的话）。' +
-                (auditBrief(post.ourAudit) ? `${auditBrief(post.ourAudit)}\n` : '') +
-                '处理方式：① 认真看整栋楼上下文，数清我们在这个帖回了几条；' +
-                '② 是我们的问题就直接认（重复回/回太多/答非所问都算），说清哪条不对，别狡辩、别甩锅；' +
-                '③ 认完就收手 —— 不许再补第二条、不许再凑热闹；' +
-                '④ 不许替官方表态、不许承诺处理结果。'
-              : target.mention
-                ? `对方是「${target.mention}」。你是在**同层楼中楼**里回他 —— **直接接话，正文里不要写 @ 和对方名字**（系统会自动带上一次），也别在开头重复称呼。`
-                : `你是在「${target.label}」里回他，称呼用「${cand.author || '对方'}」。`,
-            log,
-          });
-          if (!gen.ok) {
-            interactPlans.push({ ...cand, text: null, blocked: `生成失败: ${gen.reason}`, decision: d, target });
-            continue;
-          }
-          const kindChk = assertKind(gen.body || gen.text);
-          const safe = assertNoLeak(gen.body || gen.text);
-          const blocked = !kindChk.ok ? kindChk.hit : !safe.ok ? `泄露自检命中「${safe.hit}」` : null;
-          if (blocked) log(`  [拦截] 《${post.title}》的互动回复被护栏拦下（${blocked}）→ 不发`);
-          // @ 只拼一次（2026-11-20 修「同一回复重复 @」）：
-          //   提示词已禁止模型写 @，这里再加一道断言，万一模型仍写了就剥掉重拼。
-          let text = target.mention ? `@${target.mention} ${gen.text}` : gen.text;
-          const atChk = assertSingleMention(text, target.mention);
-          if (!atChk.ok) {
-            text = `@${target.mention} ${stripLeadingMention(gen.text)}`;
-            log(`    [修正] 《${String(post.title || '').slice(0, 18)}》${atChk.hit} → 收敛为 1 个`);
-          }
-          interactPlans.push({ ...cand, text, blocked, decision: d, target });
-        } catch (e) {
-          interactPlans.push({ ...cand, text: null, blocked: `生成失败: ${e.message}`, decision: d });
-        }
-      }
-    }
 
     const rec = {
       ...post,
@@ -1469,7 +1336,8 @@ export async function runOnce({
       replyDraft: leak ? null : draft,
       replyVariant: composed ? { opener: composed.opener, closer: composed.closer } : null,
       learnedNow,
-      praise: praisePlan,
+      // T33：praise 规划已移到插件（plugins/praise.mjs），core 不再产出该字段
+      praise: null,
       // B4：插件规划所需的逐帖上下文（仅本轮内存，不进 state/报表）
       //   praise 要挑「夸哪条评论」、share/interact 要看评论与历史，planBatch 只拿 results，
       //   所以在这里把上下文带上（下划线前缀标明内部字段）。
@@ -1619,6 +1487,7 @@ export async function runOnce({
         opencliMain: config.reply.opencliMain,
         session: config.reply.session,
       });
+      // T32：统一发送层在 runOnce 顶部已创建（答疑与婉拒共用）
       const d = doctorOk(runner);
       if (!d.ok) {
         log(`  [FAIL] opencli 不可用：${d.text.split('\n')[0]}`);
@@ -1641,42 +1510,37 @@ export async function runOnce({
             log('    [跳过] 草稿为空 → 不发送（转人工），不能发一条只有签名的空回复');
             continue;
           }
-          const r = await replyOne({
-            runner,
-            url: p.url,
-            text: p.replyDraft,
-            config,
-            dryRun: false,
-            log,
-          });
+          // T32（2026-11-20）：答疑改走**统一发送层**（send-layer）。
+          //   为什么要改：core 原来自己调 replyOne 再自己记账，
+          //     但**没写幂等事件**（markDoneEvent）→ 幂等门查不到 → 同一条可能重复回；
+          //     而且 trace / recentReplies / 引用统计 与其他通道各写一套，容易漏。
+          //   现在统一由 send-layer.bookkeep 记账：幂等事件 + state 标记 + recentReplies
+          //     + 引用统计 + trace(sent) 一处收口。
+          const r = await layer.send(
+            {
+              kind: 'answer',
+              postId: String(p.id),
+              url: p.url,
+              title: p.title,
+              text: p.replyDraft,
+              // 幂等事件：答疑也必须有（这是 T32 的核心收益）
+              done: { kind: 'replied', key: 'postId', value: String(p.id) },
+              stateFlags: {
+                status: STATUS.REPLIED,
+                replied: true,
+                repliedAt: new Date().toISOString(),
+              },
+              meta: { qaId: p.matchedQa || null },
+            },
+            { config, state, db: postDb, usage, runner, log, dryRun: false }
+          );
           if (r.ok) {
             p.status = STATUS.REPLIED;
             p.reason = REASON.ALREADY_REPLIED;
             sent++;
             const em = r.detail?.emojis?.length ? ` + 表情(${r.detail.emojis.join(',')})` : '';
             log(`    [OK] 已发送${em}`);
-            trace({ config, event: 'sent', postId: p.id, title: p.title, sent: true, kind: 'answer', entryId: p.matchedQa || null });
-            state.posts[p.id].status = STATUS.REPLIED;
-            state.posts[p.id].replied = true;
-            state.posts[p.id].repliedAt = new Date().toISOString();
-            // 记下这条原文 → 以后再回同一份答案时换个说法，不重样
-            const h = liteHash(p.replyDraft);
-            state.recentReplies = state.recentReplies || {};
-            state.recentReplies[h] = {
-              text: p.replyDraft,
-              at: new Date().toISOString(),
-              count: (state.recentReplies[h]?.count || 0) + 1,
-              postId: p.id,
-            };
-            // 只保留最近 200 条
-            const entries = Object.entries(state.recentReplies).sort(
-              (a, b) => String(b[1].at).localeCompare(String(a[1].at))
-            );
-            state.recentReplies = Object.fromEntries(entries.slice(0, 200));
-            if (p.matchedQa) {
-              recordCitation(usage, p.matchedQa);
-              await saveUsage(config.paths.usageFile, usage);
-            }
+            // state 标记 / recentReplies / 引用统计 / trace → 都由 send-layer.bookkeep 做了
           } else {
             p.status = STATUS.MANUAL;
             p.reason = r.stage === 'no_input' ? REASON.NO_INPUT : REASON.SEND_FAILED;
@@ -1797,23 +1661,27 @@ export async function runOnce({
           }
           const text = gen.text;
           log(`\n  -- 婉拒：${u.title}`);
-          const r = await replyOne({
-            runner: rrunner,
-            url: u.url,
-            text,
-            config,
-            dryRun: false,
-            log,
-          });
+          // T32：婉拒也走统一发送层（和答疑同一套记账）
+          const r = await layer.send(
+            {
+              kind: 'refuse',
+              postId: String(u.id),
+              url: u.url,
+              title: u.title,
+              text,
+              done: { kind: 'refused', key: 'postId', value: String(u.id) },
+              stateFlags: {
+                status: STATUS.REPLIED,
+                replied: true,
+                repliedAt: new Date().toISOString(),
+              },
+              meta: {},
+            },
+            { config, state, db: postDb, usage, runner: rrunner, log, dryRun: false }
+          );
           if (r.ok) {
             u.status = STATUS.REPLIED;
             u.reason = REASON.ALREADY_REPLIED;
-            state.posts[u.id].status = STATUS.REPLIED;
-            state.posts[u.id].replied = true;
-            state.posts[u.id].repliedAt = new Date().toISOString();
-            const h = liteHash(text);
-            state.recentReplies = state.recentReplies || {};
-            state.recentReplies[h] = { text, at: new Date().toISOString(), count: 1, postId: u.id };
             log('    [OK] 已婉拒');
           } else {
             log(`    [FAIL] 婉拒失败（${r.stage}）`);
@@ -1839,6 +1707,26 @@ export async function runOnce({
       bands: resolveBands(sfCfg),
       halfLifeMs: Number(sfCfg.halfLifeHours ?? 24) * 3600 * 1000,
     });
+  // 📉 场景闸的应用包装（T33：原来定义在被删的 share 块里，现在只有 code_praise 用 → 提到函数体级）
+  //   冷却 → 该场景本轮一条不回；降权 → 每轮只回 1 条 + 概率 25%
+  const applySceneGate = (list, scene) => {
+    const g = sceneGateOf(scene);
+    if (!g.ok) {
+      log(`  [场景] ${g.reason} → 本轮不回这一类（跨帖生效，答疑/致歉/有内容的互动照常）`);
+      return [];
+    }
+    if (g.level === 'downgraded') {
+      const one = list.slice(0, 1); // 每轮只回 1 条
+      const keep = rollDowngraded({ prob: Number(sfCfg.downgradedProb ?? 0.25) }) ? one : [];
+      log(
+        `  [场景] ${g.reason} → 本轮${keep.length ? '只回 1 条' : '也不回'}（概率 ${Math.round(
+          Number(sfCfg.downgradedProb ?? 0.25) * 100
+        )}%，跨帖生效）`
+      );
+      return keep;
+    }
+    return list;
+  };
 
   // ---------- 3c-9. 插件批量规划 + 执行（B4，2026-11-19）----------
   // ⚠️ 必须放在**所有通道块之前**（3/3b/3c/3d/3d-2/3f）：插件接管时旧块让位，
@@ -1881,14 +1769,12 @@ export async function runOnce({
     }
   }
 
-  // ---------- 3d. 分享帖轻互动 ----------
-  // 分享/记录/进度类帖子不是提问，套答疑内容会答非所问；
-  // 但用户明确说了「分享的也可以进去说说话」→ 去说一句通用鼓励 + 1 个表情。
-  // 硬约束：只说话不输出信息，不评价具体数值，不引用答疑库内容。
-  if (doReply && config.share?.enabled !== false && !pluginOwns(config, 'share')) {
-    // 🎁 有人贴出天宫码（JFA…）= 无私分享 → 优先去**夸行为**（用户 2026-11-02）
-    // 贴码 ≠ 分享：帖子里同时在「求码」的话，是在**要**码，不是在**给**码
-    //   （事故：《蹲一个天宫码》被判成「无私分享」→ 我们把求码的人当成分享者夸了）
+
+
+    // 🎁 天宫码贴码者 → 夸「无私分享」这个行为（用户 2026-11-02）
+    //    ⚠️ T33 修复：这条通道**不在插件里**（插件只有 codematch 撮合），必须留在 core。
+    //    贴码 ≠ 分享：帖子里同时在「求码」的话，是在**要**码，不是在**给**码
+    //      （事故：《蹲一个天宫码》被判成「无私分享」→ 我们把求码的人当成分享者夸了）
     const isCodeShare = (r) =>
       looksLikeCodeShare(`${r.title || ''}\n${r.text || ''}`) &&
       !looksLikeCodeAsk(`${r.title || ''}\n${r.text || ''}`);
@@ -1897,7 +1783,6 @@ export async function runOnce({
     //    只看 state 会翻车 —— 记录被搬进 SQLite 后 `state.posts[id]` 就没了，
     //    这条帖会被每轮当成「还没互动过的分享帖」反复回（2026-11-10：一条帖 10 小时被回了 29 次）。
     const codeDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'code_praise');
-    const shareDone = (id) => Boolean(state.posts[id]?.shareCommented) || hasDoneEvent(postDb, id, 'share_reply');
     // 🚨 刹车闸（用户 2026-11-12）：这一帖被玩家投诉刷屏 → 凑热闹类发言停掉。
     //    只停「凑热闹」（夸/分享互动/情绪陪聊）；答疑回复、认错致歉、有内容的互动**照常**。
     const chatterOk = (r) => {
@@ -1906,44 +1791,11 @@ export async function runOnce({
       log(`  [刹车] 《${String(r.title || '').slice(0, 20)}》${c.reason} → 本轮不凑热闹（答疑/致歉照常）`);
       return false;
     };
-    // 📉 场景闸（用户 2026-11-12）：玩家反感某类行为 → **跨帖**收敛这一类
-    //   冷却 → 该场景本轮一条不回；降权 → 每轮只回 1 条 + 概率 25%
-    //   （sceneGateOf / sfCfg 已提到 runOnce 函数体，3e 安慰块也要用 —— 别挪回块内）
-    const applySceneGate = (list, scene) => {
-      const g = sceneGateOf(scene);
-      if (!g.ok) {
-        log(`  [场景] ${g.reason} → 本轮不回这一类（跨帖生效，答疑/致歉/有内容的互动照常）`);
-        return [];
-      }
-      if (g.level === 'downgraded') {
-        const one = list.slice(0, 1); // 每轮只回 1 条
-        const keep = rollDowngraded({ prob: Number(sfCfg.downgradedProb ?? 0.25) }) ? one : [];
-        log(
-          `  [场景] ${g.reason} → 本轮${keep.length ? '只回 1 条' : '也不回'}（概率 ${Math.round(
-            Number(sfCfg.downgradedProb ?? 0.25) * 100
-          )}%，跨帖生效）`
-        );
-        return keep;
-      }
-      return list;
-    };
     const codeShares = applySceneGate(
       results
         .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r) && chatterOk(r))
         .slice(0, CODE_CAP),
       'praise_code'
-    );
-    const shares = applySceneGate(
-      results.filter(
-        (r) =>
-          r.status === STATUS.NO_NEED &&
-          r.reason === REASON.NOT_QUESTION &&
-          (looksLikeShare(r.title) || r.imageCelebrate) &&
-          !shareDone(r.id) &&
-          !isCodeShare(r) && // 发码帖走上面那条
-          chatterOk(r)
-      ),
-      'share_reply'
     );
     if (codeShares.length) {
       log(
@@ -1951,7 +1803,6 @@ export async function runOnce({
           dryRun ? '（dry-run，不发送）' : ''
         }`
       );
-      const usedT = Object.values(state.recentReplies || {}).map((x) => x.text);
       for (const s of codeShares) {
         // 发码夸奖也走 LLM：夸「愿意贴出来分享」这个行为，不评价码能不能用
         const gen = await composeLlmReply({
@@ -1981,226 +1832,30 @@ export async function runOnce({
           break;
         }
         log(`\n  -- 夸无私分享：${s.title}`);
-        const r = await replyOne({ runner: cRunner, url: s.url, text, config, dryRun: false, log });
-        if (r.ok) {
-          state.posts[s.id] = {
-            ...(state.posts[s.id] || {}),
-            shareCommented: true,
-            codePraiseAt: new Date().toISOString(),
-          };
-          // 持久幂等门：记录搬进 SQLite 后 state 里就查不到了，这条事件才是「已经夸过」的凭据
-          markDoneEvent(postDb, s.id, 'code_praise', {
-            text: String(text).slice(0, 80),
-            at: new Date().toISOString(),
-          });
-          state.recentReplies = state.recentReplies || {};
-          state.recentReplies[liteHash(text)] = {
+        // T32/T33：走统一发送层（幂等事件 / state 标记 / recentReplies / trace 一处收口）
+        const r = await layer.send(
+          {
+            kind: 'answer',
+            postId: String(s.id),
+            url: s.url,
+            title: s.title,
             text,
-            at: new Date().toISOString(),
-            count: 1,
-            postId: s.id,
-          };
-          await saveState(config.paths.stateFile, state);
+            done: { kind: 'code_praise', key: 'postId', value: String(s.id) },
+            stateFlags: {
+              shareCommented: true,
+              codePraiseAt: new Date().toISOString(),
+            },
+            meta: {},
+          },
+          { config, state, db: postDb, usage, runner: cRunner, log, dryRun: false }
+        );
+        if (r.ok) {
           log('    [OK] 已夸（无私分享）');
         } else {
           log(`    [FAIL] 失败（${r.stage}）`);
         }
       }
     }
-    if (shares.length) {
-      const cap = config.share?.maxPerRun ?? 2;
-      log(`\n  -> 分享帖可互动 ${shares.length} 条（上限 ${cap}）${dryRun ? '（dry-run，不发送）' : ''}`);
-      // 分享互动也走 LLM（2026-11-04 起不用模板）：凑一句热闹，不评价数值、不套答疑内容
-      const shareGens = [];
-      for (const s of shares.slice(0, cap)) {
-        const gen = await composeLlmReply({
-          config,
-          kind: s.imageCelebrate ? 'celebrate' : 'share',
-          tree: buildThreadTree(
-            { id: s.id, title: s.title, text: s.text, author: s.author, authorId: s.authorId },
-            []
-          ),
-          targetId: `post:${s.id}`,
-          hint: s.imageCelebrate
-            ? '他抽到了稀有植物（看图/文字，如瓷砖萝卜）。替他高兴、夸他欧、接住兴奋。若提到688/2888钻，那是稀有/传奇宝箱十连（已知），别问单抽还是十连；留个别的话头（攒了多久钻/下一个想抽啥）。别讲攻略别扫兴别酸。'
-            : '他在分享进度或攻略。你去凑一句热闹。别评价具体数值对不对，别提任何攻略库内容，别说教。',
-          log,
-        });
-        if (!gen.ok) {
-          log(`    [跳过] 分享互动生成失败（${gen.reason}）`);
-          continue;
-        }
-        shareGens.push({ s, text: gen.text });
-      }
-      if (dryRun) {
-        for (const { s, text } of shareGens) {
-          log(`\n  -- [dry-run] 分享互动：${s.title}`);
-          log(`      | ${text}`);
-        }
-      } else if (shareGens.length) {
-        const srunner = makeRunner({
-          opencliMain: config.reply.opencliMain,
-          session: config.reply.session,
-        });
-        if (doctorOk(srunner).ok) {
-          let n = 0;
-          for (const { s, text } of shareGens) {
-            if (n >= cap) {
-              log('    [跳过] 超出本轮分享互动上限');
-              break;
-            }
-            log(`\n  -- 分享互动：${s.title}`);
-            const r = await replyOne({
-              runner: srunner,
-              url: s.url,
-              text,
-              config,
-              dryRun: false,
-              log,
-            });
-            if (r.ok) {
-              n++;
-              state.posts[s.id] = state.posts[s.id] || {};
-              state.posts[s.id].shareCommented = true;
-              state.posts[s.id].shareAt = new Date().toISOString();
-              // 同一帖的分享互动**只做一次** —— 靠事件流水兜住（state 会被剪枝搬库）
-              markDoneEvent(postDb, s.id, 'share_reply', {
-                text: String(text).slice(0, 80),
-                at: new Date().toISOString(),
-              });
-              const h = liteHash(text);
-              state.recentReplies = state.recentReplies || {};
-              state.recentReplies[h] = {
-                text,
-                at: new Date().toISOString(),
-                count: 1,
-                postId: s.id,
-              };
-              log(`    [OK] 已互动（表情 ${r.detail?.emoji ?? 0} 个）`);
-            } else {
-              log(`    [FAIL] 互动失败（${r.stage}）`);
-            }
-            await sleep(config.reply.delayMs ?? 6000);
-          }
-        }
-      }
-    }
-  }
-
-  // ---------- 3d-2. 纯情绪帖 → 陪一句（用户 2026-11-10 要求） ----------
-  //   来历：《我无疑是绝望的。。。》（任务差一点没完成）、《我想知道玩这个游戏的...》
-  //   （被谐音脏话昵称恶心到）—— 答疑库答不了、又没有「终于/到手」这些分享特征，
-  //   于是双双掉进「需人工」，一句话都没有。
-  //
-  //   规矩（用户明确）：
-  //     · **一帖一次**（凭据落事件流水 comfort_reply，state 会被剪枝搬库靠不住）
-  //     · 楼主后面再回复 → 走**正常的互动续聊**判断（不是这条通道），
-  //       可以针对他那条回复内容再回（互动按 commentId 去重，见 3f）
-  //     · 涉维权/损失/加好友/寻码一律不插话；不承诺处理、不评价数值、不给攻略
-  if (doReply && config.comfort?.enabled !== false && !pluginOwns(config, 'comfort')) {
-    // 分享互动 / 夸发码这一轮已经开口过的帖子不再安慰。
-    // ⚠️ 这里**不能**引用 3d 那个 if 块里的 `shares` / `codeShares` —— 那是块内变量，
-    //    跨块引用会抛 `shares is not defined`，整轮处理直接中断（2026-11-10 真踩到）。
-    //    改成自己按「已做过的凭据」算，效果一样且不依赖作用域。
-    const spokeThisRun = new Set(
-      results
-        .filter(
-          (r) =>
-            Boolean(state.posts[r.id]?.shareCommented) ||
-            hasDoneEvent(postDb, r.id, 'share_reply') ||
-            hasDoneEvent(postDb, r.id, 'code_praise')
-        )
-        .map((r) => String(r.id))
-    );
-    const comfortDone = (id) =>
-      Boolean(state.posts[id]?.comforted) || hasDoneEvent(postDb, id, 'comfort_reply');
-    const comforts = results.filter(
-      (r) =>
-        (r.status === STATUS.NO_NEED || r.status === STATUS.MANUAL) &&
-        !spokeThisRun.has(String(r.id)) &&
-        !comfortDone(r.id) &&
-        looksLikeEmotion(`${r.title || ''}\n${r.text || ''}`) &&
-        canChatter(state, r.id).ok // 刹车闸：被投诉刷屏的帖不再凑热闹
-    );
-    // 📉 情绪陪聊也归「捧场类」场景 → 同样受跨帖降权/冷却约束
-    const comfortList = (() => {
-      const g = sceneGateOf('comfort');
-      if (!g.ok) {
-        log(`  [场景] ${g.reason} → 本轮不陪聊这一类（跨帖生效）`);
-        return [];
-      }
-      if (g.level === 'downgraded') {
-        const one = comforts.slice(0, 1);
-        const keep = rollDowngraded({ prob: Number(sfCfg.downgradedProb ?? 0.25) }) ? one : [];
-        log(`  [场景] ${g.reason} → 本轮${keep.length ? '只陪 1 条' : '也不陪'}（跨帖生效）`);
-        return keep;
-      }
-      return comforts;
-    })();
-    if (comfortList.length) {
-      const cap = Number(config.comfort?.maxPerRun ?? 2);
-      log(
-        `\n  -> 情绪帖可安慰 ${comfortList.length} 条（上限 ${cap}，一帖一次）${dryRun ? '（dry-run，不发送）' : ''}`
-      );
-      const cGens = [];
-      for (const s of comfortList.slice(0, cap)) {
-        // 不给参考资料、不给 hint：纯共情，模型不许编数据、不许下判断
-        const gen = await composeLlmReply({
-          config,
-          kind: 'comfort',
-          tree: buildThreadTree(
-            { id: s.id, title: s.title, text: s.text, author: s.author, authorId: s.authorId },
-            []
-          ),
-          targetId: `post:${s.id}`,
-          hint: '他只是在发泄情绪，没有具体问题。陪着难受一下就好：认同情绪、别讲道理、别劝、别问细节、别评价数值、别说补偿或处理结果。',
-          log,
-        });
-        if (!gen.ok) {
-          log(`    [跳过] 安慰生成失败（${gen.reason}）→ 转人工，不退回模板`);
-          continue;
-        }
-        cGens.push({ s, text: gen.text });
-      }
-      if (dryRun) {
-        for (const { s, text } of cGens) {
-          log(`\n  -- [dry-run] 安慰：${s.title}`);
-          log(`      | ${text}`);
-        }
-      } else if (cGens.length) {
-        const crunner = makeRunner({
-          opencliMain: config.reply.opencliMain,
-          session: config.reply.session,
-        });
-        if (doctorOk(crunner).ok) {
-          for (const { s, text } of cGens) {
-            log(`\n  -- 安慰：${s.title}`);
-            const r = await replyOne({ runner: crunner, url: s.url, text, config, dryRun: false, log });
-            if (r.ok) {
-              state.posts[s.id] = state.posts[s.id] || {};
-              state.posts[s.id].comforted = true;
-              state.posts[s.id].comfortAt = new Date().toISOString();
-              // 一帖一次：凭据必须落库（state 会被剪枝搬库）
-              markDoneEvent(postDb, s.id, 'comfort_reply', {
-                text: String(text).slice(0, 80),
-                at: new Date().toISOString(),
-              });
-              const h = liteHash(text);
-              state.recentReplies = state.recentReplies || {};
-              state.recentReplies[h] = { text, at: new Date().toISOString(), count: 1, postId: s.id };
-              await saveState(config.paths.stateFile, state);
-              log('    [OK] 已安慰（楼主再回复会走正常互动续聊）');
-            } else {
-              log(`    [FAIL] 安慰失败（${r.stage}）`);
-            }
-            await sleep(config.reply.delayMs ?? 6000);
-          }
-        } else {
-          log('    [跳过] opencli 不可用');
-        }
-      }
-    }
-  }
 
   // ---------- 3e. 玩家喊我们 → 按语义互动 ----------
   // 用户要求：「如果发现玩家喊你，过去，根据语义互动一下玩家」。

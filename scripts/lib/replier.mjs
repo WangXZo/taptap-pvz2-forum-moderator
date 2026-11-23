@@ -269,8 +269,7 @@ export async function replyOne({
           ok: true,
           stage: 'api_sent',
           detail: { verified, commentId: ar.commentId || '', body: plain, marks, emoji: ar.emojiHit },
-        };
-      }
+        };      }
       log(`      [接口] 回复失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);
     }
   }

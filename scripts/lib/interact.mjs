@@ -206,7 +206,11 @@ export function decideInteraction(cand, { counts = {}, config = {}, rng = Math.r
  *     如果贴内回复，在此回复的楼中楼下面（同一棵子树）；
  *     如果本身就是楼中楼，同层楼中楼，@目标玩家回复内容。」
  *
- * @returns {{mode:'post'|'nested', parentId:string, mention:string, label:string}}
+ * ⚠️ `mentionId` 是 T29（2026-11-20）加的：
+ *   官方 @ 节点要 `info:{id, name}`，id 就是对方的 user_id。
+ *   只给名字的话只能拼纯文本 `@名字` —— **不触发对方通知**、不可点击。
+ *
+ * @returns {{mode:'post'|'nested', parentId:string, mention:string, mentionId:string, label:string}}
  */
 export function replyTargetFor(cand) {
   const level = Number(cand?.level || 1);
@@ -216,6 +220,7 @@ export function replyTargetFor(cand) {
       mode: 'nested',
       parentId: String(cand.commentId || ''),
       mention: '',
+      mentionId: '',
       label: '该回复的楼中楼',
     };
   }
@@ -224,6 +229,7 @@ export function replyTargetFor(cand) {
     mode: 'nested',
     parentId: String(cand.parentId || ''),
     mention: String(cand.author || ''),
+    mentionId: String(cand.authorId || ''),
     label: '同层楼中楼（@对方）',
   };
 }

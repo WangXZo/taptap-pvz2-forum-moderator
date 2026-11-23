@@ -120,6 +120,68 @@ export function markDoneEvent(db, id, kind, detail = null) {
 }
 
 /**
+ * 列出「我们自己在这帖发过的评论 id」
+ *
+ * 为什么需要（2026-11-20 · T15）：
+ *   以前判断「这条回复是不是在回我们」靠**在当轮评论列表里按作者 id 反查**，
+ *   而列表有两个问题：
+ *     ① 我们的子回复常常**不在列表里**（旧接口 child_posts 只返前 2 条）
+ *     ② 列表是当轮快照，跨轮就查不到
+ *   结果：玩家的回信被误判成「不是回我们」→ 互动续聊不触发（帖 2 就是这样丢的）。
+ *
+ *   现在发送成功后把**我们自己那条评论的 id** 落进 post_event.detail.sentCommentId，
+ *   这里直接查库得到，**不依赖列表**。
+ *
+ * @returns {Set<string>} 评论 id 集合
+ */
+export function ourSentCommentIds(db, postId) {
+  const out = new Set();
+  if (!db || !postId) return out;
+  try {
+    const rows = db
+      .prepare("SELECT detail FROM post_event WHERE post_id = ? AND kind IN ('sent','replied','praise_reply','interact_reply','share_reply','summon_reply','comfort_reply','code_praise')")
+      .all(String(postId));
+    for (const r of rows) {
+      let d = null;
+      try { d = JSON.parse(r.detail || '{}'); } catch { continue; }
+      // ⚠️ **只认 sentCommentId**：`commentId` 是「我们回复的那条评论」的 id（被回复方），
+      //    不是我们自己发的那条。两者混用会把玩家的评论当成我们的 → 误判「玩家在回我们」。
+      const id = d?.sentCommentId;
+      if (id) out.add(String(id));
+    }
+  } catch {
+    /* 库坏了不该影响主链路 */
+  }
+  return out;
+}
+
+/**
+ * 按 comment id 直查某条评论是否真落库（发送后复核）
+ *
+ * 比 `hasReplyText`（模糊搜文本）准确得多：
+ *   · 不会被同文案的别的回复误判
+ *   · 子回复被折叠/截断时也能确认
+ *
+ * @param {object} o
+ * @param {object} o.db
+ * @param {string} o.postId
+ * @param {string} o.commentId 我们自己发的那条的 id
+ * @returns {boolean} 库里有这条 id 就认为落库了
+ */
+export function sentCommentRecorded(db, postId, commentId) {
+  const id = String(commentId || '');
+  if (!db || !id) return false;
+  try {
+    const row = db
+      .prepare("SELECT detail FROM post_event WHERE post_id = ? AND detail LIKE ? LIMIT 1")
+      .get(String(postId), `%"sentCommentId":"${id}"%`);
+    return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 把 state.json 里的老记录搬进 SQLite，然后从 state.json 里删掉
  *
  * 搬走的是「按当时判定算完、不再参与判定」的记录（已回复 / 无需回复 / 已移除）。

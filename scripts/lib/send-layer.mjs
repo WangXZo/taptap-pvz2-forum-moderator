@@ -41,9 +41,14 @@ export function bookkeep(plan, result, { config = {}, state = {}, db = null, usa
     }
     if (plan?.done && db) {
       try {
+        // T15：把**我们自己发的那条评论的 id** 一起落库。
+        //   有了它才能按 id 确认「这条确实发出去了」（不再靠模糊搜文本），
+        //   也才能在跨轮次时知道「玩家的这条回复是在回我们哪一条」（T30 回访的基础）。
+        const sentCommentId = String(result?.detail?.commentId || result?.commentId || '');
         markDoneEvent(db, postId, plan.done.kind, {
           ...(plan.done.key ? { [plan.done.key]: plan.done.value } : {}),
           ...(plan.done.extra || {}),
+          ...(sentCommentId ? { sentCommentId } : {}),
           text: text.slice(0, 80),
           at: new Date().toISOString(),
         });
@@ -64,6 +69,9 @@ export function bookkeep(plan, result, { config = {}, state = {}, db = null, usa
     postId,
     sent: ok,
     kind: plan?.kind || 'answer',
+    // title / entryId 一起带上（T32：core 的答疑路径改走这里后，trace 信息不能变少）
+    ...(plan?.title ? { title: plan.title } : {}),
+    ...(plan?.meta?.qaId ? { entryId: plan.meta.qaId } : {}),
     reason: ok ? undefined : (result?.stage || result?.reason || 'send_failed'),
     note: plan?.meta?.scene ? `scene=${plan.meta.scene}` : undefined,
   });
@@ -86,6 +94,7 @@ export function createSendLayer(impl = {}) {
    *   level: 0(帖子一级回复)|1(回复)|2(楼中楼)
    *   postId, url, text
    *   commentId?, parentId?, playerKey?, mention?, commentText?, point?
+   *   mentions?: [{id,name}]  T29：@ 目标（id 必填才有真 @ 效果）
    *   done?: {kind, key, value, extra}     成功后写幂等事件
    *   stateFlags?: object                   成功后合并进 state.posts[postId]
    *   meta?: {qaId, emojiKind, scene}
@@ -153,6 +162,8 @@ export function createSendLayer(impl = {}) {
           runner,
           via: config?.reply?.nestedVia || 'ui',
           log,
+          /** T29：@ 目标（id + 名字）→ 官方 mention 节点 */
+          mentions: plan.mentions || [],
         });
       } else {
         // answer（一级回复）/ 其它走 replyOne

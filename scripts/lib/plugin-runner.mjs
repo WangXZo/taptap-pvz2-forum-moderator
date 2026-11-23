@@ -133,7 +133,18 @@ export function resolveMode(config = {}) {
   return vals.some((v) => v === true) ? 'real' : 'shadow';
 }
 
-/** 某插件是否应由新路径接管（内核据此跳过旧块） */
+/**
+ * 某插件是否应由新路径接管（内核据此跳过旧块）
+ *
+ * ⚠️ 2026-11-20（T33 配套）：**新键优先**。
+ *   · 旧的 `config.plugins.<id>` 是 B4 时代的写法
+ *   · 新的权威是 `config.<id>.enabled`（schema.json 的统一口径，见 T18）
+ *   两边都存在时以**新键**为准 —— 否则用户改了 `praise.enabled=false` 却不起作用
+ *   （因为 `plugins.praise` 仍是 true，插件照旧接管）。
+ *   新键不存在时才回退旧键（兼容老配置）。
+ */
 export function pluginOwns(config = {}, id = '') {
+  const own = config?.[id];
+  if (own && typeof own === 'object' && own.enabled !== undefined) return own.enabled === true;
   return config?.plugins?.[id] === true;
 }

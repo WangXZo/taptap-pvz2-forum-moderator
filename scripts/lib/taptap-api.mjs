@@ -115,6 +115,122 @@ export function buildContentsWithEmoji(text, emojiMap = {}) {
 }
 
 /**
+ * 带 **真 @ 节点** 的 contents（T29，2026-11-20）
+ *
+ * 为什么必须用节点而不是纯文本：
+ *   纯文本 `@狐玖儿` 只是几个字 —— **不触发对方的 @ 通知**、不可点击、不会变蓝。
+ *   官方 CLI 的接口规范明确支持：
+ *     mention（行内）= { type:'mention', children:[{text:'@名字'}], info:{id, name} }
+ *   其中 `info.id` = 对方的 user_id，`info.name` = 昵称。
+ *
+ * 行为：
+ *   · 正文里的 `@名字` **被替换成 mention 节点**（不是并存，避免重复 @）
+ *   · 找不到 id 的 @ 名字**降级成纯文本**（宁可 @ 不生效，也不要发坏结构被拒）
+ *   · 与表情节点共存（同一行里可以有 @ + 文字 + 表情）
+ *
+ * @param {string} text
+ * @param {Array} mentions [{id, name}] —— id 为空则该 @ 降级为纯文本
+ * @param {object} emojiMap
+ * @returns {{json:string, emojiHit:number, mentionHit:number}}
+ */
+export function buildContentsWithMentions(text, mentions = [], emojiMap = {}) {
+  const emojiRe = /\[表情_([^\]]+)\]/g;
+  let emojiHit = 0;
+  let mentionHit = 0;
+
+  const lines = String(text ?? '')
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // mention 列表按名字长度降序（避免「张三」先匹配掉「张三丰」）
+  const ms = (mentions || [])
+    .filter((m) => m && m.name)
+    .map((m) => ({
+      id: String(m.id || ''),
+      name: String(m.name),
+      re: new RegExp(`@${String(m.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`),
+    }))
+    .sort((a, b) => b.name.length - a.name.length);
+
+  const nodes = lines.map((line) => {
+    const children = [];
+    // T29：同一个人**只 @ 一次**（模型不听话写了两次、或脚本重复拼过）
+    //   → 后面的重复 @ 降级成纯文本，不再生成第二个节点。
+    const used = new Set();
+    let last = 0;
+    let m;
+    emojiRe.lastIndex = 0;
+    while ((m = emojiRe.exec(line)) !== null) {
+      // ① 这段纯文本里先处理 @ 提及
+      const before = line.slice(last, m.index);
+      if (before) pushWithMentions(children, before, ms, used, () => { mentionHit++; });
+      // ② 表情节点
+      const name = m[1].trim();
+      const info = emojiMap[name];
+      if (info && info.id) {
+        children.push({
+          type: 'tap_emoji',
+          children: [{ text: `[表情_${name}]` }],
+          info: { id: Number(info.id), url: info.url || undefined },
+        });
+        emojiHit++;
+      }
+      last = m.index + m[0].length;
+    }
+    const tail = line.slice(last);
+    if (tail) pushWithMentions(children, tail, ms, used, () => { mentionHit++; });
+    if (!children.length) children.push({ text: '' });
+    return { type: 'paragraph', children };
+  });
+
+  if (!nodes.length) nodes.push({ type: 'paragraph', children: [{ text: '' }] });
+  return { json: JSON.stringify(nodes), emojiHit, mentionHit };
+}
+
+/**
+ * 把一段纯文本按 @ 提及切开，mention 节点插进去
+ * （抽成独立函数，供 buildContentsWithMentions 复用与单测）
+ *
+ * @param {Set} used 已 @ 过的人（按 id，没有 id 用名字）→ 同一个人只 @ 一次
+ */
+function pushWithMentions(children, text, ms, used, onHit) {
+  if (!text) return;
+  if (!ms.length) {
+    children.push({ text });
+    return;
+  }
+  let rest = text;
+  let guard = 0;
+  while (rest && guard++ < 20) {
+    let best = null;
+    for (const m of ms) {
+      const hit = m.re.exec(rest);
+      if (hit && (!best || hit.index < best.hit.index)) best = { m, hit };
+    }
+    if (!best) break;
+    const { m, hit } = best;
+    if (hit.index > 0) children.push({ text: rest.slice(0, hit.index) });
+    const key = m.id || `name:${m.name}`;
+    if (m.id && !used.has(key)) {
+      // 有 id 且还没 @ 过 → 真 @ 节点（会触发对方通知）
+      used.add(key);
+      children.push({
+        type: 'mention',
+        children: [{ text: `@${m.name}` }],
+        info: { id: m.id, name: m.name },
+      });
+      onHit?.();
+    } else {
+      // 重复 @ 同一个人 或 没有 id → 降级纯文本（@ 不生效但内容不丢）
+      children.push({ text: `@${m.name}` });
+    }
+    rest = rest.slice(hit.index + hit[0].length);
+  }
+  if (rest) children.push({ text: rest });
+}
+
+/**
  * @param {object} [o]
  * @param {number} [o.intervalMs=0] 同一实例内两次调用的最小间隔。
  *   默认 **0（不节流）** —— 2026-11-20 起限速统一由 `exec.rateLimit` 管（mode=adaptive：默认全速，
@@ -341,12 +457,20 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
    * 发一级回复
    * @param emoji 默认 true：文案里的 [表情_xx] 转成 tap_emoji 节点发出去；
    *              表里找不到的表情会被丢掉；带表情失败会自动退回纯文本再发一次。
+   * @param mentions [{id,name}]：T29 —— 用官方 mention 节点表达 @（真 @，会触发对方通知）
    */
-  async function reply({ momentId, text, contents, emoji = true }) {
+  async function reply({ momentId, text, contents, emoji = true, mentions = [] }) {
     let payload = contents;
     let emojiHit = 0;
+    let mentionHit = 0;
     if (!payload) {
-      if (emoji) {
+      if (mentions && mentions.length) {
+        // 有 @ 目标 → 用带 mention 节点的构造（同时支持表情）
+        const b = buildContentsWithMentions(text, mentions, loadEmojiMap());
+        payload = b.json;
+        emojiHit = b.emojiHit;
+        mentionHit = b.mentionHit;
+      } else if (emoji) {
         const b = buildContentsWithEmoji(text, loadEmojiMap());
         payload = b.json;
         emojiHit = b.emojiHit;
@@ -358,7 +482,7 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
       moment_id: String(momentId),
       contents: payload,
     });
-    if (!res.ok && emojiHit) {
+    if (!res.ok && (emojiHit || mentionHit)) {
       const plain = await post('/webapiv2/moment-comment/v1/create', {
         moment_id: String(momentId),
         contents: buildContents(stripEmojiMarks(text)),
@@ -368,16 +492,26 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
       return plain;
     }
     res.emojiHit = emojiHit;
+    res.mentionHit = mentionHit;
     res.commentId = extractReplyId(res.json);
     return res;
   }
 
-  /** 发楼中楼（夸奖/喊话用）：parentId 是被回复的一级评论 id */
-  async function childComment({ momentId, parentId, text, contents, emoji = true }) {
+  /**
+   * 发楼中楼（夸奖/喊话用）：parentId 是被回复的一级评论 id
+   * @param mentions [{id,name}]：T29 —— 官方 mention 节点（真 @）
+   */
+  async function childComment({ momentId, parentId, text, contents, emoji = true, mentions = [] }) {
     let payload = contents;
     let emojiHit = 0;
+    let mentionHit = 0;
     if (!payload) {
-      if (emoji) {
+      if (mentions && mentions.length) {
+        const b = buildContentsWithMentions(text, mentions, loadEmojiMap());
+        payload = b.json;
+        emojiHit = b.emojiHit;
+        mentionHit = b.mentionHit;
+      } else if (emoji) {
         const b = buildContentsWithEmoji(text, loadEmojiMap());
         payload = b.json;
         emojiHit = b.emojiHit;
@@ -394,8 +528,8 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
       contents: payload,
     };
     const res = await post('/webapiv2/moment-comment/v1/create-child', base);
-    if (!res.ok && emojiHit) {
-      // 表情节点可能不被这个接口接受 → 退回纯文本再试一次
+    if (!res.ok && (emojiHit || mentionHit)) {
+      // 表情/mention 节点可能不被这个接口接受 → 退回纯文本再试一次
       const plain = await post('/webapiv2/moment-comment/v1/create-child', {
         moment_id: String(momentId),
         parent_id: String(parentId),
@@ -407,6 +541,7 @@ export function makeTapApi({ runner, log = () => {}, intervalMs = 0 } = {}) {
       return plain;
     }
     res.emojiHit = emojiHit;
+    res.mentionHit = mentionHit;
     res.commentId = extractReplyId(res.json);
     return res;
   }

@@ -21,7 +21,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 
 **校验失败不阻断运行** —— 配置项写错只打警告，守护不会因此停摆。
 
-## 字段总览（共 169 项）
+## 字段总览（共 173 项）
 
 | 分组 | 键 | 类型 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
@@ -94,6 +94,10 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 互动续聊 | `interact.samePlayerLimit` | `integer` | `1` | ≥ 1，≤ 20 | 同玩家免降级次数 |
 | 互动续聊 | `interact.probabilityAfterLimit` | `number` | `0.5` | ≥ 0，≤ 1 | 超限后回复概率 |
 | 互动续聊 | `interact.strongTextLen` | `integer` | `40` | ≥ 1，≤ 500 | 正文长度达到这个值 → 不受概率限制，必回 |
+| 互动续聊 | `interact.revisitRepliedPosts` | `boolean` | `true` | — | T30：**定期重读我们回过的帖**，看玩家有没有新回复。只靠通知会漏（@ 当时是纯文本不触发通知）→ 玩家回了我们却不知道（帖 872166231715613408 实例） |
+| 互动续聊 | `interact.revisitDays` | `integer` | `3` | ≥ 1，≤ 30 | 只回访最近 N 天内我们回过的帖 |
+| 互动续聊 | `interact.revisitEveryMinutes` | `integer` | `30` | ≥ 1，≤ 1440 | 同一帖最少隔多久回访一次（用 post_event 的 revisit 事件记账） |
+| 互动续聊 | `interact.revisitLimit` | `integer` | `10` | ≥ 1，≤ 100 | 每轮最多回访几个帖（按我们最后回复时间倒序） |
 | 喊话通道 | `summon.enabled` | `boolean` | `true` | — | 玩家 @ 我们/喊别名 → 应一声 |
 | 喊话通道 | `summon.aliases` | `array` | `["大肥鱼","胖鱼","吃白米饭的"]` | — | 其它别名 |
 | 喊话通道 | `summon.matchRoles` | `boolean` | `true` | — | 匹配版主语气 |
@@ -424,6 +428,18 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`interact.strongTextLen`** — 长文本必回阈值
   正文长度达到这个值 → 不受概率限制，必回
   默认 `40`
+- **`interact.revisitRepliedPosts`** — 回访复查
+  T30：**定期重读我们回过的帖**，看玩家有没有新回复。只靠通知会漏（@ 当时是纯文本不触发通知）→ 玩家回了我们却不知道（帖 872166231715613408 实例）
+  默认 `true`
+- **`interact.revisitDays`** — 回访窗口(天)
+  只回访最近 N 天内我们回过的帖
+  默认 `3`
+- **`interact.revisitEveryMinutes`** — 回访间隔(分钟)
+  同一帖最少隔多久回访一次（用 post_event 的 revisit 事件记账）
+  默认 `30`
+- **`interact.revisitLimit`** — 单轮回访上限
+  每轮最多回访几个帖（按我们最后回复时间倒序）
+  默认 `10`
 
 ### 喊话通道 · `summon`
 
@@ -749,4 +765,4 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 ---
 
-生成时间：2026-11-20 06:13:56
+生成时间：2026-11-23 02:30:19

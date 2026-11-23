@@ -5,6 +5,60 @@
 
 ---
 
+## v2.1.0 — 正确性三项 + 内核收口（2026-11-23）
+
+### 背景
+v2.0.0 把「读」切到官方 CLI 后，剩下的问题集中在**发送侧**与**判定侧**：
+@ 重复、回复接不上、发送慢、core 里两套实现并存。这一版把它们收口。
+
+### 一、T15 发送后按 id 直查
+以前判断「玩家这条是不是在回我们」靠**当轮评论列表按作者 id 反查** ——
+但我们的子回复常常**不在列表里**（旧接口 `child_posts` 只返前 2 条）→ 漏判 → 玩家回了我们没人接。
+
+- 新增 `lib/post-records.mjs`：`ourSentCommentIds(db, postId)` / `sentCommentRecorded(...)`
+- 发送时把**我们自己那条评论的 id** 落进 `post_event.detail.sentCommentId`
+- 判定时**数据库优先**、列表反查只作兜底
+- `reply`/`childComment` 从响应提取 `comment_id`（`extractReplyId`）
+
+### 二、T29 @ 改真 mention 节点
+纯文本 `@名字` 只是几个字 —— **不触发对方 @ 通知**、不可点击、不会变蓝。
+官方 CLI 的接口规范给了标准结构，现在直接用：
+
+```
+{ type:'mention', children:[{text:'@名字'}], info:{id, name} }
+```
+
+- 新增 `buildContentsWithMentions(text, mentions, emojiMap)`
+- 正文**不再拼纯文本 @名字**；缺 id 时降级纯文本并打日志
+- 同一个人**只 @ 一次**（这是 T14 那个「@两次」bug 的结构性根治）
+- `replyTargetFor` 补 `mentionId`（= 对方 user_id）
+
+### 三、T30 「我回过的帖」定期回访
+唤醒原本只靠**通知接口**，而 @ 当时是纯文本（不触发通知）→ 玩家回了我们可能根本不知道。
+
+- 新增 `lib/revisit.mjs`：定期把**我们回过**的帖重新读一遍评论
+- `interact.revisitRepliedPosts` / `revisitDays` / `revisitEveryMinutes` / `revisitLimit` 全部可配
+- 入队时带 `needsComments=true`（强制重读评论 —— 楼中楼回复不一定改顶层评论数）
+
+### 四、T32 内核答疑/婉拒改走统一发送层
+core 的答疑与婉拒原来**自己调 `replyOne` 再自己记账**，但**没写幂等事件** → 幂等门查不到 → 同一条可能重复回。
+现在统一由 `send-layer.bookkeep` 记账（幂等事件 + state 标记 + recentReplies + 引用统计 + trace）。
+
+### 五、T33 删 collect.mjs 旧通道块
+插件接管后，core 里那 4 个旧块（praise / interact / share / comfort）已是死代码 —— 删了 **476 行**（2433 → 2061）。
+同时修好两个**删除会暴露的严重问题**：
+
+1. **误删 `code_praise`**（夸天宫码无私分享者）—— 它**不在插件里**（插件只有 codematch 撮合），已恢复并改走 send-layer
+2. **interact 插件依赖已删的 `r.interactCandidates`** → 插件静默失效 → 改为**插件自己算**（用 T15 的数据库查询）
+
+另外把 `pluginOwns` 改成**新键优先**（`config.<id>.enabled` 优先于 `config.plugins.<id>`），
+否则用户改新开关不生效。
+
+### 测试
+新增 4 个测试套件（`test-sent-comment-ids` 20 / `test-mention-node` 44 / `test-revisit` 27 / `test-core-send-layer` 22），全套 **87 套件 0 失败**。
+
+---
+
 ## v2.0.0 — 官方 CLI 读通道 + 配置统一 + 性能重做（2026-11-20）
 
 ### 背景

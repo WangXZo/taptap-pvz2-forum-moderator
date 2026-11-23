@@ -9,11 +9,62 @@
 //   · 护栏：assertKind + assertNoLeak（与旧块一致）
 //   · 事件：interact_reply（按 commentId 去重）
 
-import { decideInteraction, replyTargetFor, playerKey } from '../lib/interact.mjs';
+import { decideInteraction, replyTargetFor, playerKey, pickInteractions } from '../lib/interact.mjs';
 import { detectCallOut, auditBrief } from '../lib/complaint.mjs';
 import { assertKind } from '../lib/summon.mjs';
 import { assertNoLeak } from '../lib/variants.mjs';
 import { stripLeadingMention, assertSingleMention } from '../lib/compose-reply.mjs';
+import { ourSentCommentIds } from '../lib/post-records.mjs';
+import { isOurComment, commentText } from '../lib/signature.mjs';
+
+/**
+ * 自己算互动候选（T33，2026-11-20）
+ *
+ * 为什么插件要自己算：
+ *   原来候选由 core 算好放在 `r.interactCandidates` 里 → core 与插件耦合。
+ *   T33 删掉 core 的旧块时那段计算一起没了 → 插件拿不到候选 → 通道静默失效。
+ *   自算才是真正的解耦（也符合 B4「插件自治」的设计）。
+ *
+ * 关键改进（T15）：
+ *   「我们发过的评论 id」**从数据库拿**（发送时已把 sentCommentId 落库），
+ *   列表反查只作兜底 —— 我们的子回复常常不在当轮列表里（旧接口只返前 2 条），
+ *   靠列表会漏判「玩家这条是在回我们」→ 玩家回了我们却没人接（帖 872166231715613408 实例）。
+ */
+function pickCandidates(r, { config = {}, db = null, hasDoneEvent = () => false, log = () => {} } = {}) {
+  // ① 调用方直接给了候选（老调用方 / 单测）→ 直接用
+  if (Array.isArray(r?.interactCandidates) && r.interactCandidates.length) {
+    return r.interactCandidates;
+  }
+
+  // ② 自己算（T33 之后的正常路径）
+  const comments = Array.isArray(r?._comments) ? r._comments : [];
+  if (!comments.length) return [];
+
+  // 把一级 + 子回复摊平（与 collect 的 flattenAll 同语义）
+  const flat = [];
+  for (const c of comments) {
+    flat.push({ c, parentId: null });
+    for (const k of c.child_posts || []) flat.push({ c: k, parentId: String(c.id_str || '') });
+  }
+
+  // 我们发过的评论 id：数据库优先（跨轮次也在），列表反查兜底
+  const ourIds = new Set([
+    ...ourSentCommentIds(db, r.id),
+    ...flat.filter((x) => isOurComment(x.c, { config, teamIds: teamIdsOf(config) })).map((x) => String(x.c?.id_str || '')),
+  ].filter(Boolean));
+
+  let cands = pickInteractions(flat, { config, ourCommentIds: ourIds, prev: r._prev || {} });
+  // 幂等：已经接过话的不再接
+  cands = cands.filter((x) => !hasDoneEvent(r.id, 'interact_reply', { key: 'commentId', value: String(x.commentId) }));
+  return cands;
+}
+
+/** 团队成员 id（我们 + 队友） */
+function teamIdsOf(config) {
+  return [config?.myUserId, ...(config?.teamUserIds || [])]
+    .map((x) => String(x || '').trim())
+    .filter((x) => x && !x.includes('*'));
+}
 
 /** 同一玩家在候选里出现几次 = 连续追问次数（与 collect 内同名函数同实现） */
 function countFollowUps(candidates, cand) {
@@ -26,7 +77,7 @@ export default {
   name: '互动续聊',
 
   async planBatch(results = [], ctx = {}) {
-    const { config = {}, log = () => {}, compose = null, hasDoneEvent = () => false } = ctx;
+    const { config = {}, log = () => {}, compose = null, hasDoneEvent = () => false, db = null } = ctx;
     if (config.interact?.enabled === false || !compose) return null;
 
     const perPost = Number(config.interact?.maxPerPost ?? 1);
@@ -34,8 +85,12 @@ export default {
 
     for (const r of results || []) {
       if (r._codeAsking) continue;
-      const cands = r.interactCandidates;
-      if (!Array.isArray(cands) || !cands.length) continue;
+      // T33：候选**自己算**（原来由 core 算好塞在 r.interactCandidates 里）。
+      //   core 那个计算已随旧块一起删除 → 插件自算才是真正的解耦。
+      //   而且自算能用上 T15 的数据库查询：**我们发过的评论 id 从库里拿**，
+      //   不再靠「当轮评论列表按作者 id 反查」（我们的子回复常不在列表里 → 漏判）。
+      const cands = pickCandidates(r, { config, db, hasDoneEvent, log });
+      if (!cands.length) continue;
       let made = 0;
       for (const cand of cands) {
         if (made >= perPost) {
@@ -91,12 +146,20 @@ export default {
           log(`  [拦截] 《${String(r.title || '').slice(0, 18)}》的互动回复被护栏拦下（${blocked}）→ 不发`);
           continue;
         }
-        // @ 只拼一次（2026-11-20 修「同一回复重复 @」）：提示词已禁止模型写 @，
-        // 这里再加一道断言，万一模型仍写了就剥掉重拼，保证同名字只出现一次。
-        let text = target.mention ? `@${target.mention} ${gen.text}` : gen.text;
+        // T29（2026-11-20）：@ 改成**官方 mention 节点**（真 @，会触发对方通知）。
+        //   正文不再拼纯文本 @名字；名字 + user_id 一起交给发送层生成 mention 节点。
+        const mentions = [];
+        if (target.mention) {
+          const mid = String(target.mentionId || cand.authorId || '');
+          mentions.push({ id: mid, name: target.mention });
+          if (!mid) {
+            log(`  [降级] 《${String(r.title || '').slice(0, 18)}》@${target.mention} 缺 user_id → 只能纯文本 @（不触发通知）`);
+          }
+        }
+        let text = stripLeadingMention(gen.text);
         const atChk = assertSingleMention(text, target.mention);
         if (!atChk.ok) {
-          text = `@${target.mention} ${stripLeadingMention(gen.text)}`;
+          text = stripLeadingMention(gen.text);
           log(`  [修正] 《${String(r.title || '').slice(0, 18)}》${atChk.hit} → 收敛为 1 个`);
         }
         log(`\n  -> 互动续聊：${String(r.title || '').slice(0, 20)}（@${cand.author || '玩家'}）`);
@@ -112,6 +175,7 @@ export default {
           parentId: target.parentId || '',
           playerKey: playerKey(cand),
           mention: target.mention || '',
+          mentions,
           priority: 60,
           mutexKey: `post:${r.id}`,
           done: { kind: 'interact_reply', key: 'commentId', value: String(cand.commentId) },

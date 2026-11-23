@@ -73,6 +73,8 @@ export async function replyToComment({
   via = 'ui',
   config = {},
   log = () => {},
+  /** T29：[{id,name}] —— 用官方 mention 节点表达 @（真 @，触发对方通知） */
+  mentions = [],
 }) {
   const { plainText, marks } = parseEmojiSegments(text);
   const emojiName = marks.length ? marks[marks.length - 1].name : null;
@@ -96,13 +98,19 @@ export async function replyToComment({
     if (momentId && api.ensureOrigin().ok) {
       // 平台限制：楼中楼回复同样 ≤1000 字符 → 发送前裁一次
       const capped = clampReply(text, { signature: config?.reply?.signature || '' });
-      const ar = await api.childComment({ momentId, parentId: String(commentId), text: capped });
+      const ar = await api.childComment({ momentId, parentId: String(commentId), text: capped, mentions });
       if (ar.ok) {
-        log(`      [接口] 楼中楼已发送（表情 ${ar.emojiHit || 0} 个）`);
+        log(`      [接口] 楼中楼已发送（表情 ${ar.emojiHit || 0} 个${ar.commentId ? `，id=${ar.commentId}` : ''}）`);
         return {
           ok: true,
           stage: 'api_sent',
-          detail: { emoji: emojiName, emojiHit: ar.emojiHit, verified: false, body: stripEmojiMarks(capped).trim() },
+          detail: {
+            emoji: emojiName,
+            emojiHit: ar.emojiHit,
+            verified: Boolean(ar.commentId),
+            commentId: ar.commentId || '',
+            body: stripEmojiMarks(capped).trim(),
+          },
         };
       }
       log(`      [接口] 楼中楼发送失败（${ar.status}${ar.error ? ' ' + ar.error : ''}）→ 退回 UI 流程`);

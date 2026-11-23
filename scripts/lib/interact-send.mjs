@@ -36,6 +36,8 @@ export async function sendInteractReply({
   runner,
   via = 'ui',
   log = () => {},
+  /** T29：[{id,name}] —— 官方 mention 节点（真 @，会触发对方通知） */
+  mentions = [],
 }) {
   if (!parentId) return { ok: false, stage: 'no_parent_id' };
 
@@ -47,6 +49,7 @@ export async function sendInteractReply({
     dryRun: false,
     via,
     log,
+    mentions,
   });
 
   if (!r.ok) return { ok: false, stage: r.stage, detail: r.detail };

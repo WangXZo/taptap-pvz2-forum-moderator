@@ -136,7 +136,11 @@
       "maxPerRun": { "type": "integer", "default": 3, "min": 1, "max": 50, "label": "单轮上限" },
       "samePlayerLimit": { "type": "integer", "default": 1, "min": 1, "max": 20, "label": "同玩家免降级次数" },
       "probabilityAfterLimit": { "type": "number", "default": 0.5, "min": 0, "max": 1, "label": "超限后回复概率" },
-      "strongTextLen": { "type": "integer", "default": 40, "min": 1, "max": 500, "label": "长文本必回阈值", "description": "正文长度达到这个值 → 不受概率限制，必回" }
+      "strongTextLen": { "type": "integer", "default": 40, "min": 1, "max": 500, "label": "长文本必回阈值", "description": "正文长度达到这个值 → 不受概率限制，必回" },
+      "revisitRepliedPosts": { "type": "boolean", "default": true, "label": "回访复查", "description": "T30：**定期重读我们回过的帖**，看玩家有没有新回复。只靠通知会漏（@ 当时是纯文本不触发通知）→ 玩家回了我们却不知道（帖 872166231715613408 实例）" },
+      "revisitDays": { "type": "integer", "default": 3, "min": 1, "max": 30, "label": "回访窗口(天)", "description": "只回访最近 N 天内我们回过的帖" },
+      "revisitEveryMinutes": { "type": "integer", "default": 30, "min": 1, "max": 1440, "label": "回访间隔(分钟)", "description": "同一帖最少隔多久回访一次（用 post_event 的 revisit 事件记账）" },
+      "revisitLimit": { "type": "integer", "default": 10, "min": 1, "max": 100, "label": "单轮回访上限", "description": "每轮最多回访几个帖（按我们最后回复时间倒序）" }
     }},
     "summon": { "label": "喊话通道", "fields": {
       "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "玩家 @ 我们/喊别名 → 应一声" },

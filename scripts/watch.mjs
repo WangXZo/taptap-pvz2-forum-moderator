@@ -53,6 +53,7 @@ import { listNotifications, isAboutMe, ourNames } from './lib/notify.mjs';
 import { readWafFlag, setPageFetcher } from './lib/http.mjs';
 import { createPageFetcher } from './lib/page-fetch.mjs';
 import { ensureSingleInstance } from './lib/single-instance.mjs';
+import { pickRevisitTargets, enqueueRevisitTargets, markRevisit } from './lib/revisit.mjs';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -478,6 +479,31 @@ async function checkAndEnqueue() {
   // ④ 兜底：collect 已经写进 state 的互动标记（老帖/被搬库的也能捞回来）
   const fromState = enqueueNotifyIds(queue, state, queued);
   addedNotify += fromState.added;
+
+  // ④b. 回访复查（T30，2026-11-20）：**我们回过的帖**定期重读评论。
+  //    为什么不能只靠通知：帖 872166231715613408 我们回了他、他回了我们却不知道 ——
+  //    当时的 @ 是纯文本（不触发通知），通知接口也可能漏。主动回访兜住这个洞。
+  let revisited = 0;
+  if (config.interact?.revisitRepliedPosts !== false && db) {
+    try {
+      const targets = pickRevisitTargets({
+        db,
+        config,
+        now: Date.now(),
+        limit: Number(config.interact?.revisitLimit ?? 10),
+      });
+      if (targets.ids?.length) {
+        revisited = enqueueRevisitTargets(queue, queued, targets.ids, { log: console.log });
+        // 记回访时间 → 下次不到间隔不会再查（避免每轮都翻库）
+        for (const t of targets.ids) markRevisit(db, t.id, { title: t.title });
+      }
+      if (targets.skipped) {
+        console.log(`  [回访] ${targets.skipped} 个帖最近刚查过 → 跳过`);
+      }
+    } catch (e) {
+      console.log(`  [回访] 失败（${e.message}）→ 跳过`);
+    }
+  }
 
   // ⑤ 天宫码撮合（用户 2026-11-10 建，2026-11-12 扩）
   //    有人**5 分钟内**贴了天宫码 → 把该帖链接发给**2 小时内**在求码的帖子（30 分钟→2 小时）。
