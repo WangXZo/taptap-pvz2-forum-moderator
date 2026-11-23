@@ -54,8 +54,9 @@ export async function verifyCandidate(post, entry, { config = {}, log = () => {}
   const cache = loadCache(file, ttl);
   let judgeOk, rel, faith;
   if (cache[key]) {
-    ({ judgeOk, rel, faith } = cache[key]);
-    log(`  [验证] 「${String(entry?.question || entry?.name || '').slice(0, 16)}」缓存命中 judge=${judgeOk}`);
+    ({ rel, faith } = cache[key]);
+    // 只信缓存里的 rel/faith；judgeOk 一律下面重算（旧缓存里它可能是 undefined，不可信）。
+    log(`  [验证] 「${String(entry?.question || entry?.name || '').slice(0, 16)}」缓存命中 rel=${rel} faith=${faith}`);
   } else {
     const r = await chat(config, {
       system: '判断候选资料是否真能回答玩家帖子(relevance)，且候选答案本身被资料支持(faithfulness)。只输出JSON {"relevance":"yes/no","faithfulness":"yes/no"}。',
@@ -75,13 +76,16 @@ export async function verifyCandidate(post, entry, { config = {}, log = () => {}
         faith = rel;
       }
     }
-    cache[key] = { judgeOk, rel, faith, at: Date.now() };
-    saveCache(file, cache);
   }
   // fact 且 attrs 非空：事实即资料，faithfulness 循环论证无意义 → 恒 true，只信 relevance。
   // 放在缓存读取之后：旧缓存里的 faith=false 也被纠正（免等 TTL）。
   if (entry?.source === 'fact' && entry?.attrs && Object.keys(entry.attrs).length) faith = true;
   judgeOk = rel && faith;
+  // ⚠️ 写缓存必须放在 judgeOk 算完之后（2026-11-20 修）：
+  //   原来在这里写缓存，judgeOk 还是 undefined → 缓存里全是脏值 → 日志显示「judge=undefined」，
+  //   而且旧缓存的 faith=false 会让 fact 条目永远 abstain。
+  cache[key] = { judgeOk, rel, faith, at: Date.now() };
+  saveCache(file, cache);
   const confidence = entry?.confidence ?? entry?.provenance?.confidence ?? 50;
   const tier = tierOf(confidence, judgeOk);
   log(`  [验证] 「${String(entry?.question || entry?.name || '').slice(0, 16)}」conf=${confidence} rel=${rel} faith=${faith} → ${tier}`);

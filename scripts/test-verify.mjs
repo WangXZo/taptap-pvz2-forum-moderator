@@ -89,5 +89,41 @@ console.log('\n== O11：缓存键含 status/confidence/material ==');
   globalThis.fetch = realF;
   try { unlinkSync(vf); } catch {}
 }
+console.log('\n== 回归：缓存 judgeOk 必须是布尔（2026-11-23 修）==');
+{
+  // 背景：原代码在 judgeOk 算出来之前就写缓存 → 缓存里 judgeOk=undefined（JSON 序列化成 null）
+  //       → 日志「judge=undefined」。修复后写缓存放在 judgeOk=rel&&faith 之后。
+  const vf = join(tmpdir(), `verify-judgeok-${Date.now()}.json`);
+  const realF = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, text: async () => JSON.stringify({ choices: [{ message: { content: '{"relevance":"yes","faithfulness":"yes"}' } }] }) });
+  const vo3 = { config: cfg, cacheFile: vf };
+  await verifyCandidate(post, { id: 'jo1', name: 'x', answer: 'a', confidence: 95 }, vo3);
+  const { readFileSync } = await import('node:fs');
+  const stored = JSON.parse(readFileSync(vf, 'utf8'));
+  const entry = Object.values(stored)[0];
+  t('写缓存的 judgeOk 是布尔 true（不是 undefined/null）', entry.judgeOk === true, JSON.stringify(entry));
+  t('写缓存的 rel/faith 也是布尔', entry.rel === true && entry.faith === true);
+  globalThis.fetch = realF;
+  try { unlinkSync(vf); } catch {}
+}
+{
+  // 旧脏缓存：judgeOk=null 但 rel/faith=true → 必须重算成 ok，不能因脏 judgeOk 误弃答
+  const vf = join(tmpdir(), `verify-dirty-${Date.now()}.json`);
+  const { writeFileSync } = await import('node:fs');
+  const { createHash } = await import('node:crypto');
+  const post2 = { title: '脏缓存帖', text: '' };
+  const ent = { id: 'dirty1', name: 'x', answer: 'a', confidence: 95 };
+  const ctx = [post2.title, post2.text, post2.imageText].filter(Boolean).join('\n');
+  const ans = String(ent.answer);
+  const stamp = `${ent.status || ''}|${ent.confidence ?? ''}`;
+  const key = createHash('sha1').update(`${ctx}|${ent.id}|${ans}|${stamp}|`).digest('hex');
+  writeFileSync(vf, JSON.stringify({ [key]: { judgeOk: null, rel: true, faith: true, at: Date.now() } }));
+  const realF = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('不应调用 LLM（应命中缓存）'); };
+  const r = await verifyCandidate(post2, ent, { config: cfg, cacheFile: vf });
+  t('脏缓存 judgeOk=null 但 rel/faith=true → 重算为 ok/high', r.ok && r.tier === 'high', JSON.stringify(r));
+  globalThis.fetch = realF;
+  try { unlinkSync(vf); } catch {}
+}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);
