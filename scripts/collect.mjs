@@ -43,7 +43,7 @@ import {
 } from './lib/scene-feedback.mjs';
 import { openDb } from './lib/db.mjs';
 import { openPostDb, archiveOldPosts, pruneStatePosts, recordScanned, hasDoneEvent, markDoneEvent, ourSentCommentIds } from './lib/post-records.mjs';
-import { openPraiseDb, recentPraiseTexts } from './lib/praise-store.mjs';
+import { openPraiseDb } from './lib/praise-store.mjs';
 import { buildThreadTree } from './lib/thread-context.mjs';
 import { composeReply as composeLlmReply, condenseMaterial, stripLeadingMention, assertSingleMention } from './lib/compose-reply.mjs';
 import { createTapCli } from './lib/taptap-cli.mjs';
@@ -382,6 +382,18 @@ export async function runOnce({
     log(`  [记录] SQLite 不可用（${e.message}）→ 只用 state.json 记账`);
   }
 
+
+  // ---------- 0x. 夸奖向量库：跨天/跨帖避免重复用同一句（用户 2026-11-02） ----------
+  // ⚠️ T33 修复：原来这段和 praiseHistoryTexts 放在一起，T33 删 praiseHistoryTexts 时
+  //    把 **praiseDb 的定义** 一起删了 → `praiseDb is not defined` → **插件每轮全废**。
+  //    praiseDb 仍需要（插件的 praise 通道靠它做向量去重）。
+  let praiseDb = null;
+  try {
+    praiseDb = openPraiseDb(config);
+  } catch (e) {
+    praiseDb = null;
+    log(`  [夸库] 不可用（${e.message}）→ 只在内存里去重`);
+  }
 
   // ---------- 0. 答疑库备份（每轮一份，防误覆盖） ----------
   // 教训：曾用「构建源」的旧副本覆盖运行中的答疑库，一夜沉淀的 10 条全丢。
