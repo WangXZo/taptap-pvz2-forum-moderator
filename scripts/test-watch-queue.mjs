@@ -299,6 +299,23 @@ t('两处重复的只算一条', ids2.filter((x) => x.id === 'P9').length === 1,
   const noAsk = [mk('S3', 'JFAzzzzzzz 分享', 1)];
   t('撮合：没有求码帖 → 不处理', pickCodeMatches({ items: noAsk, nowMs: NOW }).length === 0);
 
+  // 🚨 2026-11-23 大哥报的串台 bug：**加好友帖不能被当成求天宫码帖**
+  //    旧 CODE_ASK_RE 把 `and + 6~12 位` 也当「码」→ 加好友帖进了撮合队列 →
+  //    bot 把大佬的**天宫码链接**贴到**好友码帖**下面。两种码绝不能混。
+  const friendAsks = [
+    mk('S8', 'JFAfriend7 自取', 1),
+    mk('F1', 'and2CU6H43V\n有没有加好友的', 3),
+    mk('F2', '求好友 好友码 andABCDEFGH', 5),
+    mk('F3', '互换好友码 andABCDEFGH', 6),
+    mk('F4', '有没有加好友的，我的码 iosABCDEFGH', 8),
+  ];
+  const rf = pickCodeMatches({ items: friendAsks, nowMs: NOW });
+  t(
+    '撮合：加好友帖不进撮合队列（码型不串台）',
+    rf.length === 0,
+    rf.map((x) => x.asker.id).join(',')
+  );
+
   // 求码帖窗口：30 分钟 → 2 小时（用户 2026-11-12）
   const inWindow = [mk('S4', 'JFAqqqqqqq 分享', 1), mk('A9', '求天宫码', 100)];
   t('撮合：2 小时内的求码帖 → 能撮合', pickCodeMatches({ items: inWindow, nowMs: NOW }).length === 1);

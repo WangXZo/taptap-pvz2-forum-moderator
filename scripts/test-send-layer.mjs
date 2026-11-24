@@ -109,6 +109,66 @@ console.log('\n== trace 落盘 ==');
   t('sent=true', sent[0].sent === true);
   t('带 kind', sent[0].kind === 'answer');
 }
+// ---------- F5（2026-11-23）：worker 不传 state 时不能把「已发出」记成失败 ----------
+//   现场：线程池 worker 只传 config/runner/persist，不传 state；
+//   而 sendPraise/sendSummonReply/sendInteractReply 在**发送成功之后**才写
+//   state.posts[postId] / state.recentReplies → state 为 undefined 直接 TypeError，
+//   被 catch 成 {ok:false, stage:'exception'} → 评论已发出却记成失败 → 下一轮重发。
+//   （实测 2026-11-23 15:22 那条 praise：trace sent:false / reason:exception）
+console.log('\n== F5: state 缺失时不得影响发送结果 ==');
+{
+  // stub 模拟真实底层：发送成功后访问 state.posts / state.recentReplies
+  let sawState = null;
+  const layer = createSendLayer({
+    replyOne: async () => ({ ok: true }),
+    sendPraise: async ({ state }) => {
+      sawState = state;
+      state.posts['p1'] = { ...(state.posts['p1'] || {}), praised: true }; // 真实 praise-send L54
+      state.recentReplies['h'] = { text: 'x' };                             // 真实 praise-send L64
+      return { ok: true, detail: { emoji: 1 } };
+    },
+    sendSummonReply: async ({ state }) => {
+      const p = state.posts['p1']; // 真实 summon-send L45
+      if (p) p.summonReplied = ['c1'];
+      state.recentReplies['h'] = { text: 'x' };
+      return { ok: true };
+    },
+    sendInteractReply: async ({ state }) => {
+      const p = state.posts['p1']; // 真实 interact-send L57
+      if (p) p.interactReplied = ['c1'];
+      state.recentReplies['h'] = { text: 'x' };
+      return { ok: true };
+    },
+  });
+
+  // 完全不传 state（等同 worker 线程）
+  const r1 = await layer.send(
+    { kind: 'praise', postId: 'p1', url: 'u', text: '夸一句', commentId: 'c1' },
+    { config, persist: false }
+  );
+  t('praise：不传 state 也不抛', r1.ok === true, JSON.stringify(r1));
+  t('praise：state 被补齐成对象', Boolean(sawState && sawState.posts && sawState.recentReplies));
+
+  const r2 = await layer.send(
+    { kind: 'summon', postId: 'p1', url: 'u', text: '喊话', commentId: 'c1' },
+    { config, persist: false }
+  );
+  t('summon：不传 state 也不抛', r2.ok === true, JSON.stringify(r2));
+
+  const r3 = await layer.send(
+    { kind: 'interact', postId: 'p1', url: 'u', text: '接话', commentId: 'c1' },
+    { config, persist: false }
+  );
+  t('interact：不传 state 也不抛', r3.ok === true, JSON.stringify(r3));
+
+  // 传了 state 但缺 posts（只传了半截）也要补齐
+  const r4 = await layer.send(
+    { kind: 'praise', postId: 'p1', url: 'u', text: '再夸', commentId: 'c2' },
+    { config, state: {}, persist: false }
+  );
+  t('state 存在但缺 posts → 补齐后不抛', r4.ok === true, JSON.stringify(r4));
+}
+
 try { rmSync(dir, { recursive: true, force: true }); } catch {}
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);
 process.exit(fail ? 1 : 0);

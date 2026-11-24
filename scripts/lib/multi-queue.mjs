@@ -98,9 +98,17 @@ export function createMultiQueue({ config = {}, pool = null, sendFn = null, rate
 
   /**
    * @param {Array} plans
+   * @param {Function} [executor] 单条执行器 `(plan) => Promise<result>`
+   *   ⚠️ 2026-11-23 必须支持（F0）：plugin-runner 传进来的执行器里包着
+   *      `layer.send`（= pool.run + **bookkeep 记账**）与 sent/failed 计数。
+   *      以前这里签名只收 plans、把第二个参数**静默丢掉** → 线程池模式下
+   *      直接 `pool.run` 发送，记账/计数/日志整条链全不执行：
+   *        · 评论真的发出去了，但 post_event 没事件、state 没标记、trace 没记录
+   *        · 日志恒为「本轮执行 0 条（失败 0）」
+   *        · 幂等门失效 → 同轮旧块再发一次 = **同帖双发**（帖 873562347409509277 实测）
    * @returns {Promise<Array>} 与入参**同序**结果
    */
-  async function dispatch(plans = []) {
+  async function dispatch(plans = [], executor = null) {
     const list = (plans || []).map((plan, i) => ({ plan, i }));
     const results = new Array(list.length);
     // 按队列分组（队列内按 priority 升序）
@@ -144,7 +152,13 @@ export function createMultiQueue({ config = {}, pool = null, sendFn = null, rate
             }
             qs.lastStart = now();
           }
-          r = pool ? await pool.run(item.plan) : await sendFn(item.plan);
+          // 优先用调用方的执行器（里面含记账/计数/日志）；
+          // 没给才退回裸 pool.run / sendFn（历史行为，仅供不记账的场景）。
+          r = executor
+            ? await executor(item.plan)
+            : pool
+              ? await pool.run(item.plan)
+              : await sendFn(item.plan);
           // 反馈给限速器
           if (limiter) {
             if (r && (r.waf === true || r.stage === 'waf' || r.error === 'WAF_BLOCKED')) {

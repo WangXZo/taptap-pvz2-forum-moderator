@@ -49,15 +49,22 @@ export const REVIEW_ORDERS = ['asc', 'desc'];
 /**
  * 列表接口的参数（默认按发布时间倒序拿最新的）
  *
+ * ⚠️ 分页参数是 **`from`**（偏移量），不是 `page`/`offset`（2026-11-23 实测）：
+ *    · `from=0/10/20` → 每次拿到**不同的** 10 条（真翻页）
+ *    · `page` / `offset` / `page_num` / `next_page` / `pn` → 全部**无效**，都返回第一页
+ *    基线响应的 `next_page` 里写的就是 `…&from=10&…`，可直接印证。
+ *
  * @param {object} o
  * @param {number|string} o.appId
  * @param {number} [o.limit]  默认 10（上限 10）
  * @param {string} [o.sort]   默认 new
+ * @param {number} [o.from]   偏移量（0 = 最新）
  */
 export function normalizeListParams({
   appId,
   limit = 10,
   sort = 'new',
+  from = 0,
   label = '',
   mapping = '',
   sourceType = '',
@@ -68,6 +75,7 @@ export function normalizeListParams({
   return {
     app_id: String(appId ?? ''),
     limit: Math.max(1, Math.min(REVIEW_LIMIT_MAX, Number.isFinite(n) ? n : 10)),
+    from: Math.max(0, Number(from) || 0),
     label: String(label ?? ''),
     mapping: String(mapping ?? ''),
     source_type: String(sourceType ?? ''),
@@ -103,6 +111,28 @@ export function reviewCommentText(c) {
 }
 
 /**
+ * 清洗评价正文里的 HTML 残留
+ *
+ * 实测（2026-11-23）：部分评价的 `raw_text` 带 `<br />` 等标签，
+ * 直接拿去判定/显示会出现「我的账号充值了1000余元&lt;br /&gt;当时…」这种脏文本。
+ * 只在**真的含标签/实体**时才处理，避免动到正常文本。
+ */
+export function cleanReviewText(s) {
+  let t = String(s ?? '');
+  if (!/[<&]/.test(t)) return t;
+  t = t.replace(/<br\s*\/?>/gi, '\n');
+  t = t.replace(/<[^>]+>/g, '');
+  t = t
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'");
+  return t.replace(/[ \t]+\n/g, '\n').trim();
+}
+
+/**
  * 把列表/详情里的一个 item 摊平成统一结构
  *
  * ⚠️ `review/v2/detail` 返回的 `data.review` 是**空壳**（对象但字段全 undefined），
@@ -121,7 +151,7 @@ export function normalizeReview(item) {
     score: rv.score ?? null,
     playedSpent: rv.played_spent ?? null,
     totalPlayedSpent: rv.total_played_spent ?? null,
-    text: String(rv.contents?.text ?? rv.contents?.raw_text ?? ''),
+    text: cleanReviewText(rv.contents?.text ?? rv.contents?.raw_text ?? ''),
     stage: rv.stage ?? null,
     stageLabel: rv.stage_label ?? '',
     source: rv.source ?? null,
@@ -141,15 +171,29 @@ export function normalizeReview(item) {
  *
  * · 表情标记必须剥掉 —— 评价接口只吃纯文本，表情节点没验证过，宁可不发
  * · 签名由上层 clampReply 统一加（这里不重复加）
- * · 单行化：论坛楼中楼要求单行，评价接口没这要求，但保持一致更安全
+ *
+ * ⚠️ `keepNewlines`（2026-11-23 新增）：
+ *    默认仍是「压成单行」（历史行为，跟论坛楼中楼一致）。
+ *    但**分步骤的自查指引类文案必须保留换行** —— 压成一行玩家根本没法照着做
+ *    （大哥 2026-11-23 的「账号丢失」回复就是 1/2/3 分条结构）。
+ *    评价接口的 contents 只是纯文本，没要求单行（论坛那个「必须单行」是楼中楼的限制）。
  */
-export function buildReviewContents(text) {
-  const s = stripEmojiMarks(String(text ?? ''))
+export function buildReviewContents(text, { keepNewlines = false } = {}) {
+  const s = stripEmojiMarks(String(text ?? ''));
+  if (keepNewlines) {
+    return s
+      .split(/\r?\n/)
+      .map((x) => x.trimEnd())
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n') // 最多留一个空行，避免大片留白
+      .trim();
+  }
+  const s2 = s
     .split(/\r?\n/)
     .map((x) => x.trim())
     .filter(Boolean)
     .join(' ');
-  return s;
+  return s2;
 }
 
 /** 从评价链接里取 reviewId（/review/51123606） */
@@ -195,14 +239,15 @@ export function makeReviewApi({ get, post } = {}) {
    * ⚠️ 这个接口**是公开的**（实测：不带 Cookie 直接打也返回 200）。
    *    这里仍走页面上下文 —— 统一一条通道，行为一致、不用维护两套取数逻辑。
    */
-  async function reviewList({ appId, limit = 10, sort = 'new' } = {}) {
-    const params = normalizeListParams({ appId, limit, sort });
+  async function reviewList({ appId, limit = 10, sort = 'new', from = 0 } = {}) {
+    const params = normalizeListParams({ appId, limit, sort, from });
     if (!params.app_id) return { ok: false, list: [], error: '缺少 appId' };
     const r = await get(REVIEW_LIST_PATH, params);
     if (!r.ok) return { ok: false, list: [], error: r.status, json: r.json };
     const d = r.json?.data || {};
     const list = (Array.isArray(d.list) ? d.list : []).map(normalizeReview).filter(Boolean);
-    return { ok: true, list, total: d.total, raw: d };
+    // next_page 为空/缺省 = 已经翻到底（评价流到底了）
+    return { ok: true, list, total: d.total, nextPage: d.next_page || '', raw: d };
   }
 
   /**
@@ -218,14 +263,14 @@ export function makeReviewApi({ get, post } = {}) {
    * @param {string} [o.signature]     签名（没带就补；带了不重复加）
    * @param {string} [o.contents]      直接指定载荷（一般不用）
    */
-  async function reviewReply({ reviewId, text, signature = '', contents } = {}) {
+  async function reviewReply({ reviewId, text, signature = '', contents, keepNewlines = false } = {}) {
     const rid = String(reviewId ?? '').trim();
     if (!rid) return { ok: false, stage: 'no_review_id' };
     let payload = contents;
     if (payload === undefined || payload === null) {
       // 签名统一由脚本加一次（clampReply 幂等：已经带了就不重复加）
       const capped = signature ? clampReply(text, { signature }) : String(text ?? '');
-      payload = buildReviewContents(capped);
+      payload = buildReviewContents(capped, { keepNewlines });
     }
     const res = await post(
       REVIEW_REPLY_PATH,

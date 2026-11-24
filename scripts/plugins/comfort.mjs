@@ -49,6 +49,9 @@ export default {
         (r.status === STATUS.NO_NEED || r.status === STATUS.MANUAL) &&
         !spoke.has(String(r.id)) &&
         !comfortDone(r.id) &&
+        // 🆕 2026-11-23（F2）：我们/队友已经在这帖开过口 → 不重复去陪
+        //   （以前只查自己的事件，队友回过看不见 → 队友陪完 bot 又陪一遍）
+        !r._teamSpoke &&
         looksLikeEmotion(`${r.title || ''}\n${r.text || ''}`) &&
         canChatter(state, r.id).ok
     );

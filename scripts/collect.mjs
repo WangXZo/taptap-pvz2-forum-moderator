@@ -895,6 +895,13 @@ export async function runOnce({
         //    要是也拿去判「他人已回复 → 沉淀」，就会把「加好友呀」这种垃圾写进答疑库。
         post.iReplied = looksQ && ours.length > 0;
         post.othersReplied = looksQ && flat.length > ours.length && !post.iReplied;
+        // 🆕 2026-11-23（F2）**我们/队友是否已在这帖开过口**（不分提问/非提问）。
+        //   为什么单列一个:提问帖走 iReplied 就够（classify 直接判 already_replied），
+        //   但**捧场类通道**（夸码/分享互动/情绪陪聊）面对的都是「非提问帖」，
+        //   iReplied 恒为 false → 插件只查「自己发过的事件」，**看不见队友回过**，
+        //   于是队友 622*** 已经在这帖夸过，bot 又去夸一遍（大哥 2026-11-23 报的现场）。
+        //   判定口径与提问帖一致：isOurComment（队友 id + 签名结尾），不再另立标准。
+        post.teamSpoke = ours.length > 0;
         post.replyCount = comments.length;
         post.scannedComments = commentCount;
         // 上下文（用户 2026-11-02）：玩家喊我们时，要能「看懂这一楼在聊什么」再回话。
@@ -1357,6 +1364,8 @@ export async function runOnce({
       _prev: prev,
       _codeAsking: codeAsking,
       _threadTree: threadTree,
+      /** 我们/队友是否已在这帖开过口（F2：捧场类插件据此让位，别跟队友重复） */
+      _teamSpoke: Boolean(post.teamSpoke),
       summons: summonPlans,
       interact: interactPlans,
       /** 联网补答的结论（没搜过就是 null）—— 供报表/人工线索用 */
@@ -1568,7 +1577,12 @@ export async function runOnce({
   }
 
   // ---------- 3b. 夸奖答题玩家（楼中楼回复） ----------
-  const praisables = results.filter((r) => r.praise && !state.posts[r.id]?.praised);
+  //    ⚠️ 2026-11-23（F1 同族）：**当前是死块** —— rec.praise 自 T33 起恒为 null
+  //       （夸奖规划已搬到 plugins/praise.mjs）。这里加 pluginOwns 守卫是为了
+  //       「万一将来恢复 r.praise 字段」时不会和插件同时发（那正是夸码通道踩过的双发坑）。
+  const praisables = pluginOwns(config, 'praise')
+    ? []
+    : results.filter((r) => r.praise && !state.posts[r.id]?.praised);
   if (praisables.length) {
     log(`\n  -> 可夸奖 ${praisables.length} 条${dryRun ? '（dry-run，不发送）' : ''}`);
     if (!doReply) {
@@ -1784,7 +1798,11 @@ export async function runOnce({
 
 
     // 🎁 天宫码贴码者 → 夸「无私分享」这个行为（用户 2026-11-02）
-    //    ⚠️ T33 修复：这条通道**不在插件里**（插件只有 codematch 撮合），必须留在 core。
+    //    ⚠️ 2026-11-23（F1）**纠正一条错注释**：原文写「这条通道不在插件里（插件只有 codematch 撮合）」，
+    //       但 plugins/share.mjs 早就实现了同一条 code_praise 通道（done: {kind:'code_praise'}）。
+    //       T33 删旧块时把守卫一起丢了（`pluginOwns` 只 import、从未调用）→ 两条路各发一次 =
+    //       同帖双发（帖 873562347409509277 上真的出现两条夸奖）。
+    //       现在由下面 codeShares 的 pluginOwns 判断接管，插件开则旧块让位。
     //    贴码 ≠ 分享：帖子里同时在「求码」的话，是在**要**码，不是在**给**码
     //      （事故：《蹲一个天宫码》被判成「无私分享」→ 我们把求码的人当成分享者夸了）
     const isCodeShare = (r) =>
@@ -1803,12 +1821,17 @@ export async function runOnce({
       log(`  [刹车] 《${String(r.title || '').slice(0, 20)}》${c.reason} → 本轮不凑热闹（答疑/致歉照常）`);
       return false;
     };
-    const codeShares = applySceneGate(
-      results
-        .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r) && chatterOk(r))
-        .slice(0, CODE_CAP),
-      'praise_code'
-    );
+    // 🆕 2026-11-23 大哥要求「天宫码，捧场，关闭」：这条通道单独有开关，
+    //   即使 share 插件整体关掉、回退到本旧块，也要尊重它。
+    const codePraiseOn = config.share?.codePraise !== false;
+    const codeShares = pluginOwns(config, 'share') || !codePraiseOn
+      ? []
+      : applySceneGate(
+          results
+            .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r) && chatterOk(r))
+            .slice(0, CODE_CAP),
+          'praise_code'
+        );
     if (codeShares.length) {
       log(
         `\n  -> 天宫码分享可夸 ${codeShares.length} 条（无私分享，上限 ${CODE_CAP}）${
@@ -1947,7 +1970,11 @@ export async function runOnce({
   // ---------- 3f. 互动续聊（用户 2026-11-05） ----------
   //   玩家回应了我们（@你 / 回复你 / 喊你）→ 可以继续接一句；
   //   纯客套（「哈哈谢谢」）不回；同帖 × 同玩家回过 3 次后 50% 概率；情绪强烈必回。
-  const interactAll = results.flatMap((r) => (r.interact || []).map((c) => ({ r, c })));
+  //   ⚠️ 2026-11-23（F1 同族）：**当前是死块** —— rec.interact 恒为空数组
+  //      （候选已改由 plugins/interact.mjs 自己算，见 T33）。同样加守卫防将来双发。
+  const interactAll = pluginOwns(config, 'interact')
+    ? []
+    : results.flatMap((r) => (r.interact || []).map((c) => ({ r, c })));
   if (interactAll.length) {
     const cap = Number(config.interact?.maxPerRun ?? 3);
     const live = interactAll.filter((x) => !x.c.blocked && x.c.text);

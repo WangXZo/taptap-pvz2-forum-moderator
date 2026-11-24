@@ -33,6 +33,11 @@ export default {
       looksLikeCodeShare(`${r.title || ''}\n${r.text || ''}`) && !looksLikeCodeAsk(`${r.title || ''}\n${r.text || ''}`);
     const codeDone = (id) => Boolean(state.posts?.[id]?.shareCommented) || hasDoneEvent(id, 'code_praise');
     const shareDone = (id) => Boolean(state.posts?.[id]?.shareCommented) || hasDoneEvent(id, 'share_reply');
+    // 🆕 2026-11-23（F2）：**我们或队友已经在这帖开过口** → 不再去说第二遍。
+    //   以前只查「自己」发过的事件，队友（config.teamUserIds，如 622***）回过看不见 →
+    //   队友夸完 bot 又夸一遍（大哥报的现场：《天宫码（安卓）》《天宫拿去》两帖都这样）。
+    //   判定由 core 统一给出（isOurComment：队友 id + 签名结尾），插件不自己另立标准。
+    const teamSpoke = (r) => Boolean(r?._teamSpoke);
 
     const chatterOk = (r) => {
       const c = canChatter(state, r.id);
@@ -60,13 +65,19 @@ export default {
       return list;
     };
 
+    // 🆕 2026-11-23 大哥要求「天宫码，捧场，关闭」：
+    //   **单独一条开关**，只停「夸无私分享」；分享帖轻互动、天宫码撮合都不动。
+    //   config.share.codePraise=false → 这条通道整体让位（下面 codeShares 直接空）。
+    const codePraiseOn = config.share?.codePraise !== false;
     const CODE_CAP = Number(config.share?.maxCodePraisePerRun ?? 2);
-    const codeShares = applyGate(
-      (results || [])
-        .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && isCodeShare(r) && chatterOk(r))
-        .slice(0, CODE_CAP),
-      'praise_code'
-    );
+    const codeShares = !codePraiseOn
+      ? []
+      : applyGate(
+          (results || [])
+            .filter((r) => r.status === STATUS.NO_NEED && !codeDone(r.id) && !teamSpoke(r) && isCodeShare(r) && chatterOk(r))
+            .slice(0, CODE_CAP),
+          'praise_code'
+        );
     const shares = applyGate(
       (results || []).filter(
         (r) =>
@@ -74,6 +85,7 @@ export default {
           r.reason === REASON.NOT_QUESTION &&
           (looksLikeShare(r.title) || r.imageCelebrate) &&
           !shareDone(r.id) &&
+          !teamSpoke(r) &&
           !isCodeShare(r) &&
           chatterOk(r)
       ),

@@ -103,13 +103,27 @@ export function createSendLayer(impl = {}) {
    */
   async function send(plan, ctx = {}) {
     const {
-      config = {}, state = {}, db = null, runner = null, praiseDb = null, log = () => {},
+      config = {}, db = null, runner = null, praiseDb = null, log = () => {},
       dryRun = false, usage = null,
       // 🆕 B4-9a（2026-11-19）：`persist:false` = **只发送不记账**。
       //   给 worker 线程用：多线程并发写 state.json/SQLite 会互相覆盖（历史丢过 172 条记录），
       //   所以线程只负责发送，记账统一由父进程做。
       persist = true,
     } = ctx;
+    // 🆕 2026-11-23（F5）：**state 必须补齐成可写哑对象**。
+    //   worker 线程只传「发送所需」（config/runner/log/persist），**不传 state**。
+    //   而底层 sendPraise / sendSummonReply / sendInteractReply 在**发送成功之后**会写
+    //   `state.posts[postId]` / `state.recentReplies` —— state 为 undefined 时直接 TypeError，
+    //   被下面 catch 成 {ok:false, stage:'exception'} → **评论已经发出去了却记成失败**
+    //   （实测 2026-11-23 15:22 那条 praise：trace 是 sent:false / reason:exception，
+    //     但评论实际已发出，于是下一轮还会重发 = 又一种「重复处理」）。
+    //   persist:false 时这个哑对象不落盘，没有任何副作用；persist:true 时就是真实 state。
+    const state = (() => {
+      const s = ctx.state && typeof ctx.state === 'object' ? ctx.state : {};
+      if (!s.posts) s.posts = {};
+      if (!s.recentReplies) s.recentReplies = {};
+      return s;
+    })();
     const text = String(plan?.text || '').trim();
     const postId = String(plan?.postId || '');
 

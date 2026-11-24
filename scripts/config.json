@@ -71,7 +71,8 @@
     "enabled": true,
     "signature": true,
     "maxPerRun": 2,
-    "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值"
+    "codePraise": false,
+    "note": "分享/记录/进度类帖子（不是提问）→ 去说一句通用鼓励 + 1 个表情，不套答疑内容、不评价具体数值。codePraise=false 表示关闭「天宫码捧场（夸无私分享）」这一条通道（大哥 2026-11-23 要求），分享贴轻互动与天宫码撮合不受影响"
   },
   "websearch": {
     "enabled": true,
@@ -339,7 +340,15 @@
     "enabled": false,
     "autoAnalyze": false,
     "lowScoreMax": 2,
-    "note": "P4-c 评价分析（2026-11-19）：**只读分析 + 低分提醒，绝不自动回复评价**（评价对外公开、处置归人工，与『删评归人工』一致）。默认关闭；开启后 collect 侧也不擅自调评价接口（需注入 fetchReviews），建议用 scripts/review-analyze.mjs 手动跑。"
+    "accountLost": {
+      "enabled": true,
+      "session": "tapreview",
+      "everySeconds": 120,
+      "scanPages": 2,
+      "signature": true,
+      "skipScores": []
+    },
+    "note": "评价（review）这里分两件事，别混：①enabled / autoAnalyze / lowScoreMax = 只读分析 + 低分提醒（2026-11-19，默认关，那条通道绝不自动回复）；②accountLost = 「账号丢失 / 存档丢失」专项自动回复（2026-11-23 大哥要求：官方客服口径固定文案，每轮只回 1 条、从新到旧、不设时间窗口、按队列持续消化、不设总量上限，带签名）。review-watch.mjs 只做第②件。accountLost.enabled=false 立刻停，不影响论坛链路；skipScores 可填星级（如 [1,5]）让某些星级不自动回。"
   },
   "taptapCli": {
     "enabled": true,

@@ -2,6 +2,7 @@
 import share from './plugins/share.mjs';
 import praise from './plugins/praise.mjs';
 import interact from './plugins/interact.mjs';
+import comfort from './plugins/comfort.mjs';
 import { STATUS, REASON } from './lib/state.mjs';
 let pass = 0, fail = 0;
 const t = (n, c, x = '') => (c ? pass++ : (fail++, console.log(`  ✗ ${n} ${x}`)));
@@ -97,6 +98,43 @@ console.log('\n== interact：护栏拦截 ==');
   const leakCompose = async () => ({ ok: true, text: '我查了答疑库才知道的' });
   t('泄露自检命中 → 不产计划', (await interact.planBatch([r], mkCtx({ compose: leakCompose }))) === null);
 }
+// ---------- F2（2026-11-23）：队友已开口 → 捧场类通道让位 ----------
+//   现场：队友 622*** 已在《天宫码（安卓），麻烦用完留个言》《天宫拿去》先夸过，
+//        bot 又各夸一遍。根因是插件只查「自己发过的事件」，看不见队友回过。
+//        core 现在统一给出 `_teamSpoke`（isOurComment：队友 id + 签名结尾），插件据此让位。
+console.log('\n== F2: 队友已开口 → 捧场类让位（不跟队友重复）==');
+{
+  const codePost = rec({ id: 't1', title: '天宫码（安卓），麻烦用完留个言', text: 'JFAABCDEFG 自取，用完留个言' });
+  t('无队友开口 → 发码帖照常夸', (await share.planBatch([codePost], mkCtx()))?.length === 1);
+  t('队友已夸 → 不再夸（核心修复）', (await share.planBatch([{ ...codePost, _teamSpoke: true }], mkCtx())) === null);
+
+  const sharePost = rec({ id: 't2', title: '终于通关了', text: '分享一下我的通关进度' });
+  t('分享帖：队友已开口 → 不再互动', (await share.planBatch([{ ...sharePost, _teamSpoke: true }], mkCtx())) === null);
+
+  // 真实事故帖文本（test-comfort 里确认能被 looksLikeEmotion 认出）
+  const emoPost = rec({
+    id: 't3',
+    title: '我无疑是绝望的。。。',
+    text: '任务差一点，无法完成了。非常可惜',
+    status: STATUS.NO_NEED,
+  });
+  const emoCtx = () => mkCtx({ config: { comfort: { enabled: true, maxPerRun: 2 } } });
+  t('情绪帖：无队友开口 → 会去陪一句', (await comfort.planBatch([emoPost], emoCtx()))?.length === 1);
+  t('情绪帖：队友已开口 → 不再陪聊', (await comfort.planBatch([{ ...emoPost, _teamSpoke: true }], emoCtx())) === null);
+}
+
+// ---------- 天宫码捧场开关（大哥 2026-11-23：「天宫码，捧场，关闭」，其他不涉及） ----------
+console.log('\n== 天宫码捧场开关 config.share.codePraise ==');
+{
+  const codePost = rec({ id: 'cp1', title: '天宫码 先到先得', text: 'JFAABCDEFG 拿去用' });
+  const sharePost = rec({ id: 'cp2', title: '终于通关了', text: '分享一下我的通关进度' });
+  const offCtx = () => mkCtx({ config: { share: { enabled: true, codePraise: false } } });
+
+  t('默认（未配 codePraise）→ 照常夸', (await share.planBatch([codePost], mkCtx()))?.length === 1);
+  t('codePraise=false → 不再夸天宫码', (await share.planBatch([codePost], offCtx())) === null);
+  t('codePraise=false 不影响分享帖轻互动', (await share.planBatch([sharePost], offCtx()))?.length === 1);
+}
+
 console.log('\n== 开关关闭 ==');
 {
   const r = rec({ id: 'x1', title: '终于通关了', text: '分享' });

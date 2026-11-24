@@ -56,6 +56,32 @@ node scripts/watch.mjs --once --dry-run
 # 6) 满意后常驻
 node scripts/watch.mjs
 ```
+
+## 评论（游戏评价）专项守护：账号丢失自动回复（2026-11-23）
+
+> ⚠️ **评价 ≠ 论坛帖子**，是两条独立链路：评价的 `contents` 是**纯文本**、没有表情节点、只有一层回复、按 app 维度拉列表。
+
+只管一件事：发现评价在说**「账号丢失 / 存档丢失」**→ 回官方客服口径的自查指引。
+
+```bash
+node scripts/review-watch.mjs                 # 常驻
+node scripts/review-watch.mjs --once --dry-run    # 只判定不发送
+node scripts/review-watch.mjs --scan-only         # 只采集入队
+node scripts/review-watch.mjs --status            # 看游标与队列
+```
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 每轮回复量 | **1 条** | 差评敏感，宁慢勿急 |
+| 扫描方向 | **从新到旧** | 分页参数是 **`from`（偏移量）**；`page`/`offset` 实测无效 |
+| 时间窗口 | **不设** | 翻到底自动回卷重来，持续覆盖历史 |
+| 总量上限 | **不设** | 对应 D1：不设每日发送量闸 |
+| 幂等 | 状态文件 + 发后读回校验 | 同一条评价只回一次；**回不了就转人工，绝不重发** |
+| 🚫 敏感拦截 | 充值/退款/封号/投诉/盗号/实名… | **一律不自动回**（首次实测就差点误回一条充值纠纷） |
+
+开关：`config.review.accountLost.enabled`（默认 `true`），关掉即整体停，不影响论坛链路。
+文案：`scripts/lib/review-guard.mjs` 的 `ACCOUNT_LOST_TEXT`（也可用 `review.accountLost.text` 覆盖）。
+
 ## 四类标记
 
 每条帖子只会落在其中之一，`reports/questions.md` 与 `.csv` 按这四类分区：

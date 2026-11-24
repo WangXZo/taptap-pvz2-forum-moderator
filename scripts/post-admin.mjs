@@ -24,6 +24,7 @@ import { loadQaLibrary, matchPost, looksLikeQuestion } from './lib/qa.mjs';
 import { loadUsage, entryKeyOf } from './lib/usage.mjs';
 import { loadState, STATUS, REASON } from './lib/state.mjs';
 import { openPostDb, hasDoneEvent, markDoneEvent } from './lib/post-records.mjs';
+import { teamUserIdsOf } from './lib/signature.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -35,6 +36,17 @@ const argOf = (name, dflt = null) => {
 
 const config = await loadConfig();
 const MY_ID = String(config.myUserId || '');
+// 🆕 2026-11-23（F4）：**队友也要标出来**。
+//   以前只看 myUserId —— 队友（config.teamUserIds，如 622***）回过帖，诊断里一点看不出来，
+//   「队友已经处理过、bot 又来一遍」只能靠肉眼比对数字 id 才发现（大哥 2026-11-23 报的现场）。
+//   判定口径与运行期一致：teamUserIdsOf（我的 + teamUserIds，自动剔掉脱敏占位）。
+const TEAM_IDS = teamUserIdsOf(config);
+/** 这条评论是谁发的：'' | ' ★我' | ' ★队友' */
+const authorMark = (c) => {
+  const uid = String(c?.author?.id || '');
+  if (!uid || !TEAM_IDS.includes(uid)) return '';
+  return uid === MY_ID ? ' ★我' : ' ★队友';
+};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function cmdFetch() {
@@ -47,11 +59,9 @@ async function cmdFetch() {
     console.log(`\n================ 帖子 ${id} ================`);
     console.log(`链接：https://www.taptap.cn/moment/${id}`);
     for (const x of c.list || []) {
-      const mine = String(x.author?.id) === MY_ID;
-      console.log(`[${x.id_str}] ${x.author?.name}(${x.author?.id})${mine ? ' ★我' : ''}: ${flattenContents(x.contents)}`);
+      console.log(`[${x.id_str}] ${x.author?.name}(${x.author?.id})${authorMark(x)}: ${flattenContents(x.contents)}`);
       for (const ch of x.child_posts || []) {
-        const m2 = String(ch.author?.id) === MY_ID;
-        console.log(`    └ [${ch.id_str}] ${ch.author?.name}(${ch.author?.id})${m2 ? ' ★我' : ''}: ${flattenContents(ch.contents)}`);
+        console.log(`    └ [${ch.id_str}] ${ch.author?.name}(${ch.author?.id})${authorMark(ch)}: ${flattenContents(ch.contents)}`);
       }
     }
     await sleep(1800);

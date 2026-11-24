@@ -5,6 +5,88 @@
 
 ---
 
+## v2.2.0 — 重复处理专项修复（F0~F6）+ 评价自动答疑通道（2026-11-24）
+
+### 背景
+两件事撞在一起：
+
+1. 大哥给了两帖说「队友处理完了，不用再次重复处理」，并要求**检查代码实现**而不是单独标记这两帖；
+2. 新增需求 —— 给**玩家评价**（与论坛发言是两条路）开一条后台通道，识别到「账号丢失/存档丢失」语义时回官方客服固定文案。
+
+查下来的根因不在配置、也不在运气 —— 是**发送不记账**，以及**旧块与插件双实现**。
+
+### 一、F0 多队列把执行器静默丢掉 → 发出去了却没记账 → 同帖双发
+
+`multi-queue.dispatch(plans)` 只收一个参数，plugin-runner 传进去的 executor 被**静默忽略**，
+直接裸调 `pool.run` → **worker 真发了，`bookkeep` 没跑**：没有 `post_event`、没有 `stateFlags`、
+没有 trace、没有 `recentReplies` → 幂等门查不到「这条回过了」→ 同轮旧块再发一次 → **同帖双发**。
+日志里的症状是恒定的一行「本轮执行 0 条（失败 0）」（历史日志全中此症）。
+
+- 修：`dispatch(plans, executor)`，有 executor 就用它，没有才退回 `pool.run`
+- 实测：重启后连续 4 次「本轮执行 1 条（失败 0）」，日志出现 `[OK] praise 已发送`
+
+### 二、F1 旧块与插件双实现 → `pluginOwns` 守卫收口
+
+`pluginOwns` 早在 T33 就 import 了，却**全文件零调用** —— 删旧块时把守卫一起丢了，
+于是「夸无私分享（天宫码）」那条**旧块是真在跑的**，与插件并存。
+
+| 通道 | 插件 | 旧块（collect.mjs） | 处理 |
+|---|---|---|---|
+| 夸无私分享 | `plugins/share.mjs` | 3d 块（真在跑） | 加守卫 → 插件开则旧块让位 |
+| 夸奖答题玩家 | `plugins/praise.mjs` | 3b 块（死块） | 加守卫防将来双发 |
+| 互动续聊 | `plugins/interact.mjs` | 3f 块（死块） | 加守卫防将来双发 |
+
+### 三、F2 捧场类通道不认队友 → 同一问题两套标准
+
+提问帖认队友（`isOurComment` 含 `teamUserIds` + 签名），捧场类却只查**自己**发过的事件 → 队友回过看不见 → 我又去捧一次。
+修：core 统一给出 `post.teamSpoke` → `rec._teamSpoke` → share / comfort 据此让位。
+
+### 四、F3 码型串台 → 天宫码被贴到「求好友码」的帖下面
+
+`CODE_ASK_RE` 把 `and[A-Za-z0-9]{6,12}` 也算成「码」，于是
+`and2CU6H43V\n有没有加好友的`（真实帖）被判成「求天宫码」→ **撮合时把天宫码发到求好友码的帖下面**。
+修：拆成「码词」（天宫码/兑换码/激活码/…）、「通用码型」、「好友码整串」三组 —— **先剥掉好友码再判**，
+好友码永不参与求码判定。加好友的帖不再进撮合队列。
+
+### 五、F4 诊断工具盲区
+
+`post-admin.mjs fetch` 的 `★我` 只比对 `myUserId`，队友回过完全看不出来（这次是靠肉眼比 id 才发现的）。
+修：改用 `teamUserIdsOf(config)`，输出 `★我` / `★队友`。
+
+### 六、F5 线程池缺 `state` → 评论已发出却记成失败
+
+worker 只传 `config/runner/persist`，**不传 `state`**；而 `praise-send` / `summon-send` / `interact-send`
+在**发送成功之后**才写 `state.posts[postId]` → `TypeError` → 被 send-layer catch 成
+`{ok:false, stage:'exception'}` → **发出去了却记成失败** → 下一轮重发。
+（F0 修好记账之后才暴露出来。）
+
+修：send-layer 统一把 `state` 补齐成可写哑对象（`posts` / `recentReplies`），一处覆盖三条发送路径。
+
+### 七、F6 天宫码捧场关闭
+
+按大哥要求「天宫码，捧场，关闭。（其他不涉及）」—— **只关这一条通道**。
+
+- 新增开关 `share.codePraise`（默认 true），已写进 `scripts/config/schema.json`
+- `config.json` 置 `false`；`share.enabled` 仍为 `true`
+- 分享帖轻互动、天宫码撮合、夸答题玩家、互动续聊、情绪陪聊**全部照常**
+
+### 八、新功能：评价回复通道（与论坛发言是两条路）
+
+- 新增 `scripts/review-watch.mjs` —— 守护进程，每轮**严格处理 1 条**评价，从新到旧（游标翻到底自动回卷）
+- 新增 `scripts/lib/review-guard.mjs` —— 语义判定：「账号丢失/存档丢失」**同一句内**共现才命中
+  （整段共现会把「5 星攻略 + 按你的账号登录」这类误判成丢号）
+- 命中就回官方客服固定文案，**带签名**，内容同步沉淀到 `qa/答疑库.md`
+- 发完**回查**确认落库（默认 3 次递增等待）；查不到只记人工，**绝不重发**
+- 每条记录都存下当时的评价原文片段与判定理由，便于事后核查
+- 评价接口的翻页参数是 **`from`**（不是 `page`/`offset`）—— 之前传 `page` 被静默丢掉，只看到最新 10 条
+
+### 测试
+
+新增 `test-review-watch`（65 项）；`test-multi-queue` / `test-plugin-channels` / `test-limits-codes` /
+`test-watch-queue` / `test-send-layer` 均有增量。全套 **79 套件 0 失败**。
+
+---
+
 ## v2.1.0 — 正确性三项 + 内核收口（2026-11-23）
 
 ### 背景

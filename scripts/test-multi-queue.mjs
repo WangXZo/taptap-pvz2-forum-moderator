@@ -200,5 +200,53 @@ console.log('\n== mode=off 时不限速 ==');
   t('总耗时很短（<50ms）', Date.now() - t0 < 50, String(Date.now() - t0));
 }
 
+// ---------- F0（2026-11-23）：dispatch 必须执行调用方的 executor ----------
+//   事故背景：插件线程池模式下 plugin-runner 传进来的执行器里包着 `layer.send`
+//   （= pool.run + bookkeep 记账）和 sent/failed 计数。旧签名 `dispatch(plans)` 只收一个参数，
+//   第二个参数被 **静默丢掉** → 直接裸调 pool.run 发送：
+//     · 评论发出去了，但 post_event / state / trace 一个都没写 → 幂等门失效
+//     · 日志恒为「本轮执行 0 条（失败 0）」
+//     · 同一轮旧块再发一次 → **同帖双发**（帖 873562347409509277 上真的出现两条夸奖）
+console.log('\n== F0: dispatch 必须走调用方的 executor（记账链不能断）==');
+{
+  const config = { exec: { concurrency: 1, queues: { mode: 'fixed' }, rateLimit: { mode: 'off' } } };
+  let poolCalls = 0;
+  const fakePool = {
+    run: async () => {
+      poolCalls++;
+      return { ok: true, stage: 'api_sent' };
+    },
+  };
+  const executorCalls = [];
+  const mq = createMultiQueue({ config, pool: fakePool, sendFn: async () => ({ ok: true }) });
+  const r = await mq.dispatch(
+    [{ kind: 'answer', plugin: 'share', postId: 'pF0', mutexKey: 'post:pF0' }],
+    async (plan) => {
+      executorCalls.push(plan.postId);
+      return { ok: true, stage: 'api_sent' };
+    }
+  );
+  t('有 pool 时仍然调用 executor', executorCalls.length === 1, JSON.stringify(executorCalls));
+  t('executor 收到的是同一个 plan', executorCalls[0] === 'pF0', JSON.stringify(executorCalls));
+  t('executor 存在时不再裸调 pool.run', poolCalls === 0, `poolCalls=${poolCalls}`);
+  t('结果按入参同序回流', r[0]?.ok === true, JSON.stringify(r));
+  t('stats 按 executor 结果计数', mq.stats().done === 1, JSON.stringify(mq.stats()));
+}
+
+console.log('\n== F0: 未给 executor 时退回 pool.run（历史兼容）==');
+{
+  const config = { exec: { concurrency: 1, queues: { mode: 'fixed' }, rateLimit: { mode: 'off' } } };
+  let poolCalls = 0;
+  const fakePool = {
+    run: async () => {
+      poolCalls++;
+      return { ok: true };
+    },
+  };
+  const mq = createMultiQueue({ config, pool: fakePool });
+  await mq.dispatch([{ kind: 'answer', postId: 'pX' }]);
+  t('未给 executor → 退回 pool.run', poolCalls === 1, `poolCalls=${poolCalls}`);
+}
+
 console.log(fail ? `\n✗ ${fail} 项失败` : '\n全部通过');
 process.exit(fail ? 1 : 0);

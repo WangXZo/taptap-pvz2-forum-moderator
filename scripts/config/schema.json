@@ -123,7 +123,8 @@
     "share": { "label": "分享互动", "fields": {
       "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "分享/记录/进度帖 → 去说一句鼓励，不答疑不评价数值" },
       "signature": { "type": "boolean", "default": true, "label": "带签名" },
-      "maxPerRun": { "type": "integer", "default": 2, "min": 1, "max": 50, "label": "单轮上限" }
+      "maxPerRun": { "type": "integer", "default": 2, "min": 1, "max": 50, "label": "单轮上限" },
+      "codePraise": { "type": "boolean", "default": true, "label": "天宫码捧场（夸无私分享）", "description": "有人贴出天宫码 → 夸「无私分享」这个行为。关掉只停这一条通道；分享帖轻互动、天宫码撮合照常。" }
     }},
     "comfort": { "label": "情绪陪伴", "fields": {
       "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "纯情绪帖（绝了/可惜/憋屈）→ 陪一句共情，一帖一次" },
@@ -177,10 +178,18 @@
       "sources.official.urls": { "type": "array", "default": [], "label": "官方公告 URL 列表" },
       "sources.weekly.enabled": { "type": "boolean", "default": false, "label": "周报 md 源" }
     }},
-    "review": { "label": "评价分析", "fields": {
-      "enabled": { "type": "boolean", "default": false, "label": "启用", "description": "**只读分析，绝不自动回复评价**（评价处置归人工）" },
+    "review": { "label": "游戏评价（review）", "fields": {
+      "enabled": { "type": "boolean", "default": false, "label": "评价分析启用", "description": "**只读分析 + 低分提醒，不自动回复**（这与下面的 accountLost 是两件事）" },
       "autoAnalyze": { "type": "boolean", "default": false, "label": "自动分析" },
-      "lowScoreMax": { "type": "integer", "default": 2, "min": 1, "max": 5, "label": "低分阈值" }
+      "lowScoreMax": { "type": "integer", "default": 2, "min": 1, "max": 5, "label": "低分阈值" },
+      "accountLost": { "type": "object", "default": {}, "label": "账号丢失专项回复", "description": "发现评价在说「账号/存档丢失」→ 回官方客服口径的自查指引（大哥 2026-11-23 要求）", "fields": {
+        "enabled": { "type": "boolean", "default": true, "label": "启用专项回复", "description": "关掉即整体停（不影响论坛 watch / mod-watch）" },
+        "session": { "type": "string", "default": "tapreview", "label": "opencli 会话名", "description": "独立会话，避免和论坛 watch 抢同一个浏览器上下文" },
+        "everySeconds": { "type": "integer", "default": 120, "min": 30, "max": 3600, "label": "轮询间隔(秒)" },
+        "scanPages": { "type": "integer", "default": 2, "min": 1, "max": 20, "label": "每轮翻页数", "description": "每页 10 条；从新到旧扫，命中才入队" },
+        "signature": { "type": "boolean", "default": true, "label": "带签名" },
+        "skipScores": { "type": "array", "default": [], "label": "跳过星级", "description": "如 [1,5]：这些星级的账号丢失评价不自动回，留给人工" }
+      }}
     }},
     "modTasks": { "label": "管理任务", "fields": {
       "enabled": { "type": "boolean", "default": true, "label": "启用", "description": "常驻 mod-watch：好友码帖识别与回复。**删除动作永不自动执行**" },

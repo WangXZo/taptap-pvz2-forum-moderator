@@ -18,8 +18,31 @@
 //   looksLikeCodeAsk(text)   帖子/评论在**求码、换码**（玩家侧行为）
 //   answerPromisesCode(text) 我们的**答案**在承诺换/给码（我们侧风险）
 
-/** 玩家在求码 / 想换码 / 发码让人用 */
-const CODE_ASK_RE = /(天宫码|兑换码|激活码|礼包码|福利码|互填码|邀请码|and[A-Za-z0-9]{6,12}|[A-Z]{3,6}[A-Za-z0-9]{4,12})/;
+/**
+ * 「码」词：只认天宫码 / 兑换码这一族
+ *
+ * ⚠️ **好友码不在里面**（大哥 2026-11-23 报的现场）：
+ *   旧版把 `and[A-Za-z0-9]{6,12}` 和 `[A-Z]{3,6}[A-Za-z0-9]{4,12}` 直接写进「码」的正则，
+ *   于是**加好友帖被当成「求天宫码」帖**：
+ *     《and2CU6H43V 有没有加好友的》→ 判成求码帖 → 撮合命中 → bot 把大佬的**天宫码链接**
+ *     贴到**好友码帖**下面。两种码不能混（见文件下方「码的分类」）。
+ */
+const CODE_WORD_RE = /(天宫码|兑换码|激活码|礼包码|福利码|互填码|邀请码)/;
+
+/**
+ * 泛码形态：3~6 个大写 + 4~12 位字母数字（帖里没写「天宫码」三个字时靠它兜）
+ * ⚠️ 它**也会命中好友码的码身**（`andABCDEFGH` 里的 `ABCDEFGH`），
+ *    所以判定前必须先把好友码整串剥掉，不能直接拿它 test。
+ */
+const GENERIC_CODE_RE = /[A-Z]{3,6}[A-Za-z0-9]{4,12}/;
+
+/** 好友码 token：and / ios + 8 位（大小写都收）——它**不是**「求码」的对象 */
+const FRIEND_CODE_TOKEN_RE = /(?:and|ios)[A-Za-z0-9]{8}/gi;
+
+/** 把好友码整串剔掉：求好友码 ≠ 求天宫码 */
+function stripFriendCodes(t) {
+  return String(t || '').replace(FRIEND_CODE_TOKEN_RE, ' ');
+}
 
 /** 明确在「求」：有没有/求/谁有/给我/求换/差一个 */
 const ASK_VERB_RE = /(有没有|谁有|求|给个|给一个|借|差一个|缺一个|换一?个|互换|互换码|能换|可以换|换吗|多一个|蹲一个|求一个)/;
@@ -44,11 +67,19 @@ const PROMISE_CODE_RE = new RegExp(
  */
 const NEGATED_RE = /(帮不上|帮不了|没法|没办法|不能|不方便|给不了|做不到|没有多|没有多余|抱歉|不提供|无法)/;
 
-/** 帖子/评论是不是在求码（玩家侧） */
+/**
+ * 帖子/评论是不是在求码（玩家侧）
+ *
+ * 2026-11-23 修正：**求好友码不算求天宫码**。
+ *   先把好友码整串剥掉，再判断「还有没有可求的码」——
+ *   否则加好友帖（andXXXX + 有没有/求/互换）会被当成求天宫码帖，
+ *   撮合时把天宫码链接贴到好友码帖下面（大哥报的串台 bug）。
+ */
 export function looksLikeCodeAsk(text) {
   const t = String(text || '');
-  if (!CODE_ASK_RE.test(t)) return false;
-  return ASK_VERB_RE.test(t);
+  if (!ASK_VERB_RE.test(t)) return false;
+  const s = stripFriendCodes(t);
+  return CODE_WORD_RE.test(s) || GENERIC_CODE_RE.test(s);
 }
 
 /**

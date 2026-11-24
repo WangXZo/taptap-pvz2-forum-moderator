@@ -300,8 +300,11 @@ const DEFAULT_FILES = [
   'docs/evidence/06-图片取图schema实测-20261116.md',
   // v1.3.4 评价接口 + 队列语义守卫（此前漏列，补齐保证仓库代码完整：taptap-api 依赖 review/text）
   'scripts/lib/review.mjs',
+  'scripts/lib/review-guard.mjs',
   'scripts/lib/text.mjs',
+  'scripts/review-watch.mjs',
   'scripts/test-review-api.mjs',
+  'scripts/test-review-watch.mjs',
   'scripts/test-watch-semantics.mjs',
   'references/review-api.md',
   'docs/方案-评价自动值守.md',

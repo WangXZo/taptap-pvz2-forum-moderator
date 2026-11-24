@@ -113,6 +113,17 @@ ok('「互相换的，我帮不上忙」= 不是承诺', !answerPromisesCode('�
 ok('求码能认出', looksLikeCodeAsk('有没有大佬有安卓天宫码'));
 ok('不是求码不乱认', !looksLikeCodeAsk('今天天气不错'));
 
+// ---------- 5. 求好友码 ≠ 求天宫码（2026-11-23 大哥报的串台 bug） ----------
+//   旧 CODE_ASK_RE 把 `and[A-Za-z0-9]{6,12}` 当「码」，于是加好友帖被判成求天宫码帖，
+//   撮合时把大佬的**天宫码链接**贴到**好友码帖**下面。两种码绝不能混。
+ok('真实加好友帖（and码+有没有）→ 不算求码', !looksLikeCodeAsk('and2CU6H43V\n有没有加好友的'));
+ok('求好友码 → 不算求天宫码', !looksLikeCodeAsk('求好友 好友码 andABCDEFGH'));
+ok('互换好友码 → 不算求天宫码', !looksLikeCodeAsk('互换好友码 andABCDEFGH'));
+ok('有没有加好友的+我的码 → 不算求码', !looksLikeCodeAsk('有没有加好友的，我的码 andABCDEFGH'));
+ok('ios 好友码同样不算求码', !looksLikeCodeAsk('求加好友 iosABCDEFGH'));
+ok('求天宫码照常认出（回归）', looksLikeCodeAsk('蹲一个天宫码') && looksLikeCodeAsk('求一个天宫码，蹲了好久了'));
+ok('贴天宫码（不是求）→ 不算求码', !looksLikeCodeAsk('天宫码（安卓），麻烦用完留个言'));
+
 console.log(`\n通过 ${pass} 条`);
 if (fails.length) {
   console.log(`失败 ${fails.length} 条：`);
