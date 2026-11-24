@@ -1,6 +1,6 @@
 # P3（2026-11-18）：C8 多模态实体路由 + C9 评测 harness
 
-> 配套 `lib/image.mjs`(entities) / `lib/retrieve.mjs`(实体优先+最长匹配) / `lib/intent.mjs`(边界修) /
+> 配套 `lib/image-bridge.mjs`→能力包 `pvz2-image-recognition` 的 image.mjs(entities) / `lib/retrieve.mjs`(实体优先+最长匹配) / `lib/intent.mjs`(边界修) /
 > `lib/eval.mjs` / `scripts/eval.mjs` / `assets/eval-set.json`。上游设计：实施方案报告 C8/C9。
 
 ## C8 多模态实体路由（图 → 知识直连）

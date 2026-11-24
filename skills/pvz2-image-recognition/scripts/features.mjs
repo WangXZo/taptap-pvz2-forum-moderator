@@ -1,8 +1,12 @@
-// S6 游戏特征模板匹配（本地 skill 资产库，2026-11-16）
+// S6 游戏特征模板匹配（本地资产库，2026-11-16；2026-11-24 随能力包拆分）
 //
 // 读 assets/game-features/features.json + 模板图 → 下载场景图 → POST 本地图像服务 /match
-// （opencv 多尺度模板匹配）→ 命中特征文本。模板库自包含、跟 skill 分发、离线免费；
+// （opencv 多尺度模板匹配）→ 命中特征文本。模板库自包含、跟能力包分发、离线免费；
 // 新植物/新 UI 只需补模板。服务未起 / 缺模板 → 降级返回空（不抛错）。
+//
+// ⚠️ 模板库路径已随拆分改动：原来在 taptap skill 根的 assets/game-features，
+//    现在在本能力包内 assets/game-features（PKG_ROOT/scripts/../assets）。
+//    外部用 config.image.features.dir 指定其它目录时，{{SKILL}} 占位符解析到能力包根。
 //
 // 特征定义 schema（features.json）：
 //   { id, name, category, method:'template', template:'templates/x.png', threshold:0.85, aliases:[] }
@@ -13,15 +17,15 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 const LIB_DIR = dirname(fileURLToPath(import.meta.url));
-const SKILL_ROOT = resolve(LIB_DIR, '..', '..'); // scripts/lib → skill 根
+const PKG_ROOT = resolve(LIB_DIR, '..'); // scripts → 能力包根（模板库随包分发）
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
 /** 读特征定义（features.json）。dir 支持 {{SKILL}} 占位。 */
 export function loadFeatures(config = {}) {
   const raw = config?.image?.features?.dir;
   const dir = raw
-    ? resolve(raw.replace(/\{\{SKILL\}\}/g, SKILL_ROOT))
-    : resolve(SKILL_ROOT, 'assets', 'game-features');
+    ? resolve(raw.replace(/\{\{SKILL\}\}/g, PKG_ROOT))
+    : resolve(PKG_ROOT, 'assets', 'game-features');
   let defs = [];
   try {
     defs = JSON.parse(readFileSync(resolve(dir, 'features.json'), 'utf8')).features || [];

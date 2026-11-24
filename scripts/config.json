@@ -428,7 +428,7 @@
       "server": "http://127.0.0.1:8790",
       "timeoutMs": 30000
     },
-    "note": "图片识别流水线（2026-11-16，设计稿见任务目录 output/PVZ2图片识别-技术设计稿-20261116.md）：①码/好友意图跳过图片识别（isCodeIntent）②相关性门控纯启发式起步（无关配图跳过、相关图才识别）③识别内容并入 post.text → QA匹配/联网搜索/LLM组答自动受益。识别手段：S3 RapidOCR 本地 OCR（需起 scripts/ocr_server.py，pip install rapidocr）+ S4 VLM（跟随 DSH/他人 key，见 llm.vision）+ S6 模板匹配（assets/game-features，opencv /match）。结果缓存 data/image-cache.json（TTL cacheTtlHours）。OCR/VLM/模板服务未起或缺依赖 → 各自降级跳过，不阻断答疑。取图实测：图在 moment.topic.footer_images[]，匿名+X-UA 可读，CDN 无防盗链。"
+    "note": "图片识别流水线（2026-11-16 设计；2026-11-24 实现已拆成独立能力包 pvz2-image-recognition，主 skill 经 scripts/lib/image-bridge.mjs 薄壳调用，能力包没装就跳过图片识别）：①码/好友意图跳过图片识别（isCodeIntent）②相关性门控纯启发式起步（无关配图跳过、相关图才识别）③识别内容并入 post.text → QA匹配/联网搜索/LLM组答自动受益。识别手段：S3 RapidOCR 本地 OCR（需起 scripts/ocr_server.py，pip install rapidocr）+ S4 VLM（跟随 DSH/他人 key，见 llm.vision）+ S6 模板匹配（能力包内 assets/game-features，opencv /match）。结果缓存 data/image-cache.json（TTL cacheTtlHours）。OCR/VLM/模板服务未起或缺依赖 → 各自降级跳过，不阻断答疑。取图实测：图在 moment.topic.footer_images[]，匿名+X-UA 可读，CDN 无防盗链。"
   },
   "llm": {
     "enabled": true,

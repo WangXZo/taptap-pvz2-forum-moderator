@@ -1,10 +1,24 @@
-// 图片流水线 M4 离线测试：缓存（TTL/落盘）+ 识别编排降级（2026-11-16）。
+// 图片流水线 M4 离线测试：缓存（TTL/落盘）+ 识别编排降级。
+// 2026-11-24：实现已拆到独立能力包 `pvz2-image-recognition`，这里从能力包取。
 // 跑：node scripts/test-image-pipeline.mjs
-import { loadImageCache } from './lib/image-cache.mjs';
-import { enrichPostImages, defaultRecognize } from './lib/image.mjs';
+import { pathToFileURL } from 'node:url';
+import { resolveImageEntry } from './lib/image-bridge.mjs';
+import { extractImages } from './lib/http.mjs';
+import { looksLikeCodeAsk } from './lib/code-guard.mjs';
+import { detectFriendRequest } from './lib/mod-task.mjs';
+import { looksLikeQuestion } from './lib/qa.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync, unlinkSync } from 'node:fs';
+
+const entry = resolveImageEntry();
+if (!entry) {
+  console.error('✗ 找不到 pvz2-image-recognition 能力包');
+  process.exit(1);
+}
+const pkg = await import(pathToFileURL(entry).href);
+const { loadImageCache, enrichPostImages, defaultRecognize } = pkg;
+const deps = { extractImages, looksLikeCodeAsk, detectFriendRequest, looksLikeQuestion };
 
 let pass = 0, fail = 0;
 function t(name, cond, extra = '') {
@@ -54,7 +68,7 @@ console.log('\n== defaultRecognize 降级（各识别器关闭/缺依赖不抛�
 console.log('\n== enrichPostImages 走 defaultRecognize（关闭识别器→empty）==');
 {
   const cfg = { image: { enabled: true, ocr: { enabled: false }, vision: { enabled: false }, features: { enabled: false } } };
-  const r = await enrichPostImages(item, { config: cfg, title: '活动奖励是什么', text: '看图' });
+  const r = await enrichPostImages(item, { config: cfg, title: '活动奖励是什么', text: '看图', deps });
   t('相关图但识别器全关 → empty-recognition', r.skipped === 'empty-recognition');
   t('文本不变（无识别内容）', r.text === '看图');
   t('images 仍提取', r.images.length === 1);
@@ -64,7 +78,7 @@ console.log('\n== enrichPostImages 注入识别器（多源合并）==');
 {
   const cfg = { image: { enabled: true } };
   const rec = async () => ({ text: 'OCR文字\nVLM语义', sources: ['ocr', 'vlm'] });
-  const r = await enrichPostImages(item, { config: cfg, title: '这活动怎么参加', text: '求助', recognize: rec });
+  const r = await enrichPostImages(item, { config: cfg, title: '这活动怎么参加', text: '求助', recognize: rec, deps });
   t('多源文本回灌', r.text.includes('OCR文字') && r.text.includes('VLM语义'));
   t('sources 合并', r.sources.includes('ocr') && r.sources.includes('vlm'));
 }
@@ -73,10 +87,10 @@ console.log('\n== C8 entities 透传（P3）==');
 {
   const cfg = { image: { enabled: true } };
   const rec = async () => ({ text: '图中识别到：瓷砖萝卜', sources: ['template'], celebrate: true, entities: ['瓷砖萝卜'] });
-  const r = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: rec });
+  const r = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: rec, deps });
   t('entities 透传', Array.isArray(r.entities) && r.entities.includes('瓷砖萝卜'));
   t('celebrate 保留', r.celebrate === true);
-  const r2 = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: async () => ({ text: '', sources: [] }) });
+  const r2 = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: async () => ({ text: '', sources: [] }), deps });
   t('无识别 entities 空数组', Array.isArray(r2.entities) && r2.entities.length === 0);
 }
 

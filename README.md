@@ -122,7 +122,7 @@
 ## 帖子带图？图里的信息也能读（v1.4.0）
 
 论坛大量帖子带图（求助截图、**活动页面**、**植物图鉴**、晒卡），以前这些帖只能当「看不懂」处理。
-现在有一条**带门控**的流水线（`lib/image.mjs`）：
+现在有一条**带门控**的流水线（实现在独立能力包 `pvz2-image-recognition`，本 skill 经薄壳调用）：
 
 | 步骤 | 做什么 | 用什么 |
 |---|---|---|
@@ -134,9 +134,10 @@
 - **取图实测**：帖子配图在 `moment.topic.footer_images[]`，feed 层就带；匿名 + `X-UA` 头可读；图床无防盗链。
 - **本地 OCR**：`pip install rapidocr` → `python scripts/ocr_server.py`（监听 127.0.0.1:8790，`/ocr` 文字 + `/match` 模板）。
 - **看图模型**：跟 DSH 走（填 `config.llm.vision` 就用你自己的 Key，否则自动挑 DSH 里的视觉模型）；没有就降级跳过，不影响答疑。
-- **游戏特征模板库**：`assets/game-features/`（`features.json` + 模板图）—— 植物/奖励图标模板匹配，ms 级、离线、免费。
-- 识别结果按图缓存（`data/image-cache.json`），不重复花钱。
-- 详细说明：[references/image-recognition.md](references/image-recognition.md) ｜ 设计稿：`docs/图片识别-技术设计稿-20261116.md`
+- **游戏特征模板库**：在能力包内 `skills/pvz2-image-recognition/assets/game-features/`（`features.json` + 模板图）—— 植物/奖励图标模板匹配，ms 级、离线、免费。
+- **识别结果按图缓存**（`data/image-cache.json`），不重复花钱。
+- **能力包没装也能跑**：找不到能力包就**跳过图片识别**，主流程照跑（日志里说明一句）。
+- 详细说明：[references/image-recognition.md](references/image-recognition.md) ｜ 能力包说明：`skills/pvz2-image-recognition/SKILL.md` ｜ 设计稿：`docs/图片识别-技术设计稿-20261116.md`
 
 ## 它会做什么、不会做什么
 

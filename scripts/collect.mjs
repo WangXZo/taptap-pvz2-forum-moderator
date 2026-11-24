@@ -51,8 +51,7 @@ import { createThreadSource } from './lib/thread-source.mjs';
 import { archiveToCold, isCold, markWoken } from './lib/cold-store.mjs';
 import { buildIndex, search, makeHttpDense, indexVersion, VEC_VERSION } from './lib/qa-vector.mjs';
 import { loadState, saveState, hashText, normKey, STATUS, REASON } from './lib/state.mjs';
-import { enrichPostImages } from './lib/image.mjs';
-import { loadImageCache } from './lib/image-cache.mjs';
+import { enrichPostImages, getImageCache } from './lib/image-bridge.mjs';
 import { loadPlugins } from './lib/plugins.mjs';
 import { pluginOwns } from './lib/plugin-runner.mjs';
 import { governFacts } from './lib/govern.mjs';
@@ -301,7 +300,8 @@ export async function runOnce({
   //   避免 core 自己写一套、其他通道写另一套（历史上漏过幂等门 → 同帖被回多次）。
   const layer = createSendLayer();
   // 图片识别结果缓存（S5）：按图 url hash，避免重复 OCR/VLM 省钱
-  const imageCache = loadImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
+  //   缓存实现在能力包 pvz2-image-recognition 里，这里经薄壳拿（能力包没装 → 空缓存）
+  const imageCache = await getImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
     ttlHours: Number(config.image?.vision?.cacheTtlHours ?? 168),
   });
 

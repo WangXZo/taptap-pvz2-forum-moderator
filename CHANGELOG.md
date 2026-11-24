@@ -5,6 +5,61 @@
 
 ---
 
+## v2.3.0 — 图片识别拆成独立能力包（2026-11-24）
+
+### 背景
+主 skill 里塞着图片识别（5 个模块 + 模板库 + 4 个测试），越滚越大，而且这套能力**本身是通用的**
+—— 任何「论坛配图 → 文字」的场景都能用，不该绑死在 TapTap 版主 skill 上。
+
+参考已经这么做的 `baidu-websearch`（联网搜索能力包），把图片识别也拆成同定位的独立能力包。
+
+### 一、拆出去的东西
+
+新建能力包 **`pvz2-image-recognition`**（`skills/pvz2-image-recognition/`）：
+
+```
+SKILL.md                       能力说明（定位/三条规则/依赖注入约定/入口查找顺序）
+scripts/image.mjs              流水线编排（isCodeIntent / imageRelevance / enrichPostImages / defaultRecognize）
+scripts/ocr.mjs                RapidOCR 桥接
+scripts/vision.mjs             VLM 看图
+scripts/features.mjs           S6 模板匹配
+scripts/image-cache.mjs        识别结果缓存
+assets/game-features/          特征定义 + 模板图
+```
+
+主 skill 侧**只留一个薄壳** `scripts/lib/image-bridge.mjs`：
+找到能力包 → 动态 import → 注入判定逻辑 → **找不到就静默跳过图片识别**（主流程照跑）。
+
+### 二、依赖怎么解开的（关键）
+
+图片识别用到了主 skill 的五个判定/能力：取图（`http.mjs`）、求码判定（`code-guard.mjs`）、
+提问判定（`qa.mjs`）、加好友判定（`mod-task.mjs`）、看图渠道（`llm.mjs` 的 `chatVision`）。
+
+**没有复制一份**，而是**注入** —— 大哥拍板「注入式」：
+
+- 判定逻辑**单一事实源**：主 skill 改了求码判定，能力包自动跟着变，不会判错
+- 能力包独立使用时没有注入 → 走**保守兜底**（宁可多识别，不误判跳过），VLM 直接跳过
+- `ocr_server.py` **留在主 skill**（它同时提供 `/rerank`，那是检索重排，与图片无关），
+  能力包按 HTTP 调 8790
+
+### 三、入口查找顺序
+
+`DSH_PVZ2_IMAGE` 环境变量（`none` = 明确禁用）→ `~/.dsh/skills/` → `~/.openclaw/skills/`
+→ 同级兄弟目录 → 本 skill 自带的 `skills/`（仓库分发形态）。
+
+### 四、顺带修的
+
+- **发布清单漏了 4 张模板图**：原来 `DEFAULT_FILES` 只列了 `features.json` + `diamond.png`，
+  瓷砖萝卜、自选碎片那 4 张从没进过仓库 → 别人 clone 下来模板匹配是残的。现在列全 5 张。
+- 5 个图片测试改为**从能力包取实现**，等于验证拆包后的调用链仍通；
+  新增「能力包缺失时静默跳过」与「未注入看图渠道 → 跳过」两组断言。
+
+### 测试
+
+全套 **79 套件 0 失败**；图片相关 5 套共 94 项断言（门控 34 / 编排 15 / 视觉 21 / OCR 12 / 模板 12）。
+
+---
+
 ## v2.2.0 — 重复处理专项修复（F0~F6）+ 评价自动答疑通道（2026-11-24）
 
 ### 背景

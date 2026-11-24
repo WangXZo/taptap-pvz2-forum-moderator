@@ -25,7 +25,9 @@ taptap-pvz2-forum-moderator/
 │   └── lib/                    模块：接口 / 判定 / 文案 / 表情 / 状态 / 体检
 │       └── util.mjs            公共散列（stableHash / liteHash）与 entryKeyOf 之类的小工具
 ├── references/               接口 / 表情 / 选择器 / 提问判定规则 / 运维手册
-├── assets/                   空白模板 + game-features/（游戏特征模板库 features.json+模板图）
+├── assets/                   空白模板 + eval-set.json
+├── skills/                   随包分发的独立能力包
+│   └── pvz2-image-recognition/   图片识别（game-features 模板库在它 assets/ 下）
 ├── qa/
 │   ├── 答疑库.md             ★ 答疑数据库（直接编辑这个）
 │   └── 归档/                 冷数据（超 30 天未引用，自动归档）

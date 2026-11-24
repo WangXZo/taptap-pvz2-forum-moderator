@@ -1,15 +1,19 @@
-// S4 VLM 看图理解（跟随 DSH + 他人 key，2026-11-16）
+// S4 VLM 看图理解（独立能力包 `pvz2-image-recognition`）
 //
-// 渠道完全复用 llm.mjs：① config.llm.vision（他人 key）② 跟随 DSH 路由挑 vision-capable 模型。
+// 渠道复用**调用方注入**的看图能力（主 skill 侧是 llm.mjs 的 chatVision /
+// resolveVisionChannels —— 跟随 DSH 路由 + 他人 key）。
+// 为什么注入而不是自己 import：模型渠道解析（DSH 路由 / 他人 key / 多模态拼装）
+// 属于调用方的运行环境，能力包自己复制一份必然漂移。
+//
 // 下载图片（CDN 无防盗链）→ base64 → 多模态消息 → chatVision。
-// 无可用视觉渠道 / 失败 → 降级返回空（不抛错），调用方按「没识别到」处理（可转 agent-in-loop）。
+// 无可用视觉渠道 / 未注入 / 失败 → 降级返回空（不抛错），调用方按「没识别到」处理。
 //
-// 重点图片类型（大哥 2026-11-16）：活动页面（植物/奖励/条件）、植物图鉴（植物/说明文本/技能）。
+// 重点图片类型（2026-11-16）：活动页面（植物/奖励/条件）、植物图鉴（植物/说明文本/技能）。
 
 import { createHash } from 'node:crypto';
-import { chatVision, resolveVisionChannels } from './llm.mjs';
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
+const UA =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36';
 
 const DEFAULT_PROMPT = `你是《植物大战僵尸2》论坛的看图助手。仔细看这张/这些游戏截图，用简洁中文输出要点（只描述图里真实可见的内容，看不清的不要猜，不要编造）：
 - 场景类型：错误弹窗 / 关卡进度 / 植物阵容 / 活动页面 / 植物图鉴 / 其他
@@ -30,14 +34,23 @@ async function downloadBase64(url) {
 
 /**
  * 看图理解一组图片（合并为一次多模态调用，省成本）。
+ * @param {Array} images [{url, format}]
+ * @param {object} o {config, log, cache, prompt, deps:{chatVision}}
  * @returns {{text:string, sources:string[]}}
  */
-export async function describeImages(images, { config = {}, log = () => {}, cache = null, prompt = '' } = {}) {
+export async function describeImages(images, { config = {}, log = () => {}, cache = null, prompt = '', deps = {} } = {}) {
   const vc = config?.image?.vision || {};
   const list = (images || []).filter((im) => im?.url);
   if (!list.length) return { text: '', sources: [] };
 
-  const key = 'vlm:' + createHash('sha1').update(list.map((i) => i.url).join('|') + (prompt || '')).digest('hex');
+  const chatVision = typeof deps.chatVision === 'function' ? deps.chatVision : null;
+  if (!chatVision) {
+    log('  [VLM] 调用方未注入看图渠道（deps.chatVision）→ 跳过');
+    return { text: '', sources: [] };
+  }
+
+  const key =
+    'vlm:' + createHash('sha1').update(list.map((i) => i.url).join('|') + (prompt || '')).digest('hex');
   const cached = cache?.get?.(key);
   if (cached) return { text: cached.text || '', sources: cached.text ? ['vlm'] : [] };
 
@@ -69,5 +82,3 @@ export async function describeImages(images, { config = {}, log = () => {}, cach
   cache?.set?.(key, { text: r.text });
   return { text: r.text, sources: ['vlm'] };
 }
-
-export { resolveVisionChannels };

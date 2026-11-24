@@ -1,7 +1,18 @@
-// 视觉渠道与多模态离线测试（S4，2026-11-16）—— mock fetch，不打网络。
+// 视觉渠道与多模态离线测试（S4）—— mock fetch，不打网络。
+// 2026-11-24：describeImages 已拆到独立能力包 `pvz2-image-recognition`，
+//   看图渠道（chatVision）由主 skill 注入 —— 单一事实源。
 // 跑：node scripts/test-vision-channel.mjs
+import { pathToFileURL } from 'node:url';
 import { isVisionModel, resolveVisionChannels, chatVision } from './lib/llm.mjs';
-import { describeImages } from './lib/vision.mjs';
+import { resolveImageEntry } from './lib/image-bridge.mjs';
+
+const entry = resolveImageEntry();
+if (!entry) {
+  console.error('✗ 找不到 pvz2-image-recognition 能力包');
+  process.exit(1);
+}
+const { describeImages } = await import(pathToFileURL(entry).href);
+const deps = { chatVision };
 
 let pass = 0, fail = 0;
 function t(name, cond, extra = '') {
@@ -73,18 +84,24 @@ console.log('\n== describeImages（下载+看图+缓存+降级）==');
 {
   const cache = new Map(); const ca = { get: (k) => cache.get(k), set: (k, v) => cache.set(k, v) };
   mock((url) => url.includes('img2-tc') ? imgRes() : openaiRes('活动页面：狂欢嘉年华，奖励钻石334'));
-  const r = await describeImages([{ url: 'https://img2-tc.tapimg.com/x.jpg', format: 'jpeg' }], { config: visionCfg(), cache: ca });
+  const r = await describeImages([{ url: 'https://img2-tc.tapimg.com/x.jpg', format: 'jpeg' }], { config: visionCfg(), cache: ca, deps });
   t('下载+看图返回文本', r.text.includes('狂欢嘉年华') && r.sources.includes('vlm'));
   const n = calls.length;
-  const r2 = await describeImages([{ url: 'https://img2-tc.tapimg.com/x.jpg', format: 'jpeg' }], { config: visionCfg(), cache: ca });
+  const r2 = await describeImages([{ url: 'https://img2-tc.tapimg.com/x.jpg', format: 'jpeg' }], { config: visionCfg(), cache: ca, deps });
   restore();
   t('缓存命中一致', r2.text === r.text);
   t('缓存命中不再发请求', calls.length === n);
 
   mock((url) => url.includes('img2-tc') ? imgRes() : openaiRes('x'));
-  const noChan = await describeImages([{ url: 'https://img2-tc.tapimg.com/y.jpg' }], { config: { llm: { reuseDsh: false } } });
+  const noChan = await describeImages([{ url: 'https://img2-tc.tapimg.com/y.jpg' }], { config: { llm: { reuseDsh: false } }, deps });
   restore();
   t('无视觉渠道 → 空文本降级不抛错', noChan.text === '' && noChan.sources.length === 0);
+}
+
+console.log('\n== describeImages 未注入看图渠道 → 跳过 ==');
+{
+  const r = await describeImages([{ url: 'https://img2-tc.tapimg.com/z.jpg' }], { config: visionCfg() });
+  t('没注入 chatVision → 空文本不抛错', r.text === '' && r.sources.length === 0);
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

@@ -1,6 +1,15 @@
-// S6 特征模板匹配离线测试（2026-11-16）—— mock fetch + 真实特征库读取。
+// S6 特征模板匹配离线测试 —— mock fetch + 真实特征库读取。
+// 2026-11-24：实现已拆到独立能力包 `pvz2-image-recognition`，模板库随包分发。
 // 跑：node scripts/test-features.mjs
-import { loadFeatures, matchFeatures } from './lib/features.mjs';
+import { pathToFileURL } from 'node:url';
+import { resolveImageEntry } from './lib/image-bridge.mjs';
+
+const entry = resolveImageEntry();
+if (!entry) {
+  console.error('✗ 找不到 pvz2-image-recognition 能力包');
+  process.exit(1);
+}
+const { loadFeatures, matchFeatures } = await import(pathToFileURL(entry).href);
 
 let pass = 0, fail = 0;
 function t(name, cond, extra = '') {
