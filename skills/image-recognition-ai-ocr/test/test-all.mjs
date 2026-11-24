@@ -13,7 +13,17 @@ import { tryParseJson, toConfidence } from '../scripts/json.mjs';
 import { buildMatchPrompt, normalizeMatchResult } from '../scripts/tasks/match.mjs';
 import { deriveLabels } from '../scripts/tasks/text.mjs';
 import { buildFeaturePrompt } from '../scripts/tasks/feature.mjs';
-import { resolveVision, resolveBuiltinChannel } from '../scripts/vision.mjs';
+import {
+  resolveVision,
+  resolveOwnKey,
+  resolveVisionChannels,
+  resolveDshVisionChannels,
+  isVisionModel,
+  supportsImageInput,
+  toApiContent,
+  callOnce,
+} from '../scripts/vision.mjs';
+import { parseProviders, parseCredRefs, modelIds } from '../scripts/dsh-routes.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
@@ -206,7 +216,7 @@ section('prefilter');
     vlmCalls++;
     return jsonRes({}, 500);
   });
-  const vb = await vlmBinaryPrefilter(manyImgs, { enabled: true, config: { env: {} } });
+  const vb = await vlmBinaryPrefilter(manyImgs, { enabled: true, config: { env: {}, reuseDsh: false } });
   restoreFetch();
   t('无渠道 → 全部保留', vb.kept.length === 13);
   t('无渠道 → 一次都不调模型', vlmCalls === 0);
@@ -290,18 +300,193 @@ section('feature prompt');
   t('要求不编造', buildFeaturePrompt('x').includes('不要编造'));
 }
 
-// ═══════════════ 10. 渠道解析 ═══════════════
-section('vision 渠道解析');
+// ═══════════════ 10. 渠道解析（三级：注入 → 自备KEY → DSH 路由）═══════════════
+section('渠道解析 · 自备 KEY（config / 环境变量）');
 {
-  t('无配置 → null', resolveBuiltinChannel({}) === null);
-  const ch = resolveBuiltinChannel({ IR_VISION_API_KEY: 'k', IR_VISION_BASE_URL: 'http://x/v1', IR_VISION_MODEL: 'm' });
-  t('环境变量齐全 → 渠道', ch && ch.model === 'm' && ch.baseURL === 'http://x/v1');
-  const fb = resolveBuiltinChannel({ OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'http://y/v1', OPENAI_MODEL: 'm2' });
-  t('OPENAI_ 兜底命名', fb === null || fb.apiKey === 'k');
+  t('无配置 → null', resolveOwnKey({ env: {} }) === null);
 
-  const injected = resolveVision({ chatVision: () => ({ ok: true, text: 'x' }) });
-  t('注入优先', injected.source === 'injected');
-  t('无注入无环境变量 → null', resolveVision({ env: {} }) === null);
+  const envCh = resolveOwnKey({ env: { IR_VISION_API_KEY: 'k', IR_VISION_BASE_URL: 'http://x/v1', IR_VISION_MODEL: 'm' } });
+  t('环境变量齐全 → 渠道', Boolean(envCh) && envCh.model === 'm' && envCh.baseURL === 'http://x/v1');
+  t('环境变量来源标记', envCh.source === 'env');
+
+  const cfgCh = resolveOwnKey({ apiKey: 'k2', baseURL: 'http://z/v1/', model: 'm2', env: {} });
+  t('config 直配优先于环境变量', cfgCh.source === 'config' && cfgCh.model === 'm2');
+  t('baseURL 去掉尾斜杠', cfgCh.baseURL === 'http://z/v1');
+  t('config 三项不全 → 不算（落回环境）', resolveOwnKey({ apiKey: 'k', baseURL: '', model: 'm', env: {} }) === null);
+
+  const openaiFb = resolveOwnKey({ env: { OPENAI_API_KEY: 'k', OPENAI_BASE_URL: 'http://y/v1', OPENAI_MODEL: 'm3' } });
+  t('OPENAI_ 兜底命名也认', Boolean(openaiFb) && openaiFb.apiKey === 'k');
+}
+
+section('渠道解析 · 视觉能力判定');
+{
+  t('qwen-vl-max → 视觉', isVisionModel('qwen-vl-max'));
+  t('gpt-4o → 非视觉（无能力词）', isVisionModel('gpt-4o') === false);
+  t('omni → 视觉', isVisionModel('gemini-2.0-flash-omni'));
+  t('vision → 视觉', isVisionModel('some-vision-model'));
+  t('multimodal → 视觉', isVisionModel('x-multimodal'));
+  t('白名单命中', isVisionModel('my-plain-model', { visionModels: ['my-plain-model'] }));
+  t('白名单外 + 无能力词 → 非视觉', isVisionModel('plain-text', { visionModels: ['other'] }) === false);
+}
+
+section('渠道解析 · DSH 路由（复用宿主，不写死模型名）');
+{
+  // 造一份合成的 DSH 配置（缩进照真实 cordis.patch.yml：chain 项 10 空格、model 12 空格）
+  const patch = `
+llm-pi-ai:
+    providers:
+      p-alpha:
+        apiKeyEnv: ALPHA_KEY
+        api: openai-completions
+        baseURL: https://alpha.example/v1
+        models:
+          - id: alpha-plain
+          - id: alpha-vl-1
+      p-beta:
+        apiKeyEnv: BETA_KEY
+        api: anthropic-messages
+        baseURL: https://beta.example
+        models:
+          - id: beta-vision
+      p-nokey:
+        apiKeyEnv: MISSING_KEY
+        baseURL: https://nokey.example/v1
+        models:
+          - id: nokey-vl
+      p-gamma:
+        apiKeyEnv: GAMMA_KEY
+        api: openai-completions
+        baseURL: https://gamma.example/v1
+        models:
+          - id: gamma-text-only
+            input:
+              - text
+          - id: gamma-plain-name
+            input:
+              - text
+              - image
+llm-failover:
+        chain:
+          # 注释行不应打断解析
+          - provider: p-beta
+            model: beta-vision
+          - provider: p-alpha
+            model: alpha-plain
+`;
+  const { providers, chain } = parseProviders(patch);
+  t('解析出 4 个 provider', Object.keys(providers).length === 4);
+  t('provider 字段正确', providers['p-alpha'].baseURL === 'https://alpha.example/v1');
+  t('api 风格正确', providers['p-beta'].api === 'anthropic-messages');
+  t('模型清单解析', modelIds(providers['p-alpha']).join(',') === 'alpha-plain,alpha-vl-1');
+  t('chain 解析 2 条', chain.length === 2 && chain[0].provider === 'p-beta');
+
+  const creds = parseCredRefs(`
+refs:
+  ALPHA_KEY: sk-alpha
+  BETA_KEY: "sk-beta"
+  GAMMA_KEY: sk-gamma
+other:
+  X: y
+`);
+  t('凭据解析（去引号）', creds.ALPHA_KEY === 'sk-alpha' && creds.BETA_KEY === 'sk-beta');
+  t('refs 段外的键不混入', creds.X === undefined);
+
+  // 模型按对象解析，保留声明的输入能力
+  t('模型解析成对象', typeof providers['p-gamma'].models[0] === 'object');
+  t('声明 input 能力被读出来', providers['p-gamma'].models[1].input.includes('image'));
+  t('只声明 text 的模型 input 不含 image', !providers['p-gamma'].models[0].input.includes('image'));
+
+  const routes = { providers, chain, creds, hasPatch: true };
+  const chs = await resolveDshVisionChannels({}, routes);
+  t('只挑视觉模型（alpha-plain 被排除）', !chs.some((c) => c.model === 'alpha-plain'));
+  t('挑出 alpha-vl-1', chs.some((c) => c.model === 'alpha-vl-1'));
+  t('挑出 beta-vision', chs.some((c) => c.model === 'beta-vision'));
+  t('无凭据的 provider 被跳过', !chs.some((c) => c.provider === 'p-nokey'));
+  t('chain 顺序优先（beta 在前）', chs[0].provider === 'p-beta');
+  t('来源标记 dsh', chs.every((c) => c.source === 'dsh'));
+
+  // ★ 关键：靠 input 声明识别（名字里没有 vl/vision 也算）
+  t('声明了 image 输入就视为可看图（与名字无关）', chs.some((c) => c.model === 'gamma-plain-name'));
+  t('只声明 text 的模型不算视觉', !chs.some((c) => c.model === 'gamma-text-only'));
+
+  // 指定 model 时按它取（仍是视觉才拿）
+  const forced = await resolveDshVisionChannels({ model: 'beta-vision' }, routes);
+  t('指定 model → 只返回它', forced.length >= 1 && forced.every((c) => c.model === 'beta-vision'));
+
+  // 白名单可以救回"既没声明也没能力词"的模型
+  const wl = await resolveDshVisionChannels({ visionModels: ['alpha-plain'] }, routes);
+  t('白名单让普通模型也算视觉', wl.some((c) => c.model === 'alpha-plain'));
+
+  const none = await resolveDshVisionChannels({}, { providers: {}, chain: [], creds: {}, hasPatch: false });
+  t('没有 patch → 空列表', none.length === 0);
+}
+
+section('视觉能力判定（声明优先）');
+{
+  t('声明 image → 可看图', supportsImageInput({ id: 'whatever', input: ['text', 'image'] }));
+  t('只声明 text → 不可', supportsImageInput({ id: 'whatever', input: ['text'] }) === false);
+  t('多个能力里含 image 即可', supportsImageInput({ id: 'x', input: ['text', 'audio', 'image'] }));
+  t('无声明时按名字兜底（vl）', supportsImageInput({ id: 'some-vl-1' }));
+  t('无声明 + 名字无能力词 → 不可', supportsImageInput({ id: 'plain-model' }) === false);
+  t('白名单一票通过', supportsImageInput({ id: 'plain-model', input: ['text'] }, { visionModels: ['plain-model'] }));
+  t('字符串入参也能判', supportsImageInput('qwen-vl-max'));
+}
+
+section('渠道解析 · 优先级（注入 > 自备KEY > DSH）');
+{
+  const injected = await resolveVision({ chatVision: () => ({ ok: true, text: 'x' }) });
+  t('注入优先，source=injected', injected.source === 'injected');
+
+  const noKey = await resolveVision({ env: {}, reuseDsh: false });
+  t('无注入无 KEY 且不复用 DSH → null', noKey === null);
+
+  const ownOnly = await resolveVision({ env: { IR_VISION_API_KEY: 'k', IR_VISION_BASE_URL: 'http://x/v1', IR_VISION_MODEL: 'm' }, reuseDsh: false });
+  t('自备 KEY → source=env', ownOnly.source === 'env');
+
+  // 自备 KEY 存在时，即便复用 DSH 也排在前面
+  const chs = await resolveVisionChannels({ env: { IR_VISION_API_KEY: 'k', IR_VISION_BASE_URL: 'http://x/v1', IR_VISION_MODEL: 'm' } });
+  t('自备 KEY 排在 DSH 渠道之前', chs[0].source === 'env');
+  t('渠道列表里 DSH 排在后面（若有）', chs.slice(1).every((c) => c.source === 'dsh'));
+}
+
+section('多模态拼装与调用');
+{
+  const oa = toApiContent([{ type: 'text', text: '看图' }, { type: 'image', base64: 'QUJD', mediaType: 'image/png' }], 'openai-completions');
+  t('openai：image → image_url data URI', oa[1].type === 'image_url' && oa[1].image_url.url.startsWith('data:image/png;base64,'));
+  const an = toApiContent([{ type: 'image', base64: 'QUJD', mediaType: 'image/png' }], 'anthropic-messages');
+  t('anthropic：image → base64 source', an[0].source.type === 'base64' && an[0].source.media_type === 'image/png');
+  t('string content 原样', toApiContent('纯文本', 'openai-completions') === '纯文本');
+
+  // callOnce 两种风格（mock fetch）
+  mockFetch((url) => {
+    if (url.endsWith('/chat/completions')) {
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: 'openai 回复' } }] }) };
+    }
+    return {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ content: [{ thinking: '想想', signature: 's' }, { text: 'anthropic 正文' }] }),
+    };
+  });
+  const r1 = await callOnce(
+    { api: 'openai-completions', baseURL: 'http://x/v1', apiKey: 'k', model: 'm', maxTokens: 100 },
+    { system: 's', messages: [{ role: 'user', content: 'hi' }] }
+  );
+  t('openai 风格取到正文', r1.ok && r1.text === 'openai 回复');
+  const r2 = await callOnce(
+    { api: 'anthropic-messages', baseURL: 'http://y', apiKey: 'k', model: 'm', maxTokens: 100 },
+    { system: 's', messages: [{ role: 'user', content: 'hi' }] }
+  );
+  t('anthropic 风格跳过 thinking 取正文', r2.ok && r2.text === 'anthropic 正文');
+  t('anthropic 请求带 x-api-key', calls.some((c) => c.url.endsWith('/v1/messages') && c.opts.headers['x-api-key'] === 'k'));
+  t('openai 请求带 Bearer', calls.some((c) => c.url.endsWith('/chat/completions') && c.opts.headers.authorization === 'Bearer k'));
+  restoreFetch();
+
+  // 失败时按顺序尝试下一条渠道
+  mockFetch((url) => ({ ok: false, status: 500, text: async () => 'boom' }));
+  const r3 = await callOnce({ api: 'openai-completions', baseURL: 'http://x/v1', apiKey: 'k', model: 'm' }, { system: 's', messages: [] });
+  restoreFetch();
+  t('失败返回 ok:false + status', r3.ok === false && r3.status === 500);
 }
 
 // ═══════════════ 11. recognize() 编排 ═══════════════
@@ -364,7 +549,7 @@ section('recognize 编排');
   const r3 = await recognize({
     task: 'text',
     images: ['https://img/z.jpg'],
-    options: { ocr: { server: 'http://127.0.0.1:8791' }, prefilter: { vlmBinary: false }, vision: { enabled: true, env: {} } },
+    options: { ocr: { server: 'http://127.0.0.1:8791' }, prefilter: { vlmBinary: false }, vision: { enabled: true, env: {}, reuseDsh: false } },
   });
   restoreFetch();
   t('无渠道降级不抛错', r3.ok === true);

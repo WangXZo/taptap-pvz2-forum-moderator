@@ -101,15 +101,22 @@ console.log('\n== ② 识图 skill describeImages（消费注入渠道）==');
 
 console.log('\n== ② 识图 skill：无渠道 → 降级不抛错 ==');
 {
-  const r = await describeImages([{ ref: 'img1', base64: 'QUJD' }], { prompt: 'x', config: { env: {} } });
+  const r = await describeImages([{ ref: 'img1', base64: 'QUJD' }], { prompt: 'x', config: { env: {}, reuseDsh: false } });
   t('无渠道 → 空文本', r.text === '');
   t('无渠道 → error=no-channel', r.error === 'no-channel');
 
   const r2 = await describeImages([], { prompt: 'x', config: { chatVision: () => ({ ok: true, text: 'x' }) } });
   t('无图 → no-image', r2.error === 'no-image');
 
-  t('resolveVision 注入优先', resolveVision({ chatVision: () => ({}) }).source === 'injected');
-  t('resolveVision 全无 → null', resolveVision({ env: {} }) === null);
+  t('resolveVision 注入优先', (await resolveVision({ chatVision: () => ({}) })).source === 'injected');
+  t('resolveVision 全无 → null', (await resolveVision({ env: {}, reuseDsh: false })) === null);
+
+  // 注入了但注入那套给不出渠道时，应当回落到自带/DSH（否则会白白降级）
+  {
+    const v = await resolveVision({ chatVision: () => ({ ok: false, error: 'no-channel' }) });
+    t('注入存在时 resolveVision 不为 null', Boolean(v));
+    t('注入失败时仍有 DSH 渠道可回落', Array.isArray(v.channels));
+  }
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

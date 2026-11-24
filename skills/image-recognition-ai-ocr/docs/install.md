@@ -95,9 +95,15 @@ Start-Process -WindowStyle Hidden python -ArgumentList "scripts/server.py --port
 
 ## 4. 看图渠道（VLM）
 
-三选一，优先级从高到低：
+**三级解析**，优先级从高到低。任一级命中就用；都没有则降级跳过。
 
-### ① 注入（推荐，调用方自己那套路由）
+| 级别 | 用途 | 怎么配 |
+|---|---|---|
+| ① **注入** | 调用方自己有模型路由 | 传 `options.vision.chatVision` |
+| ② **自备 KEY** | **给别人用** —— 谁都能填自己的 key | `options.vision.{apiKey,baseURL,model}` 或环境变量 |
+| ③ **复用 DSH** | **跟随宿主** —— 在 DSH 里换模型，本 skill 自动跟着换 | 自动读 `~/.dsh/`，无需配置 |
+
+### ① 注入（调用方自己那套路由）
 
 ```js
 await recognize({
@@ -118,23 +124,86 @@ await recognize({
   - `messages` 是 `[{role:'user', content:[{type:'text',text},{type:'image',base64,mediaType}]}]`
 - 出参：`{ ok: true, text: '回复文本' }` 或 `{ ok: false, error: '原因' }`
 
-### ② 环境变量（本 skill 自带的 OpenAI 兼容客户端）
+### ② 自备 KEY（给别人用）
 
-```powershell
-$env:IR_VISION_API_KEY  = "sk-..."
-$env:IR_VISION_BASE_URL = "https://api.openai.com/v1"   # 任何 OpenAI 兼容端点
-$env:IR_VISION_MODEL    = "gpt-4o-mini"                 # 必须支持图片输入
+两种写法，`config` 优先于环境变量：
+
+```js
+// 写法一：运行时传
+options: {
+  vision: {
+    apiKey: 'sk-...',
+    baseURL: 'https://api.openai.com/v1',   // 任何 OpenAI 兼容端点
+    model: 'gpt-4o-mini',                    // 必须支持图片输入
+    api: 'openai-completions',               // 或 'anthropic-messages'
+  },
+}
 ```
 
-也接受 `OPENAI_API_KEY` / `OPENAI_BASE_URL` 作为兜底命名。
+```powershell
+# 写法二：环境变量
+$env:IR_VISION_API_KEY  = "sk-..."
+$env:IR_VISION_BASE_URL = "https://api.openai.com/v1"
+$env:IR_VISION_MODEL    = "gpt-4o-mini"
+$env:IR_VISION_API      = "openai-completions"   # 可选，默认 openai-completions
+```
 
-### ③ 不配
+也接受 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` 作为兜底命名。
+
+### ③ 复用 DSH 路由（跟随宿主，VLM + LLM 一起用）
+
+默认开启（`options.vision.reuseDsh !== false`）。本 skill 会读：
+
+- `~/.dsh/profiles/web/cordis.patch.yml`（其次 `profiles/default/`）→ providers / **每个模型声明的输入能力** / chain 顺序
+- `~/.dsh/.credentials.yaml` → `refs:` 里的 API Key 引用
+
+**判定"能不能看图"以 DSH 声明为准**，不是猜模型名：
+
+```yaml
+models:
+  - id: qwen3.8-max
+    input:
+      - text
+      - image        # ← 有这一行就算视觉模型
+```
+
+依据顺序（前面的更权威）：
+
+1. 白名单 `options.vision.visionModels` —— 显式指定，一票通过
+2. **DSH 声明的 `input` 含 `image`** —— 主要依据（**VLM 与通用 LLM 同等对待**：只要声明能收图就能用）
+3. 名字里带 `vl` / `vision` / `omni` / `multimodal` —— 没声明时的兜底猜测
+
+排序沿用 DSH 的 chain（当前默认模型在最前），**本 skill 里不出现任何具体模型名** ——
+要换模型就在 DSH 里切。
+
+> 实测（2026-11-24 本机）：DSH 的 5 个 provider / 18 个模型里，有 **11 个**声明了 image 输入，
+> 本 skill 全部挑得到，按 chain 顺序依次尝试。
+> 查当前能挑出哪些渠道：
+> `node -e "import('./scripts/vision.mjs').then(async m=>console.log(await m.resolveVisionChannels({})))"`
+
+**注入失败会自动回落**：如果你注入了 `chatVision` 但它一条渠道都没给出来（比如调用方按模型名筛视觉模型、
+漏掉了不带 `vl/omni` 字样的通用 LLM），本 skill 会**继续用 ②③ 兜底**，不会白白降级。
+
+### ④ 都没有
 
 VLM 相关能力全部跳过，结果里会出现：
 
 ```json
 "degraded": ["vlm:no-channel"]
 ```
+
+OCR 与模板匹配不受影响，照常工作。
+
+### 两种线上风格
+
+| `api` | 请求 | 鉴权 |
+|---|---|---|
+| `openai-completions`（默认） | `POST {baseURL}/chat/completions` | `Authorization: Bearer <key>` |
+| `anthropic-messages` | `POST {baseURL}/v1/messages` | `x-api-key` + `anthropic-version` |
+
+> anthropic 风格渠道会强制 thinking（`thinking.type=disabled` 会被 400 拒），
+> 所以本 skill 对这类渠道自动把 `max_tokens` 抬到至少 8000、超时放宽到 150s，
+> 并从返回块里跳过 thinking、只取正文。
 
 ## 5. 验证安装成功
 

@@ -87,7 +87,7 @@ export async function vlmBinaryPrefilter(images, { enabled = true, config = {}, 
   const list = images || [];
   if (!enabled) return { kept: list, skipped: [] };
   if (!list.length) return { kept: [], skipped: [] };
-  if (!resolveVision(config)) {
+  if (!(await resolveVision(config))) {
     log('  [预筛] 无可用看图渠道 → 跳过 VLM 二分类（质量预筛照常）');
     return { kept: list, skipped: [] };
   }

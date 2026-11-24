@@ -292,6 +292,7 @@ const DEFAULT_FILES = [
   'skills/image-recognition-ai-ocr/scripts/prefilter.mjs',
   'skills/image-recognition-ai-ocr/scripts/ocr.mjs',
   'skills/image-recognition-ai-ocr/scripts/vision.mjs',
+  'skills/image-recognition-ai-ocr/scripts/dsh-routes.mjs',
   'skills/image-recognition-ai-ocr/scripts/features.mjs',
   'skills/image-recognition-ai-ocr/scripts/materials.mjs',
   'skills/image-recognition-ai-ocr/scripts/cache.mjs',

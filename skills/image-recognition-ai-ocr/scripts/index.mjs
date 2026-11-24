@@ -193,7 +193,17 @@ export async function recognize(input = {}) {
 export { normalizeImages, fingerprint, genericExtractor } from './image.mjs';
 export { loadCache, memoryCache, cacheKey } from './cache.mjs';
 export { loadMaterials, formatMaterials, learnMaterial } from './materials.mjs';
-export { resolveVision, describeImages } from './vision.mjs';
+export {
+  resolveVision,
+  resolveVisionChannels,
+  resolveOwnKey,
+  resolveDshVisionChannels,
+  isVisionModel,
+  describeImages,
+  toApiContent,
+  callOnce,
+} from './vision.mjs';
+export { loadDshRoutes, parseProviders, parseCredRefs, _resetDshCache } from './dsh-routes.mjs';
 export { ocrHealth, ocrImages, ocrImage } from './ocr.mjs';
 export { matchImages, matchImage } from './features.mjs';
 export { prefilter, qualityPrefilter, vlmBinaryPrefilter, parseBinaryAnswer } from './prefilter.mjs';
