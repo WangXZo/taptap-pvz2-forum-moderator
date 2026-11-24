@@ -1,5 +1,5 @@
 // C4 重排（2026-11-17 P1）：top-K 精排。
-// backend=onnx → 本地 cross-encoder(bge-reranker-v2-m3，ocr_server /rerank，设计首选)；
+// backend=onnx → 本地 cross-encoder(bge-reranker-v2-m3，rerank_server /rerank，设计首选)；
 // backend=llm(默认过渡) → LLM listwise（RankGPT-lite）。失败逐级回退：onnx→llm→RRF 原序（不阻断）。
 import { chat } from './llm.mjs';
 

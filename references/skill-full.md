@@ -21,13 +21,13 @@
 ```
 taptap-pvz2-forum-moderator/
 ├── SKILL.md                  本文件
-├── scripts/                  代码（零第三方依赖；ocr_server.py 需 pip install rapidocr）
+├── scripts/                  代码（零第三方依赖；rerank_server.py 需 pip install onnxruntime tokenizers）
 │   └── lib/                    模块：接口 / 判定 / 文案 / 表情 / 状态 / 体检
 │       └── util.mjs            公共散列（stableHash / liteHash）与 entryKeyOf 之类的小工具
 ├── references/               接口 / 表情 / 选择器 / 提问判定规则 / 运维手册
-├── assets/                   空白模板 + eval-set.json
-├── skills/                   随包分发的独立能力包
-│   └── pvz2-image-recognition/   图片识别（game-features 模板库在它 assets/ 下）
+├── assets/                   空白模板 + game-features/（识图特征模板库）+ eval-set.json
+├── skills/                   随包分发的独立 skill
+│   └── image-recognition-ai-ocr/   识图（任务驱动；模板库留本 skill，运行时传入）
 ├── qa/
 │   ├── 答疑库.md             ★ 答疑数据库（直接编辑这个）
 │   └── 归档/                 冷数据（超 30 天未引用，自动归档）

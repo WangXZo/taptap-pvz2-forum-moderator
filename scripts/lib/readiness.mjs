@@ -65,7 +65,7 @@ export function buildMatrix({ config = {}, spawnImpl = null, opencliOk = null, c
   // 图片 OCR
   if (checkPython) {
     const ocr = probePythonModule('rapidocr', { spawnImpl });
-    add('图片 OCR', 'python3 + rapidocr + 本地 ocr_server.py(8790)', ocr.state, ocr.detail, 'pip install rapidocr onnxruntime pillow numpy');
+    add('图片 OCR', 'python3 + rapidocr + 识图skill的 server.py(8791)', ocr.state, ocr.detail, 'pip install rapidocr onnxruntime pillow numpy');
     const tok = probePythonModule('tokenizers', { spawnImpl });
     add('cross-encoder 重排', 'python3 + onnxruntime + tokenizers + 模型目录', tok.state, tok.detail, 'pip install onnxruntime tokenizers==0.20.3');
     // 模型

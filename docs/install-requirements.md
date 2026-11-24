@@ -77,7 +77,8 @@
 
 | 服务 | 端口 | 启动 | 必需 |
 |---|---|---|---|
-| OCR / rerank / 模板匹配 | **8790** | `python scripts/ocr_server.py --port 8790` | 推荐 |
+| OCR / 模板匹配 | **8791** | python <识图skill>/scripts/server.py --port 8791 | 推荐 |
+| 检索重排 | **8790** | python scripts/rerank_server.py --port 8790 | 推荐 |
 | Ollama（bge-m3） | **11434** | `ollama serve` | 推荐 |
 | opencli daemon | 动态 | `opencli daemon start` | **必需** |
 

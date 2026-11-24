@@ -108,9 +108,11 @@
         "enabled": { "type": "boolean", "default": true, "label": "启用" },
         "skipIntents": { "type": "array", "default": ["friendCode", "tiangongCode"], "label": "跳过意图", "description": "求码/好友码帖不识别图片" },
         "bareCodeIsIntent": { "type": "boolean", "default": true, "label": "裸码也算求码" },
-        "ocr.enabled": { "type": "boolean", "default": true, "label": "OCR 启用", "description": "需要 python scripts/ocr_server.py（端口 8790）" },
+        "ocr.enabled": { "type": "boolean", "default": true, "label": "OCR 启用", "description": "由独立 skill image-recognition-ai-ocr 提供：python <该skill>/scripts/server.py（默认端口 8791）" },
         "vision.enabled": { "type": "boolean", "default": true, "label": "VLM 启用" },
-        "features.enabled": { "type": "boolean", "default": true, "label": "模板匹配启用" }
+        "features.enabled": { "type": "boolean", "default": true, "label": "模板匹配启用", "description": "模板库在本 skill 的 assets/game-features，运行时传给能力包" },
+        "prefilter.quality": { "type": "boolean", "default": true, "label": "质量预筛", "description": "免费的预筛：无图 / 体积过小 / 本批重复 → 不识别" },
+        "prefilter.vlmBinary": { "type": "boolean", "default": true, "label": "VLM 二分类预筛", "description": "先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关）" }
       }
     },
 
@@ -224,7 +226,7 @@
     }},
     "rerank": { "label": "重排模型", "fields": {
       "backend": { "type": "string", "enum": ["onnx", "llm", "off"], "default": "onnx", "label": "后端" },
-      "server": { "type": "string", "default": "http://127.0.0.1:8790", "label": "服务地址", "description": "由 scripts/ocr_server.py 提供 /rerank" },
+      "server": { "type": "string", "default": "http://127.0.0.1:8790", "label": "服务地址", "description": "由 scripts/rerank_server.py 提供 /rerank" },
       "modelDir": { "type": "string", "default": "E:\\Ollama\\models\\bge-reranker-v2-m3", "label": "模型目录", "description": "需手动放置，agent 不会自动下载" },
       "timeoutMs": { "type": "integer", "default": 20000, "min": 1000, "max": 300000, "label": "超时(ms)" }
     }},

@@ -39,7 +39,7 @@
 
 ## 5. 庆祝联动（瓷砖萝卜等稀有抽取）
 
-- 模板特征带 `trigger:"celebrate"`（能力包 `pvz2-image-recognition` 的 `assets/game-features/`）→ 识别到即 `imageCelebrate` → collect 以 `kind=celebrate` **自动过去庆祝**（后续任何帖识别到都去）。
+- 模板特征带 `trigger:"celebrate"`（能力包 `image-recognition-ai-ocr` 的 `assets/game-features/`）→ 识别到即 `imageCelebrate` → collect 以 `kind=celebrate` **自动过去庆祝**（后续任何帖识别到都去）。
 - celebrate 话头：替高兴/夸欧/接兴奋/提具体晒物/留轻话头；别讲攻略别扫兴别酸；688/2888 不问单抽十连。
 
 ## 6. 验证

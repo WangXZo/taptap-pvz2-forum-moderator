@@ -7,18 +7,24 @@
 
 ## 总览
 
+**两个服务，各管一件事**（2026-11-24 拆分：识图归识图，检索归检索）：
+
 ```
-scripts/ocr_server.py  （一个进程，三个能力）
+识图 skill（image-recognition-ai-ocr）的 scripts/server.py
+  :8791/health     健康检查
+  :8791/ocr        截图文字识别（RapidOCR）
+  :8791/match      特征模板匹配（OpenCV）
+
+本 skill 的 scripts/rerank_server.py
   :8790/health     健康检查
-  :8790/ocr        截图文字识别（RapidOCR）
   :8790/rerank     检索重排（bge-reranker-v2-m3 ONNX）
-  :8790/match      游戏特征模板匹配（OpenCV）
 
 ollama serve
   :11434           bge-m3 embedding（向量检索）
 ```
 
 三者相互独立：rerank 挂了不影响 OCR，OCR 挂了不影响答疑（只是图片帖答不准）。
+识图 skill 与「论坛版主」两个 skill 可各自独立安装使用。
 
 ---
 
@@ -26,8 +32,12 @@ ollama serve
 
 ```bash
 python --version     # 3.8 ~ 3.12
-pip install rapidocr-onnxruntime onnxruntime opencv-python
-pip install "tokenizers==0.20.3"        # ⚠️ 版本钉死，别升
+
+# 识图 skill 要的（OCR + 模板匹配）
+pip install rapidocr onnxruntime pillow numpy opencv-python-headless
+
+# 本 skill 的重排要的
+pip install onnxruntime "tokenizers==0.20.3"
 ```
 
 > `tokenizers` 必须 0.20.3：更新版本在旧 Python（3.8）上可能没有可用 wheel，装不上。
@@ -38,34 +48,53 @@ pip install "tokenizers==0.20.3"        # ⚠️ 版本钉死，别升
 
 ## 2. 启动服务
 
+### 2.1 识图服务（OCR / 模板匹配，8791）
+
 ```bash
-python scripts/ocr_server.py --port 8790
+# 在识图 skill 目录下
+python scripts/server.py --port 8791
 ```
 
 期望输出：
 
 ```
-[ocr_server] RapidOCR 就绪，监听 http://127.0.0.1:8790 （/health /ocr）
+[image-recognition-ai-ocr] 就绪，监听 http://127.0.0.1:8791 （/health /ocr /match）
 ```
 
-验证：
+### 2.2 重排服务（8790）
 
 ```bash
-curl http://127.0.0.1:8790/health
+# 在本 skill 目录下
+python scripts/rerank_server.py --port 8790
 ```
 
-改了 `ocr_server.py` 的代码**必须重启这个进程**才生效（rerank 也在里面）。
+期望输出：
+
+```
+[rerank_server] 就绪，监听 http://127.0.0.1:8790 （/health /rerank）。OCR/模板匹配在 image-recognition-ai-ocr（8791）
+```
+
+### 2.3 验证
+
+```bash
+curl http://127.0.0.1:8791/health    # → {"ok":true,"engine":"rapidocr","opencv":true}
+curl http://127.0.0.1:8790/health    # → {"ok":true,"engine":"cross-encoder","loaded":[]}
+```
+
+改了任一服务的代码，**必须重启对应进程**才生效。
 
 配置对应项：
 
 ```json
 // scripts/config.json
 "image": {
-  "ocr":  { "enabled": true, "server": "http://127.0.0.1:8790" },
-  "features": { "enabled": true, "server": "http://127.0.0.1:8790" }
+  "ocr":      { "enabled": true, "server": "http://127.0.0.1:8791" },
+  "features": { "enabled": true, "server": "http://127.0.0.1:8791" }
 },
 "rerank": { "backend": "onnx", "server": "http://127.0.0.1:8790" }
 ```
+
+> 识图 skill 没装 → `image.ocr` / `image.features` 相关自动跳过，主流程照跑。
 
 ---
 
@@ -241,7 +270,8 @@ node scripts/doctor.mjs
 
 ```bash
 # ① 服务先起
-python scripts/ocr_server.py --port 8790
+python <识图skill>/scripts/server.py --port 8791    # OCR / 模板匹配
+python scripts/rerank_server.py --port 8790         # 检索重排
 ollama serve
 
 # ② 再起守护

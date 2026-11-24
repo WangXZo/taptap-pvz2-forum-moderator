@@ -172,7 +172,7 @@ node scripts/doctor.mjs
 
 | 能力 | 需要什么 | 缺了会怎样 |
 |---|---|---|
-| 图片 OCR | Python + `rapidocr-onnxruntime` + `scripts/ocr_server.py` | 截图内容不识别，图片帖答不准 |
+| 图片 OCR | Python + `rapidocr` + 独立 skill `image-recognition-ai-ocr` 的 `scripts/server.py` | 截图内容不识别，图片帖答不准 |
 | 重排（rerank） | Python + `onnxruntime` + `tokenizers==0.20.3` + 模型文件 | 退化为 RRF/LLM 重排，检索略差 |
 | 向量检索 | Ollama + `bge-m3` | 退化为字符 n-gram，语义召回变差 |
 | 联网补答 | `baidu-websearch` skill | 答疑库没命中时直接转人工 |
@@ -206,7 +206,8 @@ node scripts/collect.mjs --dry-run
 
 ```bash
 # ① 先起 Python 服务（如果要用 OCR/rerank）
-python scripts/ocr_server.py --port 8790
+python <识图skill>/scripts/server.py --port 8791    # 识图：OCR + 模板匹配
+python scripts/rerank_server.py --port 8790         # 检索重排
 
 # ② 答疑守护
 node scripts/watch.mjs

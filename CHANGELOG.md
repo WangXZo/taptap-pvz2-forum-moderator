@@ -5,58 +5,96 @@
 
 ---
 
-## v2.3.0 — 图片识别拆成独立能力包（2026-11-24）
+## v2.3.0 — 图片识别独立成 skill `image-recognition-ai-ocr`（2026-11-24）
 
 ### 背景
-主 skill 里塞着图片识别（5 个模块 + 模板库 + 4 个测试），越滚越大，而且这套能力**本身是通用的**
-—— 任何「论坛配图 → 文字」的场景都能用，不该绑死在 TapTap 版主 skill 上。
+主 skill 里塞着图片识别（5 个模块 + 模板库 + 4 个测试），越滚越大；而这套能力**本身是通用的**
+—— 不该绑死在 TapTap 版主 skill 上。
 
-参考已经这么做的 `baidu-websearch`（联网搜索能力包），把图片识别也拆成同定位的独立能力包。
+**第一版设计被全盘否定**（大哥：「skill 不行，全盘否定。请先设计」）。原因：我把它做成了
+固定流水线（取图→门控→识别→回灌），且把业务判断塞进了识图侧。大哥指出真正的定位是
+**「为 AI 识图准备的通用能力」：图片、任务、资料都由使用者提供，按任务给结构化结果，业务判断归下游。**
 
-### 一、拆出去的东西
+### 一、新定位：任务驱动，不是流水线驱动
 
-新建能力包 **`pvz2-image-recognition`**（`skills/pvz2-image-recognition/`）：
+| 任务 | 你给什么 | 它回什么 |
+|---|---|---|
+| `match` | 意图 A/B/C + 图片 1/2/3 | 每图对每意图的**置信度** + 依据 |
+| `text` | 图片 A | 文字 + 标签 + 逐行置信度 |
+| `feature` | 图片 + 任务说明（+ 模板库） | 特征列表 + 整体描述 |
 
-```
-SKILL.md                       能力说明（定位/三条规则/依赖注入约定/入口查找顺序）
-scripts/image.mjs              流水线编排（isCodeIntent / imageRelevance / enrichPostImages / defaultRecognize）
-scripts/ocr.mjs                RapidOCR 桥接
-scripts/vision.mjs             VLM 看图
-scripts/features.mjs           S6 模板匹配
-scripts/image-cache.mjs        识别结果缓存
-assets/game-features/          特征定义 + 模板图
-```
+- 支持组合任务 `tasks:['text','feature']`：**一次取图、一次下载**，结果按任务分组
+- 判断粒度：默认返回全部意图置信度；`onlyBest:true` 只留最高分
+- 模型漏答的意图补 `confidence:0, missing:true`（不凭空消失）
 
-主 skill 侧**只留一个薄壳** `scripts/lib/image-bridge.mjs`：
-找到能力包 → 动态 import → 注入判定逻辑 → **找不到就静默跳过图片识别**（主流程照跑）。
+### 二、零领域耦合（关键改动）
 
-### 二、依赖怎么解开的（关键）
+| 项 | 归属 |
+|---|---|
+| 取图 / 看图渠道 / 领域 prompt / 模板库 / 业务资料 | **调用方注入或传入** |
+| 通用资料（场景分类法） | 识图 skill 内置 `assets/materials/` |
+| 业务判断（该不该回、怎么回） | **下游自己做** |
 
-图片识别用到了主 skill 的五个判定/能力：取图（`http.mjs`）、求码判定（`code-guard.mjs`）、
-提问判定（`qa.mjs`）、加好友判定（`mod-task.mjs`）、看图渠道（`llm.mjs` 的 `chatVision`）。
+- **不给** `recognizePost` / `mergeInto` 这类便捷入口 —— 能力包不假设调用方的对象结构
+- 只保留 `extractor` 注入：只告诉它「去哪取图」，不要求对象长什么样
+- PVZ2 的看图 prompt 与模板库**留在本 skill**，运行时注入/传入
 
-**没有复制一份**，而是**注入** —— 大哥拍板「注入式」：
+### 三、资料层（大哥补充要求：识图 skill 可以有自己的资料）
 
-- 判定逻辑**单一事实源**：主 skill 改了求码判定，能力包自动跟着变，不会判错
-- 能力包独立使用时没有注入 → 走**保守兜底**（宁可多识别，不误判跳过），VLM 直接跳过
-- `ocr_server.py` **留在主 skill**（它同时提供 `/rerank`，那是检索重排，与图片无关），
-  能力包按 HTTP 调 8790
+三层合并，优先级从低到高：
 
-### 三、入口查找顺序
+| 层 | 来源 | 放什么 |
+|---|---|---|
+| `builtin` | 识图 skill 的 `assets/materials/` | **通用**知识（场景分类法） |
+| `caller` | 调用时传 `materials` / `context` | **具体项目**背景（这是什么游戏、术语表） |
+| `learned` | 运行时 `data/materials.json` | 人工确认过的新标签/说明 |
 
-`DSH_PVZ2_IMAGE` 环境变量（`none` = 明确禁用）→ `~/.dsh/skills/` → `~/.openclaw/skills/`
-→ 同级兄弟目录 → 本 skill 自带的 `skills/`（仓库分发形态）。
+业务专属资料**不放内置层** —— 内置层只放「放到任何识图场景都成立」的通用知识。
 
-### 四、顺带修的
+### 四、预筛（大哥选定：质量预筛 + VLM 二分类）
 
-- **发布清单漏了 4 张模板图**：原来 `DEFAULT_FILES` 只列了 `features.json` + `diamond.png`，
-  瓷砖萝卜、自选碎片那 4 张从没进过仓库 → 别人 clone 下来模板匹配是残的。现在列全 5 张。
-- 5 个图片测试改为**从能力包取实现**，等于验证拆包后的调用链仍通；
-  新增「能力包缺失时静默跳过」与「未注入看图渠道 → 跳过」两组断言。
+- **质量预筛**（免费）：无图 / 下载失败 / 体积过小 / 本批重复 → 跳过
+- **VLM 二分类**（计费，可关）：问「这图有信息吗」，答「无」→ 跳过后续识别
+- 判不准时**保留**（宁可多识别，不漏信息）；被挡下的写进 `meta.skipped` 带原因
+
+### 五、服务解耦（OCR 交给识图 skill）
+
+原来一个 `ocr_server.py` 同时提供 `/ocr`、`/match`、`/rerank` —— 前两个属识图，后一个属检索。
+
+现在拆成两个，各自独立可启：
+
+| 服务 | 归属 | 端口 | 接口 |
+|---|---|---|---|
+| `server.py` | 识图 skill | **8791** | `/health` `/ocr` `/match` |
+| `rerank_server.py`（原名 ocr_server.py） | **本 skill** | **8790** | `/health` `/rerank` |
+
+本 skill 不再做 OCR，配置里 `image.ocr.server` / `image.features.server` 改指向 8791。
+
+### 六、本 skill 侧只留业务
+
+`scripts/lib/image-recognition.mjs`（薄壳 + 业务）：
+
+1. **业务意图门控**：求码/加好友帖 → 不读图（复用 `code-guard` / `mod-task`，**只有这一份实现**）
+2. **业务相关性**：正文长且明确 → 装饰配图不值得读
+3. **模板库**：`loadTemplates()` 读 `assets/game-features` → 传给识图 skill
+4. **回灌**：`post.text += '\n[图片内容] ' + imageText`
+5. **降级**：找不到识图 skill → `skipped='no-image-skill'`，主流程照跑
+
+入口查找顺序：`DSH_IMAGE_RECOGNITION`（`none`=禁用）→ `~/.dsh/skills/` → `~/.openclaw/skills/`
+→ 同级兄弟目录 → 本 skill 自带的 `skills/` → 当前目录 `./skills/`。
+
+### 七、顺带修的
+
+- **发布清单漏了 4 张模板图**：原来只列 `features.json` + `diamond.png`，瓷砖萝卜、自选碎片那 4 张
+  从没进过仓库 → 别人 clone 下来模板匹配是残的。现在列全 5 张。
+- 修 `normalizeImages` 不认 `extractor` 返回对象（TapTap 的 `extractImages` 返的是对象数组）
+- 修单任务时 `results` 是数组（而非按任务分组对象）导致回灌侧读空
 
 ### 测试
 
-全套 **79 套件 0 失败**；图片相关 5 套共 94 项断言（门控 34 / 编排 15 / 视觉 21 / OCR 12 / 模板 12）。
+- 识图 skill 自带 `test/test-all.mjs`：**110 断言**（任务归一化/取图/缓存/资料层/预筛/JSON 解析/三类任务/编排/降级）
+- 本 skill 图片相关 5 套：**117 断言**（门控 45 / 编排 17 / OCR 11 / 视觉 25 / 模板 19）
+- 全套 **79 套件 0 失败**
 
 ---
 

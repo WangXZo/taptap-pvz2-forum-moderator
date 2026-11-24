@@ -75,7 +75,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 图片识别 | `image.enabled` | `boolean` | `true` | — | 启用 |
 | 图片识别 | `image.skipIntents` | `array` | `["friendCode","tiangongCode"]` | — | 求码/好友码帖不识别图片 |
 | 图片识别 | `image.bareCodeIsIntent` | `boolean` | `true` | — | 裸码也算求码 |
-| 图片识别 | `image.ocr.enabled` | `boolean` | `true` | — | 需要 python scripts/ocr_server.py（端口 8790） |
+| 图片识别 | `image.ocr.enabled` | `boolean` | `true` | — | 需独立 skill image-recognition-ai-ocr 的 scripts/server.py（端口 8791） |
 | 图片识别 | `image.vision.enabled` | `boolean` | `true` | — | VLM 启用 |
 | 图片识别 | `image.features.enabled` | `boolean` | `true` | — | 模板匹配启用 |
 | 夸奖通道 | `praise.enabled` | `boolean` | `true` | — | 提问帖里已有好答案 → 在那条评论下盖楼夸一句 |
@@ -148,7 +148,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 检索 | `retrieve.embedEndpoint` | `string` | `"http://127.0.0.1:11434"` | — | embedding 服务地址 |
 | 检索 | `retrieve.maxMaterialChars` | `integer` | `1000` | ≥ 100，≤ 10000 | 资料块预算(字符) |
 | 重排模型 | `rerank.backend` | `onnx | llm | off` | `"onnx"` | — | 后端 |
-| 重排模型 | `rerank.server` | `string` | `"http://127.0.0.1:8790"` | — | 由 scripts/ocr_server.py 提供 /rerank |
+| 重排模型 | `rerank.server` | `string` | `"http://127.0.0.1:8790"` | — | 由 scripts/rerank_server.py 提供 /rerank |
 | 重排模型 | `rerank.modelDir` | `string` | `"E:\\Ollama\\models\\bge-reranker-v2-m3"` | — | 需手动放置，agent 不会自动下载 |
 | 重排模型 | `rerank.timeoutMs` | `integer` | `20000` | ≥ 1000，≤ 300000 | 超时(ms) |
 | 大模型 | `llm.enabled` | `boolean` | `true` | — | 启用 |
@@ -369,7 +369,7 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`image.bareCodeIsIntent`** — 裸码也算求码
   默认 `true`
 - **`image.ocr.enabled`** — OCR 启用
-  需要 python scripts/ocr_server.py（端口 8790）
+  需独立 skill image-recognition-ai-ocr 的 scripts/server.py（端口 8791）
   默认 `true`
 - **`image.vision.enabled`** — VLM 启用
   默认 `true`
@@ -601,7 +601,7 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`rerank.backend`** — 后端
   默认 `"onnx"`，取值 onnx / llm / off
 - **`rerank.server`** — 服务地址
-  由 scripts/ocr_server.py 提供 /rerank
+  由 scripts/rerank_server.py 提供 /rerank
   默认 `"http://127.0.0.1:8790"`
 - **`rerank.modelDir`** — 模型目录
   需手动放置，agent 不会自动下载

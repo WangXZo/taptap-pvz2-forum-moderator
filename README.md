@@ -119,25 +119,27 @@
 > 搜索结果是**二手信息**，不是官方口径 —— 所以只按 **50% 置信度**讲，且不许补搜到之外的细节。
 > （这里的 50% 说的是**对这条二手信息的信任度**；跟答疑库条目的档位、跟互动续聊的回复概率是两回事。）
 
-## 帖子带图？图里的信息也能读（v1.4.0）
+## 帖子带图？图里的信息也能读
 
 论坛大量帖子带图（求助截图、**活动页面**、**植物图鉴**、晒卡），以前这些帖只能当「看不懂」处理。
-现在有一条**带门控**的流水线（实现在独立能力包 `pvz2-image-recognition`，本 skill 经薄壳调用）：
 
-| 步骤 | 做什么 | 用什么 |
+**识别能力是独立 skill**（`image-recognition-ai-ocr`，任务驱动、可单独安装）；
+本 skill 只保留**业务逻辑**：
+
+| 层 | 谁做 | 内容 |
 |---|---|---|
-| ① 意图门控 | **好友码/天宫码意图 → 直接跳过**（这类帖按码处理，不读图） | 规则 |
-| ② 相关性门控 | 无关配图（装饰/无关晒图）→ 跳过；相关图才识别 | 纯启发式起步 |
-| ③ 识别 | 文字/数字/错误文案 → 本地 OCR；游戏画面/开放语义 → 看图大模型；已知图标 → 模板匹配 | RapidOCR / VLM / opencv |
-| ④ 回灌 | 识别内容并进帖子文本 → **答疑库匹配 / 联网搜索 / 生成回复** 全部用得上 | 复用现有通道 |
+| ① 业务意图门控 | **本 skill** | 好友码/天宫码帖 → 直接跳过（这类帖按码处理，不读图） |
+| ② 业务相关性 | **本 skill** | 正文长且明确 → 配图多半是装饰，不值得花钱读 |
+| ③ 识别 | **识图 skill** | 读字（OCR）/ 认特征（模板+VLM）/ 判断（置信度） |
+| ④ 回灌 | **本 skill** | 识别内容并入帖子文本 → **答疑库匹配 / 联网搜索 / 生成回复** 全部用得上 |
 
 - **取图实测**：帖子配图在 `moment.topic.footer_images[]`，feed 层就带；匿名 + `X-UA` 头可读；图床无防盗链。
-- **本地 OCR**：`pip install rapidocr` → `python scripts/ocr_server.py`（监听 127.0.0.1:8790，`/ocr` 文字 + `/match` 模板）。
-- **看图模型**：跟 DSH 走（填 `config.llm.vision` 就用你自己的 Key，否则自动挑 DSH 里的视觉模型）；没有就降级跳过，不影响答疑。
-- **游戏特征模板库**：在能力包内 `skills/pvz2-image-recognition/assets/game-features/`（`features.json` + 模板图）—— 植物/奖励图标模板匹配，ms 级、离线、免费。
+- **本地 OCR**：`pip install rapidocr onnxruntime pillow numpy` → 在识图 skill 里 `python scripts/server.py`（端口 8791）。
+- **看图模型**：跟 DSH 走（填 `config.llm.vision` 就用你自己的 Key，否则自动挑 DSH 里的视觉模型）；没有就降级跳过。
+- **游戏特征模板库**：**留在本 skill** 的 `assets/game-features/`（`features.json` + 模板图），运行时传给识图 skill。
 - **识别结果按图缓存**（`data/image-cache.json`），不重复花钱。
-- **能力包没装也能跑**：找不到能力包就**跳过图片识别**，主流程照跑（日志里说明一句）。
-- 详细说明：[references/image-recognition.md](references/image-recognition.md) ｜ 能力包说明：`skills/pvz2-image-recognition/SKILL.md` ｜ 设计稿：`docs/图片识别-技术设计稿-20261116.md`
+- **识图 skill 没装也能跑**：找不到就跳过图片识别，主流程照跑（日志里说明一句）。
+- 详细说明：[references/image-recognition.md](references/image-recognition.md) ｜ 识图 skill：`skills/image-recognition-ai-ocr/SKILL.md`（安装/依赖/契约在它的 `docs/`）
 
 ## 它会做什么、不会做什么
 

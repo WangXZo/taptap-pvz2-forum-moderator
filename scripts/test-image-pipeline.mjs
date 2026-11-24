@@ -1,97 +1,112 @@
-// 图片流水线 M4 离线测试：缓存（TTL/落盘）+ 识别编排降级。
-// 2026-11-24：实现已拆到独立能力包 `pvz2-image-recognition`，这里从能力包取。
+// 图片识别流水线离线测试：缓存 + 能力包编排 + 组合任务
+//
+// 2026-11-24 重构：实现已在独立 skill image-recognition-ai-ocr（任务驱动）。
+// 本测试验证「本 skill 侧取到的实现能正常跑」，并用注入的假 recognize 测回灌。
+//
 // 跑：node scripts/test-image-pipeline.mjs
 import { pathToFileURL } from 'node:url';
-import { resolveImageEntry } from './lib/image-bridge.mjs';
-import { extractImages } from './lib/http.mjs';
-import { looksLikeCodeAsk } from './lib/code-guard.mjs';
-import { detectFriendRequest } from './lib/mod-task.mjs';
-import { looksLikeQuestion } from './lib/qa.mjs';
+import { resolveImageEntry, enrichPostImages } from './lib/image-recognition.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readFileSync, unlinkSync } from 'node:fs';
-
-const entry = resolveImageEntry();
-if (!entry) {
-  console.error('✗ 找不到 pvz2-image-recognition 能力包');
-  process.exit(1);
-}
-const pkg = await import(pathToFileURL(entry).href);
-const { loadImageCache, enrichPostImages, defaultRecognize } = pkg;
-const deps = { extractImages, looksLikeCodeAsk, detectFriendRequest, looksLikeQuestion };
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 
 let pass = 0, fail = 0;
 function t(name, cond, extra = '') {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ ${name}${extra ? '  → ' + extra : ''}`); }
 }
-const img = { url: 'https://img2-tc.tapimg.com/x.jpg', format: 'jpeg', width: 100, height: 100 };
-const item = { moment: { id_str: '1', topic: { type: 2, title: '活动奖励', footer_images: [img] } } };
 
-console.log('\n== image-cache（TTL/落盘/重载）==');
+const entry = resolveImageEntry();
+t('找到能力包入口', Boolean(entry), String(entry || ''));
+if (!entry) {
+  console.log('\n结果：0 通过 / 1 失败（能力包缺失）');
+  process.exit(1);
+}
+const pkg = await import(pathToFileURL(entry).href);
+
+const img = { ref: 'img1', url: 'https://img2-tc.tapimg.com/x.jpg', base64: 'A'.repeat(200), format: 'jpg', bytes: 200 };
+const item = { moment: { id_str: '1', topic: { type: 2, title: '活动奖励', footer_images: [{ original_url: 'https://img2-tc.tapimg.com/x.jpg', original_format: 'jpeg' }] } } };
+
+console.log('\n== 缓存（能力包实现）==');
 {
   const file = join(tmpdir(), `img-cache-test-${Date.now()}.json`);
-  const c = loadImageCache(file, { ttlHours: 168 });
+  const c = pkg.loadCache(file, { ttlHours: 168 });
   c.set('k1', { text: '缓存内容' });
   t('set/get 一致', c.get('k1').text === '缓存内容');
-  t('get 带时间戳', typeof c.get('k1').at === 'number');
   c.save();
   const raw = JSON.parse(readFileSync(file, 'utf8'));
-  t('落盘含 k1', raw.k1 && raw.k1.text === '缓存内容');
-  const c2 = loadImageCache(file, { ttlHours: 168 });
+  t('落盘含 k1', raw.k1 && raw.k1.value.text === '缓存内容');
+  const c2 = pkg.loadCache(file, { ttlHours: 168 });
   t('重载命中', c2.get('k1').text === '缓存内容');
-  // TTL 过期
-  const c3 = loadImageCache(file, { ttlHours: 0.0001 }); // ~0.36s
-  c3.set('k2', { text: 'x' });
-  c3._expireHack = true;
-  // 直接构造过期：把 at 改老
-  const old = loadImageCache(file, { ttlHours: 1 });
-  old.set('old', { text: '过期' });
-  // 手动落一个过期条目
+  // 过期
   const obj = JSON.parse(readFileSync(file, 'utf8'));
-  obj.expired = { text: '旧', at: Date.now() - 999999999 };
-  const { writeFileSync } = await import('node:fs');
+  obj.expired = { value: { text: '旧' }, at: Date.now() - 999999999 };
   writeFileSync(file, JSON.stringify(obj));
-  const c4 = loadImageCache(file, { ttlHours: 1 });
-  t('过期条目 get 返回 undefined', c4.get('expired') === undefined);
-  t('未过期条目仍在', c4.get('k1').text === '缓存内容');
+  const c3 = pkg.loadCache(file, { ttlHours: 1 });
+  t('过期条目 get 返回 undefined', c3.get('expired') === undefined);
+  t('未过期条目仍在', c3.get('k1').text === '缓存内容');
   try { unlinkSync(file); } catch {}
 }
 
-console.log('\n== defaultRecognize 降级（各识别器关闭/缺依赖不抛错）==');
+console.log('\n== 任务归一化与参数校验 ==');
 {
-  const cfg = { image: { ocr: { enabled: false }, vision: { enabled: false }, features: { enabled: false } } };
-  const r = await defaultRecognize([img], { config: cfg });
-  t('全关闭 → 空文本不抛错', r.text === '' && Array.isArray(r.sources));
+  t('单一任务', JSON.stringify(pkg.normalizeTasks({ task: 'text' }).tasks) === '["text"]');
+  t('组合任务', JSON.stringify(pkg.normalizeTasks({ tasks: ['text', 'feature'] }).tasks) === '["text","feature"]');
+  t('未知任务报错', Boolean(pkg.normalizeTasks({ task: 'nope' }).error));
+  const bad = await pkg.recognize({ task: 'text', images: [] });
+  t('缺 images → ok:false 不抛错', bad.ok === false);
 }
 
-console.log('\n== enrichPostImages 走 defaultRecognize（关闭识别器→empty）==');
+console.log('\n== 识别器全关 → 空结果不抛错 ==');
 {
-  const cfg = { image: { enabled: true, ocr: { enabled: false }, vision: { enabled: false }, features: { enabled: false } } };
-  const r = await enrichPostImages(item, { config: cfg, title: '活动奖励是什么', text: '看图', deps });
-  t('相关图但识别器全关 → empty-recognition', r.skipped === 'empty-recognition');
-  t('文本不变（无识别内容）', r.text === '看图');
-  t('images 仍提取', r.images.length === 1);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const b = new Uint8Array(200); b[0] = 0xff; b[1] = 0xd8; b[2] = 0xff;
+    return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => b.buffer };
+  };
+  const r = await pkg.recognize({
+    tasks: ['text', 'feature'],
+    images: [item],
+    extractor: (p) => p.moment.topic.footer_images.map((x) => x.original_url),
+    options: {
+      ocr: { enabled: false },
+      vision: { enabled: false },
+      features: { enabled: false },
+      prefilter: { quality: true, vlmBinary: false },
+    },
+  });
+  globalThis.fetch = realFetch;
+  t('组合任务 ok', r.ok === true);
+  t('text 结果为空文本', r.results.text[0].text === '');
+  t('feature 结果为空描述', r.results.feature[0].description === '');
+  t('有降级说明', r.meta.degraded.length >= 1);
 }
 
-console.log('\n== enrichPostImages 注入识别器（多源合并）==');
+console.log('\n== enrichPostImages 用真实能力包（注入假 fetch）==');
 {
-  const cfg = { image: { enabled: true } };
-  const rec = async () => ({ text: 'OCR文字\nVLM语义', sources: ['ocr', 'vlm'] });
-  const r = await enrichPostImages(item, { config: cfg, title: '这活动怎么参加', text: '求助', recognize: rec, deps });
-  t('多源文本回灌', r.text.includes('OCR文字') && r.text.includes('VLM语义'));
-  t('sources 合并', r.sources.includes('ocr') && r.sources.includes('vlm'));
-}
-
-console.log('\n== C8 entities 透传（P3）==');
-{
-  const cfg = { image: { enabled: true } };
-  const rec = async () => ({ text: '图中识别到：瓷砖萝卜', sources: ['template'], celebrate: true, entities: ['瓷砖萝卜'] });
-  const r = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: rec, deps });
-  t('entities 透传', Array.isArray(r.entities) && r.entities.includes('瓷砖萝卜'));
-  t('celebrate 保留', r.celebrate === true);
-  const r2 = await enrichPostImages(item, { config: cfg, title: '晒', text: '看看', recognize: async () => ({ text: '', sources: [] }), deps });
-  t('无识别 entities 空数组', Array.isArray(r2.entities) && r2.entities.length === 0);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.endsWith('/ocr')) {
+      return { ok: true, status: 200, json: async () => ({ ok: true, text: '活动奖励：钻石334', boxes: [] }) };
+    }
+    const b = new Uint8Array(200); b[0] = 0xff; b[1] = 0xd8; b[2] = 0xff;
+    return { ok: true, status: 200, headers: { get: () => 'image/jpeg' }, arrayBuffer: async () => b.buffer };
+  };
+  const cfg = {
+    image: {
+      enabled: true,
+      features: { enabled: false },
+      ocr: { enabled: true, server: 'http://127.0.0.1:8791' },
+      vision: { enabled: false },
+      prefilter: { quality: true, vlmBinary: false },
+    },
+  };
+  const r = await enrichPostImages(item, { config: cfg, title: '活动奖励是什么', text: '看图' });
+  globalThis.fetch = realFetch;
+  t('走真实能力包拿到 OCR 文本', r.imageText.includes('钻石334'), r.imageText || r.skipped);
+  t('文本已回灌', r.text.includes('[图片内容]'));
+  t('sources 含 ocr', r.sources.includes('ocr'));
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

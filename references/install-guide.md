@@ -24,7 +24,8 @@ opencli doctor          # 确认 daemon 在跑、扩展已连接、TapTap 已登
 
 ```bash
 pip install rapidocr onnxruntime pillow numpy
-python scripts/ocr_server.py --port 8790     # 起本地 OCR/模板服务（/health /ocr /match /rerank）
+python ../image-recognition-ai-ocr/scripts/server.py --port 8791   # 识图：/health /ocr /match
+python scripts/rerank_server.py --port 8790                      # 重排：/health /rerank
 ```
 
 - 缺这套 → 图片识别降级跳过，**不阻断答疑**（帖子文本照常处理）。

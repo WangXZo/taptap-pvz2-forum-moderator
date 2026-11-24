@@ -11,7 +11,7 @@
 
 ## C4 重排
 - `rerank.mjs` 双 backend（`config.rerank.backend`）：
-  - `onnx`（**已启用** 2026-11-18）：本地 cross-encoder **bge-reranker-v2-m3**，走 `ocr_server.py /rerank`（onnxruntime+tokenizers，lazy 加载）；modelDir=`E:\Ollama\models\bge-reranker-v2-m3`（用户指定）。加载器优先 `model_quantized.onnx`＝fp16 原包本地转 fp32 产物（原 arnauld-a int8 包 fp16 图 CPU 不兼容，见 output/PVZ2-P1增强-模型下载教程-20261117.md 落地记录）；8 候选≈1s。
+  - `onnx`（**已启用** 2026-11-18）：本地 cross-encoder **bge-reranker-v2-m3**，走 `rerank_server.py /rerank`（onnxruntime+tokenizers，lazy 加载）；modelDir=`E:\Ollama\models\bge-reranker-v2-m3`（用户指定）。加载器优先 `model_quantized.onnx`＝fp16 原包本地转 fp32 产物（原 arnauld-a int8 包 fp16 图 CPU 不兼容，见 output/PVZ2-P1增强-模型下载教程-20261117.md 落地记录）；8 候选≈1s。
   - `llm`（默认过渡）：LLM listwise 精排（RankGPT-lite）。
   - 回退链：onnx→llm→RRF 原序（不阻断）。
 - `config.retrieve.rerank=false` 可关。

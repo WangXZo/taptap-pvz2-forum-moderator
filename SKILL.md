@@ -22,10 +22,10 @@ description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。
 taptap-pvz2-forum-moderator/
 ├── SKILL.md                  本文件（纲要）
 ├── references/               细节文档（skill-full.md = 原全文）
-├── scripts/                  代码（零第三方依赖；ocr_server.py 需 pip install rapidocr）
-├── skills/                   随包分发的独立能力包
-│   └── pvz2-image-recognition/   图片识别（取图→门控→OCR/VLM/模板→回灌）
-├── assets/                   模板 + eval-set.json
+├── scripts/                  代码（零第三方依赖；rerank_server.py 需 pip install onnxruntime tokenizers）
+├── skills/                   随包分发的独立 skill
+│   └── image-recognition-ai-ocr/   识图（任务驱动；安装/依赖见它的 docs/）
+├── assets/                   模板 + game-features/（识图用的特征模板库）+ eval-set.json
 ├── qa/答疑库.md              ★ 答疑数据库（直接编辑）
 ├── data/                     运行时状态（state.json / SQLite / 缓存）
 └── reports/                  运行时报表（含 trace / daily / eval）

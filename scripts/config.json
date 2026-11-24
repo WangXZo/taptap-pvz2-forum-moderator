@@ -306,7 +306,7 @@
     "server": "http://127.0.0.1:8790",
     "modelDir": "E:\\Ollama\\models\\bge-reranker-v2-m3",
     "timeoutMs": 20000,
-    "note": "C4：backend=onnx(已启用,2026-11-17) / llm(过渡)。modelDir=用户指定位置 E:\\Ollama\\models\\bge-reranker-v2-m3；原 arnauld-a int8 包为 fp16 图 CPU 不兼容，已本地转 fp32 存 model_quantized.onnx（加载器优先认它，原文件未动）；tokenizers 0.20.3 已装。/rerank 在 ocr_server.py（改代码需重启 OCR）；失败回退 llm→RRF。collect 每轮读 config，切 backend 不需重启 watch。"
+    "note": "C4：backend=onnx(已启用,2026-11-17) / llm(过渡)。modelDir=用户指定位置 E:\\Ollama\\models\\bge-reranker-v2-m3；原 arnauld-a int8 包为 fp16 图 CPU 不兼容，已本地转 fp32 存 model_quantized.onnx（加载器优先认它，原文件未动）；tokenizers 0.20.3 已装。OCR 与模板匹配已迁到独立能力包 image-recognition-ai-ocr 的 server.py（8791）。/rerank 在 rerank_server.py（2026-11-24 从 ocr_server.py 拆出；改代码需重启该服务）；失败回退 llm→RRF。collect 每轮读 config，切 backend 不需重启 watch。"
   },
   "features": {
     "image": true,
@@ -412,7 +412,7 @@
     "ocr": {
       "enabled": true,
       "engine": "rapidocr",
-      "server": "http://127.0.0.1:8790",
+      "server": "http://127.0.0.1:8791",
       "timeoutMs": 30000
     },
     "vision": {
@@ -425,10 +425,15 @@
     "features": {
       "enabled": true,
       "dir": "{{SKILL}}/assets/game-features",
-      "server": "http://127.0.0.1:8790",
+      "server": "http://127.0.0.1:8791",
       "timeoutMs": 30000
     },
-    "note": "图片识别流水线（2026-11-16 设计；2026-11-24 实现已拆成独立能力包 pvz2-image-recognition，主 skill 经 scripts/lib/image-bridge.mjs 薄壳调用，能力包没装就跳过图片识别）：①码/好友意图跳过图片识别（isCodeIntent）②相关性门控纯启发式起步（无关配图跳过、相关图才识别）③识别内容并入 post.text → QA匹配/联网搜索/LLM组答自动受益。识别手段：S3 RapidOCR 本地 OCR（需起 scripts/ocr_server.py，pip install rapidocr）+ S4 VLM（跟随 DSH/他人 key，见 llm.vision）+ S6 模板匹配（能力包内 assets/game-features，opencv /match）。结果缓存 data/image-cache.json（TTL cacheTtlHours）。OCR/VLM/模板服务未起或缺依赖 → 各自降级跳过，不阻断答疑。取图实测：图在 moment.topic.footer_images[]，匿名+X-UA 可读，CDN 无防盗链。"
+    "prefilter": {
+      "quality": true,
+      "vlmBinary": true,
+      "note": "quality=免费质量预筛（无图/过小/重复）；vlmBinary=先用 VLM 二分类问「这图有信息吗」，无信息就不做后续识别（省成本）。都可在 config 里关。"
+    },
+    "note": "图片识别（2026-11-16 设计；2026-11-24 识别能力拆成独立 skill image-recognition-ai-ocr，任务驱动、零领域耦合）。本 skill 只做三件业务事：①求码/加好友帖不读图（isCodeIntent）②正文长且明确→装饰配图不读（imageRelevance）③识别结果回灌 post.text（下游 QA匹配/联网搜索/LLM组答自动受益）。识图本身：本 skill 注入 PVZ2 看图 prompt + 传入 assets/game-features 模板库，调能力包 recognize({tasks:['text','feature']})。服务端口：OCR/模板在能力包 server.py（8791），检索重排在 rerank_server.py（8790）。结果缓存 data/image-cache.json（TTL cacheTtlHours）。服务未起/缺依赖/能力包没装 → 各自降级跳过，不阻断答疑。取图实测：图在 moment.topic.footer_images[]，匿名+X-UA 可读，CDN 无防盗链。"
   },
   "llm": {
     "enabled": true,

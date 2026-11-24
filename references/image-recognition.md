@@ -1,44 +1,55 @@
-# 图片识别流水线（S1–S6）· 分析与运维
+# 图片识别 · 本 skill 的接入与运维
 
-> v1.4.0（2026-11-16）。设计依据见 skill 内 `docs/图片识别-调研报告-20261116.md` + `docs/图片识别-技术设计稿-20261116.md`（取图实测证据 `docs/evidence/06-图片取图schema实测-20261116.md` + 活动页面样本图）。
-> 本文是 skill 内的实现说明 + 运维手册。改图片识别代码前先读这里。
->
-> ⚠️ **2026-11-24：实现已拆成独立能力包 `pvz2-image-recognition`**
-> （定位与 `baidu-websearch` 一样：通用能力、可独立安装、别的项目也能用）。
-> 本 skill 侧只剩一个**薄壳** `scripts/lib/image-bridge.mjs`：找到能力包 → 动态 import →
-> 注入判定逻辑 → 找不到就**静默跳过图片识别**（主流程照跑）。
-> 本文里的 `lib/xxx.mjs` 一律指**能力包内**的 `skills/pvz2-image-recognition/scripts/xxx.mjs`，
-> `assets/game-features/` 一律指**能力包内**的同名目录。
+> v1.4.0（2026-11-16）引入；**2026-11-24 重构：识别能力独立成 skill `image-recognition-ai-ocr`**。
+> 设计依据见 `docs/图片识别-调研报告-20261116.md` + `docs/图片识别-技术设计稿-20261116.md`（历史文档，讲的是拆分前的形态）。
+> 本文只讲**本 skill 这一侧**做了什么；识图本身怎么用见识图 skill 的 `SKILL.md` 与 `docs/`。
 
-## 1. 为什么做 / 三条规则
+## 0. 两层分工（记住这个就不会乱）
 
-论坛大量帖带图（求助截图、**活动页面**、**植物图鉴**、晒卡），旧版零图片识别。大哥拍板的**带门控流水线**：
+| 层 | 在哪 | 负责 |
+|---|---|---|
+| **识图能力** | 独立 skill `image-recognition-ai-ocr` | 图片 → 结构化结果（文字/特征/置信度），任务驱动，零领域耦合 |
+| **论坛业务** | 本 skill 的 `scripts/lib/image-recognition.mjs` | 业务门控、相关性判断、回灌文本、注入 PVZ2 prompt 与模板库 |
 
-1. **好友码/天宫码意图 → 跳过图片识别**（走原固定提醒/撮合流程，不读图）。
-2. **其他帖先判图片相关性**（纯启发式起步）：无关配图跳过、相关图才识别。
-3. **识别内容并入 `post.text`** → QA 匹配 / 联网搜索 / LLM 组答**自动受益**（复用现有通道，不新建）。
+找不到识图 skill → **跳过图片识别**，主流程照跑（日志说明一句，`skipped='no-image-skill'`）。
+
+## 1. 本 skill 做的三件业务事
+
+1. **业务意图门控**：好友码/天宫码意图 → 跳过图片识别（这类帖按码处理，不读图）。
+   判定复用 `lib/code-guard.mjs` 的 `looksLikeCodeAsk` + `lib/mod-task.mjs` 的 `detectFriendRequest`。
+2. **业务相关性**：正文长且明确（≥120 字）→ 配图多半是装饰，不值得花钱读；
+   正文短 / 像提问 → 读。纯启发式，可配 `image.relevanceGate`。
+   （通用「这图有没有信息」由识图 skill 的预筛负责，那是成本判断，不是业务判断。）
+3. **回灌**：`post.text = baseText + "\n[图片内容] " + imageText` → QA 匹配 / 联网搜索 / LLM 组答自动受益。
+
+> 注：原来这里还有「求码判定」「提问判定」的复制版 —— 现在**不复制了**，
+> 业务判定只在本 skill 存在一份，识图 skill 不掺和业务语义。
 
 ## 2. 架构与数据流
 
 ```
 collect.mjs 取帖（feed item 含 topic.footer_images）
-  └ lib/image-bridge.mjs（薄壳：找能力包 + 注入判定逻辑）
-      └ enrichPostImages(item, {config,title,text,cache,deps})   能力包 image.mjs
-          ├ extractImages(item)            http.mjs（注入）→ post.images[{url=original_url,...}]
-          ├ 规则1 isCodeIntent             码/好友意图 → skipped=code-intent（判定由主 skill 注入）
-          ├ 规则2 imageRelevance           启发式 → decorative 跳过 / relevant 识别
-          └ defaultRecognize（可注入）
-              ├ S6 matchFeatures           能力包 features.mjs → 模板匹配（本地免费）
-              ├ S3 ocrImages               能力包 ocr.mjs → RapidOCR 文字
-              └ S4 describeImages          能力包 vision.mjs → VLM 语义（chatVision 由主 skill 注入）
-          → text = baseText + "\n[图片内容] " + imageText
+  └ lib/image-recognition.mjs  enrichPostImages(item, {config,title,text,cache})
+      ├ extractImages(item)            取图（本 skill 的 http.mjs）
+      ├ isCodeIntent                   业务门控1：求码/加好友 → 跳过
+      ├ imageRelevance                 业务门控2：装饰配图 → 跳过
+      ├ loadTemplates(config)          读本 skill 的 assets/game-features 模板库
+      └ recognize({ tasks:['text','feature'], images:[item], extractor:extractImages,
+                    prompt: PVZ2_PROMPT, templates, options:{ ocr, features, vision:{chatVision}, prefilter }})
+            → 识图 skill：预筛 → OCR/模板/VLM → 结构化结果
+      → 汇总 text + features + celebrate → 回灌 post.text
   └ post.text/imageText/images/imageSources → looksQ / QA匹配 / websearch / composeReply
 ```
 
-**为什么判定逻辑用注入而不是复制**：求码判定（`code-guard`）、提问判定（`qa`）、
-加好友判定（`mod-task`）、看图渠道（`llm`）在主 skill 里已有一套**精确实现**；
-复制一份必然漂移 —— 主 skill 改了求码判定，能力包那份不知道，跟着判错。
-能力包独立使用时没有注入，走它自己的**保守兜底**（宁可多识别，不误判跳过）。
+**注入关系**（单向，不互相依赖）：
+
+| 从本 skill 注入给识图 skill | 用途 |
+|---|---|
+| `extractor = extractImages` | 告诉它 TapTap 的图在哪（`moment.topic.footer_images`） |
+| `prompt = PVZ2_PROMPT` | 覆盖它内置的通用看图 prompt |
+| `templates` | PVZ2 模板库（**库在本 skill**，识图 skill 只提供匹配引擎） |
+| `options.vision.chatVision` | 复用本 skill 的模型渠道（`llm.mjs`，跟随 DSH / 他人 key） |
+| `options.ocr/features.server` | 指向识图 skill 的本地服务（8791） |
 
 ## 3. 取图 schema（实测，evidence/06）
 
@@ -48,28 +59,40 @@ collect.mjs 取帖（feed item 含 topic.footer_images）
 - **匿名 + `X-UA` 头**即可读（漏 X-UA 报 `INVALID_XUA`，非 WAF）；`ttGet` 已带 X-UA。moment id 用 **`id_str`**。
 - CDN `img2-tc.tapimg.com` **无防盗链**，裸 GET 即 200 JPEG。
 
-## 4. 各识别手段
+## 4. 三个通道（实现在识图 skill）
 
-| 手段 | 模块 | 引擎 | 适用 | 成本 |
+| 通道 | 识图 skill 里的模块 | 引擎 | 适用 | 成本 |
 |---|---|---|---|---|
-| S3 OCR | 能力包 `ocr.mjs` + `ocr_server.py /ocr` | RapidOCR（PP-OCRv6） | 错误文案/数字/活动规则/图鉴说明文本 | 免费离线 |
-| S4 VLM | 能力包 `vision.mjs` + 主 skill `llm.mjs chatVision`（注入） | 跟随 DSH / 他人 key | 游戏画面/活动页/图鉴开放语义 | 按图计费 |
-| S6 模板 | 能力包 `features.mjs` + `ocr_server.py /match` | opencv 多尺度模板匹配 | 已知植物/奖励图标/UI | 免费离线 |
+| 模板匹配 | `features.mjs` → `server.py /match` | opencv 多尺度 | 已知植物/奖励图标/UI | 免费离线 |
+| OCR | `ocr.mjs` → `server.py /ocr` | RapidOCR（PP-OCRv6） | 错误文案/数字/活动规则/图鉴说明 | 免费离线 |
+| VLM | `vision.mjs`（渠道由本 skill 注入） | 跟随 DSH / 他人 key | 游戏画面/活动页/开放语义 | 按图计费 |
 
-**VLM 渠道（跟随 DSH + 他人 key）**：`resolveVisionChannels` 沿用 `resolveChannels` 两条路——①`config.llm.vision`（apiKey/baseURL/model 齐全）用他人 key；②否则读 DSH 路由挑 vision-capable 模型（`isVisionModel` 按能力词 `vl/vision/omni` 匹配，**不写死模型名**）；③都无→降级。多模态 content 经 `toApiContent` 转 openai `image_url` / anthropic `image source`。
+顺序恒为 **模板 → OCR → VLM**（先便宜后贵）。
 
-## 5. 运维：起本地图像服务
+**VLM 渠道**：本 skill 注入 `llm.mjs` 的 `chatVision`——①`config.llm.vision`（apiKey/baseURL/model 齐全）用他人 key；
+②否则读 DSH 路由挑 vision-capable 模型（`isVisionModel` 按能力词 `vl/vision/omni` 匹配，**不写死模型名**）；
+③都无→降级跳过。多模态 content 经 `toApiContent` 转 openai `image_url` / anthropic `image source`。
 
-OCR 与模板匹配共用一个 Python 微服务（`scripts/ocr_server.py`，监听 127.0.0.1:8790）：
+## 5. 运维：两个服务，各管一件事
+
+| 服务 | 归属 | 端口 | 接口 |
+|---|---|---|---|
+| `scripts/server.py` | 识图 skill | **8791** | `/health` `/ocr` `/match` |
+| `scripts/rerank_server.py` | **本 skill** | **8790** | `/health` `/rerank` |
 
 ```powershell
-pip install rapidocr onnxruntime pillow numpy   # 首次（opencv 随 rapidocr 带入）
-python scripts/ocr_server.py --port 8790         # /health /ocr /match
+# 识图服务（OCR + 模板匹配）—— 在识图 skill 目录下
+pip install rapidocr onnxruntime pillow numpy
+python scripts/server.py --port 8791
+
+# 重排服务（cross-encoder）—— 在本 skill 目录下
+pip install onnxruntime tokenizers==0.20.3
+python scripts/rerank_server.py --port 8790
 ```
 
-- 服务**未起/缺依赖 → OCR/模板各自降级跳过**，不阻断答疑（VLM 仍可独立工作）。
+- 任一服务**未起/缺依赖 → 对应通道降级跳过**，不阻断答疑（其它通道仍可工作）。
 - 长期跑建议做成系统服务（同 watch，见 ops.md）。
-- 体检：`GET /health` → `{ok:true,engine:"rapidocr"}`。
+- 体检：`GET :8791/health` → `{ok:true,engine:"rapidocr",opencv:true}`；`GET :8790/health` → `{ok:true,engine:"cross-encoder"}`。
 
 ## 6. 配置（config.json）
 
@@ -78,20 +101,25 @@ python scripts/ocr_server.py --port 8790         # /health /ocr /match
   "enabled": true,
   "skipIntents": ["friendCode","tiangongCode"],
   "relevanceGate": { "mode":"heuristic", "shortTextLen":30, "longTextLen":120, "unknownAsRelevant":true },
-  "ocr":      { "enabled":true, "server":"http://127.0.0.1:8790", "timeoutMs":30000 },
-  "vision":   { "enabled":true, "temperature":0.3, "maxTokens":1200, "timeoutMs":90000, "cacheTtlHours":168 },
-  "features": { "enabled":true, "dir":"{{SKILL}}/assets/game-features", "server":"http://127.0.0.1:8790" }
+  "ocr":        { "enabled":true, "server":"http://127.0.0.1:8791", "timeoutMs":30000 },
+  "vision":     { "enabled":true, "temperature":0.3, "maxTokens":1200, "timeoutMs":90000, "cacheTtlHours":168 },
+  "features":   { "enabled":true, "dir":"{{SKILL}}/assets/game-features", "server":"http://127.0.0.1:8791" },
+  "prefilter":  { "quality":true, "vlmBinary":true }
 },
+"rerank": { "backend":"onnx", "server":"http://127.0.0.1:8790" },
 "llm": { "vision": { "apiKey":"","baseURL":"","model":"","api":"openai-completions" } }
 ```
 
+- `ocr.server` / `features.server` 指向**识图 skill** 的服务（8791）；`rerank.server` 指向**本 skill** 的服务（8790）。
 - 相关性门控：求助意图/正文短→相关；正文长且明确→配图跳过；判不明默认按相关（`unknownAsRelevant`）。
-- 缓存：`data/image-cache.json`，按图 url hash，TTL `cacheTtlHours`（默认 168h），避免重复识别省钱。
+- 预筛：`quality`=免费质量预筛；`vlmBinary`=先用 VLM 问「这图有信息吗」，无信息就不做后续识别（省成本）。都可关。
+- 缓存：`data/image-cache.json`，按图指纹 + 任务签名，TTL `cacheTtlHours`（默认 168h），避免重复识别省钱。
 
-## 7. 扩展游戏特征模板库（S6）
+## 7. 扩展游戏特征模板库
 
-`assets/game-features/features.json` + `templates/*.png`
-（**能力包内**：`skills/pvz2-image-recognition/assets/game-features/`；配置里的 `{{SKILL}}` 占位符现在解析到**能力包根**）：
+**模板库留在本 skill**：`assets/game-features/features.json` + `templates/*.png`
+（配置里的 `{{SKILL}}` 解析到**本 skill 根**；运行时由 `loadTemplates()` 读成 base64 传给识图 skill，
+识图 skill 只提供匹配引擎，不携带任何领域模板）：
 
 ```json
 { "id":"peashooter","name":"豌豆射手","category":"plant","method":"template",
@@ -99,14 +127,13 @@ python scripts/ocr_server.py --port 8790         # /health /ocr /match
 ```
 
 - 从游戏截图裁植物/奖励图标 PNG 放 `templates/`，加条目即可；`pending:true` 表示模板待采集（暂不参与）。
-- `threshold` 相似度阈值（0.85 起，识别不到降 0.8/0.7）；多尺度匹配（1.0/0.9/0.8/1.1/0.7/1.2）。
-- 游戏版本换 UI/新植物 → 补模板。已有样本：`templates/diamond.png`（钻石）、`templates/tile_turnip_card.png` / `tile_turnip_burst.png`（瓷砖萝卜，trigger=celebrate）、`templates/zixuan_item.png` / `zixuan_select.png`（自选碎片/碎片五选一，真实帖图验证通过）。均经真实帖图验证。
+- `threshold` 相似度阈值（0.85 起，识别不到降 0.8/0.7）；多尺度匹配（0.6~3.0）。
+- 游戏版本换 UI/新植物 → 补模板。已有样本：`templates/diamond.png`（钻石）、`templates/tile_turnip_card.png` / `tile_turnip_burst.png`（瓷砖萝卜，trigger=celebrate）、`templates/zixuan_item.png` / `zixuan_select.png`（自选碎片/碎片五选一）。均经真实帖图验证。
 - **两类触发**：`trigger:"celebrate"`（瓷砖萝卜）→ 自动过去庆祝；**无 trigger**（花盆挂件碎片自选）→ 识别文本并入 `post.text` → QA 候选 → **语义确认门**再决定是否选用。
 - **特征要具体，别笼统**：`zixuan_item`=「花盆挂件碎片自选」（拼图+金盆+问号，令营/活动专属）；`zixuan_select`=「碎片五选一」通用使用弹窗，**不单独判定为花盆挂件**（游戏里还有其他自选）。
 - **语义确认门**（`lib/semantic-gate.mjs`）：QA 条目带 `- 语义确认：true` 时，命中后先让 LLM 综合语义（正文+图片识别）判断玩家是否真在问这条，确认才选用；不确认/LLM 挂 → 转人工，绝不笼统套用。
-- **celebrate 触发**：特征带 `trigger:"celebrate"`（如瓷砖萝卜）→ 识别到即标记 `imageCelebrate`；collect 把该帖纳入分享互动并以 `kind=celebrate` **自动过去庆祝**（不只回灌文本）。后续任何帖识别到瓷砖萝卜都会自动过去，不限于某两帖。
+- **celebrate 触发**：特征带 `trigger:"celebrate"`（如瓷砖萝卜）→ `loadTemplates` 把它标进 celebrate 集合，识别命中即 `imageCelebrate`；collect 把该帖纳入分享互动并以 `kind=celebrate` **自动过去庆祝**（不只回灌文本）。
 - **已知抽取知识**：688 钻=稀有宝箱、2888 钻=传奇宝箱，均为十连 → celebrate 话头**别问「单抽还是十连」**（已是十连），改问「攒了多久钻/下一个想抽啥」。
-- 匹配尺度已放宽（0.6~3.0），小模板（用户给的截图截取）可放大匹配高分辨率帖图中的图标。
 
 ## 8. 置信度与隐私
 
@@ -116,13 +143,19 @@ python scripts/ocr_server.py --port 8790         # /health /ocr /match
 
 ## 9. 测试（5 套，离线）
 
-`test-image-gate`（门控/回灌 34，含「能力包缺失时静默跳过」3 项）· `test-ocr-bridge`（OCR 契约 12）·
-`test-vision-channel`（视觉渠道/多模态 21，含「未注入看图渠道→跳过」）· `test-image-pipeline`（缓存/编排 15）·
-`test-features`（模板匹配 12）。这 5 套现在**从能力包取实现**，等于验证拆包后的调用链仍通。
-OCR/模板另经真实活动页面样本端到端验证。全套 `npm test`（79 套）。
+| 测试 | 断言数 | 覆盖 |
+|---|---|---|
+| `test-image-gate` | 45 | 业务门控（求码/相关）+ 回灌 + 模板加载 + 能力包缺失降级 |
+| `test-image-pipeline` | 17 | 缓存 + 任务归一化 + 用真实识图 skill 跑通 OCR 回灌 |
+| `test-ocr-bridge` | 11 | OCR 通道契约与降级 |
+| `test-vision-channel` | 25 | 本 skill `llm.mjs` 多模态拼装 + 识图 skill 消费注入渠道 |
+| `test-features` | 19 | 本 skill 读模板库 + 识图 skill 消费传入模板 |
+
+> 识图 skill 自带 `test/test-all.mjs`（110 断言，覆盖三类任务、预筛、资料层、组合任务、降级语义）。
+> 全套 `npm test`（79 套）。
 
 ## 10. 已知限制 / 后续
 
-- 模板库植物图标待采集（当前仅钻石样本）；批量植物检测可后续上 YOLO（标注成本高，暂缓）。
-- 相关性门控纯启发式起步，VLM 二分类按需后开。
+- 模板库植物图标待采集（当前仅钻石/瓷砖萝卜/自选碎片样本）；批量植物检测可后续上 YOLO（标注成本高，暂缓）。
+- 业务相关性门控纯启发式起步；通用预筛已上 VLM 二分类（可关）。
 - 富文本帖（有 contents.json 内联图）当前取 footer_images 为主；内联图节点待补充实测。

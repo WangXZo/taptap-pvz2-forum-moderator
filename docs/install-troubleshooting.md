@@ -258,11 +258,11 @@ node scripts/collect.mjs --dry-run
 ### F1. OCR 不可用
 
 ```bash
-curl http://127.0.0.1:8790/health
-python scripts/ocr_server.py --port 8790
+curl http://127.0.0.1:8791/health
+python <识图skill>/scripts/server.py --port 8791
 ```
 
-没装 Python 包会启动失败：`pip install rapidocr-onnxruntime`。
+没装 Python 包会启动失败：`pip install rapidocr onnxruntime pillow numpy`。
 
 ### F2. `InvalidGraph: ... fp16 ... not supported`
 
@@ -360,4 +360,4 @@ Get-ChildItem Env: | Where-Object { $_.Name -like 'TAPTAP_CFG_*' }
 
 这些进程是**当前终端/会话的子进程**，关掉终端或重启机器就没了。需要长期运行请自己用系统服务/计划任务托管。
 
-启动顺序：`ocr_server → watch → mod-watch`。
+启动顺序：`识图 server（8791）→ rerank_server（8790）→ watch → mod-watch`。
