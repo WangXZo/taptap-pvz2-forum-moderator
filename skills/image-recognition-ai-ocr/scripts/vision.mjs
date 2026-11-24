@@ -18,6 +18,7 @@
 
 import { formatMaterials } from './materials.mjs';
 import { loadDshRoutes } from './dsh-routes.mjs';
+import { shrinkImages } from './shrink.mjs';
 
 /** 一次多模态调用最多带几张图（防止 prompt 过大） */
 const MAX_IMAGES_PER_CALL = 4;
@@ -231,6 +232,76 @@ export async function callOnce(ch, { system = '', messages = [], temperature = 0
   }
 }
 
+// ── 渠道选择的"记忆"（2026-11-24 实测后加）──
+//
+// 病灶：多模态请求体带整张图的 base64（一张 820KB 的图 → 约 1.1MB payload）。
+//   如果首条渠道失败就往下一跳，**每次跳都重传这 1MB** —— 实测 1 张图能烧掉 100 秒。
+//
+// 三条对策：
+//   ① 记忆上次成功的渠道，下次优先用它（命中率最高，省掉重传）
+//   ② 失败过的渠道进冷却（默认 10 分钟），冷却期内直接跳过，别拿大 payload 去白撞
+//   ③ 单次调用最多试 maxChannelTries 条（默认 4），不把所有渠道轮一遍
+const CHANNEL_COOLDOWN_MS = 10 * 60 * 1000;
+let _preferredSig = '';
+const _cooldown = new Map(); // sig -> until(ts)
+const _latency = new Map(); // sig -> EWMA 毫秒（成功的调用）
+
+const sigOf = (ch) => `${ch.provider}/${ch.model}`;
+
+/** 供测试/排障：清掉渠道记忆 */
+export function _resetChannelMemory() {
+  _preferredSig = '';
+  _cooldown.clear();
+  _latency.clear();
+}
+
+/** 读某渠道的实测延迟（EWMA，毫秒；没测过则按下述先验估） */
+export function channelLatency(ch) {
+  const v = _latency.get(sigOf(ch));
+  if (v !== undefined) return v;
+  // 没测过 → 给个**命名先验**：flash / mini / small / lite / turbo 这类通常是低延迟小模型。
+  // 注意：这不是写死某个模型，只是"哪类名字先试"的排序提示；实测延迟一旦有了就以实测为准。
+  return /flash|mini|small|lite|turbo|fast|instant/i.test(String(ch?.model || '')) ? 4000 : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * 给渠道列表排序：
+ *   ① 上次成功的排最前（成功率最高）
+ *   ② 其余按**实测延迟**从快到慢（同一批模型里，快的那条先试，省等待）
+ *   ③ 冷却中的剔掉
+ */
+export function orderChannels(channels, now = Date.now()) {
+  const alive = (channels || []).filter((ch) => {
+    const until = _cooldown.get(sigOf(ch));
+    return !until || until <= now;
+  });
+  const scored = alive.map((ch, i) => ({
+    ch,
+    i,
+    pref: sigOf(ch) === _preferredSig ? 0 : 1,
+    lat: channelLatency(ch),
+  }));
+  scored.sort((a, b) => a.pref - b.pref || a.lat - b.lat || a.i - b.i);
+  return scored.map((x) => x.ch);
+}
+
+/** 记一次渠道结果：成功 → 记住它、更新延迟、解除冷却；失败 → 进冷却 */
+export function noteChannel(ch, ok, now = Date.now(), { cooldownMs = CHANNEL_COOLDOWN_MS, elapsedMs = null } = {}) {
+  const sig = sigOf(ch);
+  if (ok) {
+    _preferredSig = sig;
+    _cooldown.delete(sig);
+    if (Number.isFinite(elapsedMs)) {
+      const prev = _latency.get(sig);
+      // EWMA 0.6 新 / 0.4 旧，别让一次抖动就把排序打乱
+      _latency.set(sig, prev === undefined ? elapsedMs : prev * 0.4 + elapsedMs * 0.6);
+    }
+  } else {
+    _cooldown.set(sig, now + cooldownMs);
+    if (_preferredSig === sig) _preferredSig = '';
+  }
+}
+
 /**
  * 拿一个可用的看图调用器
  *
@@ -245,6 +316,9 @@ export async function resolveVision(config = {}) {
   const channels = await resolveVisionChannels(config);
   if (!injected && !channels.length) return null;
 
+  const maxTries = Math.max(1, Number(config.maxChannelTries ?? 4));
+  const cooldownMs = Number(config.channelCooldownMs ?? CHANNEL_COOLDOWN_MS);
+
   return {
     channels,
     model: channels[0]?.model || String(config.model || 'injected'),
@@ -257,10 +331,21 @@ export async function resolveVision(config = {}) {
         if (r?.ok && String(r.text || '').trim()) return r;
         last = r;
       }
-      // ② 注入不可用/失败 → 自带 KEY 与 DSH 渠道兜底
-      for (const ch of channels) {
+      // ② 注入不可用/失败 → 自带 KEY 与 DSH 渠道兜底（按记忆排序、冷却剔除、限量）
+      const ordered = orderChannels(channels).slice(0, maxTries);
+      const dbg = config.debug === true;
+      const say = typeof opts?.log === 'function' ? opts.log : () => {};
+      if (dbg) say(`  [VLM] 候选 ${ordered.length}/${channels.length} 条：${ordered.map(sigOf).join(' | ')}`);
+      for (const ch of ordered) {
+        const t1 = Date.now();
         const r = await callOnce(ch, { ...opts, maxTokens: opts?.maxTokens || ch.maxTokens });
-        if (r.ok && String(r.text || '').trim()) return { ...r, channel: ch.provider, model: ch.model };
+        const good = r.ok && String(r.text || '').trim();
+        noteChannel(ch, Boolean(good), Date.now(), { cooldownMs, elapsedMs: Date.now() - t1 });
+        if (dbg) {
+          say(`  [VLM] ${good ? 'OK  ' : 'FAIL'} ${String(Date.now() - t1).padStart(6)}ms ${sigOf(ch)}`
+            + (good ? '' : `  ${r.status || ''} ${String(r.error || '').slice(0, 80)}`));
+        }
+        if (good) return { ...r, channel: ch.provider, model: ch.model };
         last = r;
       }
       return { ok: false, error: last?.error || '所有视觉渠道都失败', status: last?.status };
@@ -268,10 +353,22 @@ export async function resolveVision(config = {}) {
   };
 }
 
-/** 把规范化图片拼成多模态 content 块 */
-function toContent(images, text) {
+/**
+ * 把规范化图片拼成多模态 content 块
+ *
+ * **优先传公网 URL**（2026-11-24 实测）：帖子图本来就在 CDN 上，
+ * 直接把地址给模型、由它自己取 —— 本地一个字节都不用传，
+ * 渠道重试时也不再重复上传（这正是之前单张图烧 100 秒的主因）。
+ * 没有公网 URL（或明确要求 base64）时才走 base64；走 base64 前会先缩图。
+ */
+function toContent(images, text, { preferUrl = true } = {}) {
   const content = [{ type: 'text', text }];
   for (const img of (images || []).slice(0, MAX_IMAGES_PER_CALL)) {
+    const usable = img.url && /^https?:\/\//i.test(img.url);
+    if (preferUrl && usable) {
+      content.push({ type: 'image', url: img.url });
+      continue;
+    }
     if (!img.base64) continue;
     content.push({
       type: 'image',
@@ -280,6 +377,12 @@ function toContent(images, text) {
     });
   }
   return content;
+}
+
+/** 这批图里有没有"必须走 base64"的（没有公网 URL 的）—— 有才需要缩图 */
+function needsBase64(images, preferUrl) {
+  if (!preferUrl) return true;
+  return (images || []).some((i) => !(i.url && /^https?:\/\//i.test(i.url)) && i.base64);
 }
 
 /**
@@ -298,7 +401,7 @@ export async function describeImages(
   { prompt = '', context = '', materials = [], config = {}, log = () => {}, temperature = 0.2, maxTokens = 1200, timeoutMs = 90000, cacheKey = null, cache = null } = {}
 ) {
   const t0 = Date.now();
-  const list = (images || []).filter((i) => i && i.base64);
+  let list = (images || []).filter((i) => i && (i.base64 || (i.url && /^https?:\/\//i.test(i.url))));
   if (!list.length) return { text: '', model: '', ms: 0, error: 'no-image' };
 
   const v = await resolveVision(config);
@@ -312,6 +415,18 @@ export async function describeImages(
     if (hit) return { text: hit.text || '', model: hit.model || v.model, ms: 0, cached: true };
   }
 
+  // 只有"必须走 base64"的图才缩图；能走公网 URL 的一律不传（见 toContent 注释）
+  const preferUrl = config.preferUrl !== false;
+  if (config.shrink !== false && needsBase64(list, preferUrl)) {
+    const s = await shrinkImages(list, {
+      server: config.shrinkServer || config.server || 'http://127.0.0.1:8791',
+      maxSide: Number(config.shrinkMaxSide ?? 1024),
+      cache,
+      log,
+    });
+    list = s.images;
+  }
+
   // 拼系统提示：任务提示 + 知识资料 + 背景
   const sysParts = ['你要看图回答任务，只描述图中真实可见的内容，看不清的不要猜、不要编造。'];
   if (prompt) sysParts.push(prompt);
@@ -321,10 +436,11 @@ export async function describeImages(
 
   const r = await v.chat(config, {
     system: sysParts.join('\n\n'),
-    messages: [{ role: 'user', content: toContent(list, '请看图，按上述任务要求作答。') }],
+    messages: [{ role: 'user', content: toContent(list, '请看图，按上述任务要求作答。', { preferUrl: config.preferUrl !== false }) }],
     temperature,
     maxTokens,
     timeoutMs,
+    log,
   });
 
   if (!r?.ok) {

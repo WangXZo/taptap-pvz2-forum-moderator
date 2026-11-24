@@ -12,15 +12,41 @@ import { describeImages } from '../vision.mjs';
 import { cacheKey } from '../cache.mjs';
 import { fingerprint } from '../image.mjs';
 
-/** 构造特征描述提示词 */
-export function buildFeaturePrompt(hint = '') {
+/** 描述长度默认值（字符）。为什么不给大：长描述要模型慢慢生成，
+ *  实测 700 字能烧 50~80 秒；200 字通常十几秒，信息量对下游够用。
+ *  调用方要长描述就显式传 maxDescChars。 */
+export const DEFAULT_MAX_DESC_CHARS = 200;
+
+/**
+ * 由"期望字数"换算 maxTokens。
+ * 中文大致 1 字 ≈ 1~1.6 token，留点余量；0/空 → 用保守默认。
+ */
+export function tokensForChars(chars) {
+  const n = Number(chars);
+  if (!Number.isFinite(n) || n <= 0) return 1200; // 不限 → 用默认预算
+  return Math.min(4000, Math.max(96, Math.ceil(n * 2) + 64));
+}
+
+/**
+ * 构造特征描述提示词
+ * @param {string} [hint]        任务说明
+ * @param {{maxDescChars?:number}} [opt] 期望字数（0/空 = 不限）
+ */
+export function buildFeaturePrompt(hint = '', { maxDescChars = DEFAULT_MAX_DESC_CHARS } = {}) {
   const task = hint || '描述这张图片里可见的主要对象与特征';
+  // 可空：null / undefined / '' → 用默认；0 → 明确表示"不限"
+  const raw = maxDescChars === null || maxDescChars === undefined || maxDescChars === ''
+    ? DEFAULT_MAX_DESC_CHARS
+    : Number(maxDescChars);
+  const lenLine = raw > 0
+    ? `- 总长度控制在 ${raw} 字以内，宁可精简也别啰嗦`
+    : '- 长度不限，但只写有用信息';
   return `任务：${task}
 
 要求：
 - 只描述图中**真实可见**的特征，看不清的明确说"看不清"，不要猜、不要编造
 - 先列特征（每个特征一行，尽量具体：名称/数量/数值/状态）
-- 最后用一两句话整体说明这张图在表达什么
+${lenLine}
 - 不要用 markdown 标题，不要复述任务本身`;
 }
 
@@ -37,6 +63,8 @@ export async function runFeature(images, {
   features = {},
   vision = {},
   visionEnabled = true,
+  skipVisionFor = null, // Set<ref>：这些图不用再做 VLM 描述（OCR 已经读够了）
+  maxDescChars = DEFAULT_MAX_DESC_CHARS, // 描述长度上限（字符；0 或空 = 不限）
   config = {},
   cache = null,
   log = () => {},
@@ -73,11 +101,14 @@ export async function runFeature(images, {
     }
 
     // ② VLM 描述（读开放特征）
-    const wantVision = visionEnabled !== false && vision.enabled !== false;
+    //    除非这张图的文字已经被 OCR 读够了 —— 那时再花几十秒让模型"看图说话"是浪费
+    const skipThis = skipVisionFor && skipVisionFor.has(img.ref);
+    const wantVision = visionEnabled !== false && vision.enabled !== false && !skipThis;
+    if (skipThis) degraded.push(`feature-vlm:${img.ref}:skipped-text-rich`);
     if (wantVision) {
       const key = cacheKey('feature-vlm', fingerprint(img), hint || 'default');
       const r = await describeImages([img], {
-        prompt: buildFeaturePrompt(hint),
+        prompt: buildFeaturePrompt(hint, { maxDescChars }),
         context,
         materials,
         config: { ...vision, chatVision: vision.chatVision },
@@ -85,7 +116,7 @@ export async function runFeature(images, {
         cacheKey: key,
         cache,
         temperature: 0.2,
-        maxTokens: 1200,
+        maxTokens: tokensForChars(maxDescChars),
       });
       if (r.text) {
         out.description = r.text;

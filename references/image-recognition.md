@@ -35,7 +35,7 @@ collect.mjs 取帖（feed item 含 topic.footer_images）
       ├ imageRelevance                 业务门控2：装饰配图 → 跳过
       ├ loadTemplates(config)          读本 skill 的 assets/game-features 模板库
       └ recognize({ tasks:['text','feature'], images:[item], extractor:extractImages,
-                    prompt: PVZ2_PROMPT, templates, options:{ ocr, features, vision:{chatVision}, prefilter }})
+                    prompt: PVZ2_PROMPT, templates, options:{ ocr, features, vision:{enabled,temperature,…}, prefilter }})
             → 识图 skill：预筛 → OCR/模板/VLM → 结构化结果
       → 汇总 text + features + celebrate → 回灌 post.text
   └ post.text/imageText/images/imageSources → looksQ / QA匹配 / websearch / composeReply
@@ -48,8 +48,12 @@ collect.mjs 取帖（feed item 含 topic.footer_images）
 | `extractor = extractImages` | 告诉它 TapTap 的图在哪（`moment.topic.footer_images`） |
 | `prompt = PVZ2_PROMPT` | 覆盖它内置的通用看图 prompt |
 | `templates` | PVZ2 模板库（**库在本 skill**，识图 skill 只提供匹配引擎） |
-| `options.vision.chatVision` | 复用本 skill 的模型渠道（`llm.mjs`，跟随 DSH / 他人 key） |
 | `options.ocr/features.server` | 指向识图 skill 的本地服务（8791） |
+| `options.vision.{enabled,temperature,maxTokens,timeoutMs}` | **只管要不要跑、多少钱** |
+
+> ⚠️ **本 skill 不注入 `chatVision`、不管模型选择**（2026-11-24 大哥明确）：
+> 用哪个模型是**宿主（DSH 路由）与识图 skill** 的事。本 skill 只传"要不要看图"和预算参数，
+> 识图 skill 自己按 ②自备 KEY → ③DSH 路由 解析渠道。
 
 ## 3. 取图 schema（实测，evidence/06）
 
@@ -65,13 +69,19 @@ collect.mjs 取帖（feed item 含 topic.footer_images）
 |---|---|---|---|---|
 | 模板匹配 | `features.mjs` → `server.py /match` | opencv 多尺度 | 已知植物/奖励图标/UI | 免费离线 |
 | OCR | `ocr.mjs` → `server.py /ocr` | RapidOCR（PP-OCRv6） | 错误文案/数字/活动规则/图鉴说明 | 免费离线 |
-| VLM | `vision.mjs`（渠道由本 skill 注入） | 跟随 DSH / 他人 key | 游戏画面/活动页/开放语义 | 按图计费 |
+| VLM | `vision.mjs`（渠道由识图 skill 自己解析） | ②自备 KEY / ③DSH 路由 | 游戏画面/活动页/开放语义 | 按图计费 |
 
 顺序恒为 **模板 → OCR → VLM**（先便宜后贵）。
 
-**VLM 渠道**：本 skill 注入 `llm.mjs` 的 `chatVision`——①`config.llm.vision`（apiKey/baseURL/model 齐全）用他人 key；
-②否则读 DSH 路由挑 vision-capable 模型（`isVisionModel` 按能力词 `vl/vision/omni` 匹配，**不写死模型名**）；
-③都无→降级跳过。多模态 content 经 `toApiContent` 转 openai `image_url` / anthropic `image source`。
+**VLM 渠道（识图 skill 自己解析，本 skill 不参与选模型）**：
+
+1. **自备 KEY**：`IR_VISION_*` / `OPENAI_*` 环境变量，或调用时传 `apiKey/baseURL/model`
+2. **复用 DSH 路由**：读 `~/.dsh/profiles/*/cordis.patch.yml` + `.credentials.yaml`，
+   **按模型声明的 `input` 有没有 `image` 判定视觉能力**（不是猜模型名）
+3. 都没有 → 降级跳过（`degraded: ['vlm:no-channel']`）
+
+实测本机 DSH 挑出 **11 条**视觉渠道（qianwen-token-plan / minimax / kimi / volcengine-plan），
+按 chain 顺序尝试。详见识图 skill 的 `docs/install.md` §4。
 
 ## 5. 运维：两个服务，各管一件事
 

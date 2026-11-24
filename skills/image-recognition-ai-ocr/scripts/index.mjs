@@ -22,7 +22,7 @@ import { resolveVision, describeImages } from './vision.mjs';
 import { ocrHealth, ocrImages } from './ocr.mjs';
 import { runMatch } from './tasks/match.mjs';
 import { runText } from './tasks/text.mjs';
-import { runFeature } from './tasks/feature.mjs';
+import { runFeature, DEFAULT_MAX_DESC_CHARS } from './tasks/feature.mjs';
 
 /** 支持的任务类型 */
 export const TASKS = ['match', 'text', 'feature'];
@@ -68,6 +68,10 @@ export async function recognize(input = {}) {
     return { ok: false, error: nt.error, results: [], meta: { ms: Date.now() - t0 } };
   }
   const taskList = nt.tasks;
+  // text 要先于 feature 跑：feature 会参考 text 的结果决定"这张图还要不要 VLM 描述"
+  if (taskList.includes('text') && taskList.includes('feature')) {
+    taskList.sort((a, b) => (a === 'text' ? -1 : b === 'text' ? 1 : 0));
+  }
 
   if (!input.images || (Array.isArray(input.images) && !input.images.length)) {
     return { ok: false, error: '缺少 images', results: [], meta: { tasks: taskList, ms: Date.now() - t0 } };
@@ -145,6 +149,15 @@ export async function recognize(input = {}) {
       r.degraded.forEach((d) => degraded.push(d));
       r.methods.forEach((m) => methods.add(m));
     } else if (t === 'feature') {
+      // 若同一批里也跑了 text：文字已经读够的图就不再让 VLM 描述（省几十秒）
+      let skipVisionFor = null;
+      if (perTask.text && opt.featureVisionForRichText !== true) {
+        const minChars = Number(opt.richTextChars ?? 20);
+        skipVisionFor = new Set(
+          (perTask.text || []).filter((x) => String(x.text || '').length >= minChars).map((x) => x.image)
+        );
+        if (skipVisionFor.size) log(`  [识图] ${skipVisionFor.size} 张图文字已读够 → 跳过 VLM 语义描述`);
+      }
       const r = await runFeature(usable, {
         hint: input.hint || '',
         templates: input.templates || [],
@@ -153,6 +166,10 @@ export async function recognize(input = {}) {
         features: opt.features || {},
         vision: opt.vision || {},
         visionEnabled: (opt.vision || {}).enabled !== false,
+        skipVisionFor,
+        // 描述输出长度：入参优先，其次 options，最后默认 200 字；
+        // 传 0 / null 表示"不限"（模型自己决定，慢但详细）
+        maxDescChars: input.maxDescChars ?? opt.maxDescChars ?? DEFAULT_MAX_DESC_CHARS,
         cache,
         log,
       });
@@ -199,10 +216,16 @@ export {
   resolveOwnKey,
   resolveDshVisionChannels,
   isVisionModel,
+  supportsImageInput,
   describeImages,
   toApiContent,
   callOnce,
+  orderChannels,
+  noteChannel,
+  channelLatency,
+  _resetChannelMemory,
 } from './vision.mjs';
+export { shrinkImage, shrinkImages } from './shrink.mjs';
 export { loadDshRoutes, parseProviders, parseCredRefs, _resetDshCache } from './dsh-routes.mjs';
 export { ocrHealth, ocrImages, ocrImage } from './ocr.mjs';
 export { matchImages, matchImage } from './features.mjs';
@@ -210,4 +233,4 @@ export { prefilter, qualityPrefilter, vlmBinaryPrefilter, parseBinaryAnswer } fr
 export { tryParseJson, toConfidence } from './json.mjs';
 export { deriveLabels } from './tasks/text.mjs';
 export { buildMatchPrompt, normalizeMatchResult } from './tasks/match.mjs';
-export { buildFeaturePrompt } from './tasks/feature.mjs';
+export { buildFeaturePrompt, DEFAULT_MAX_DESC_CHARS, tokensForChars } from './tasks/feature.mjs';

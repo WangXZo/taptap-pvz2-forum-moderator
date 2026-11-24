@@ -80,6 +80,11 @@ curl http://127.0.0.1:8791/health
 | GET | `/health` | — | `{ok, engine, opencv}` |
 | POST | `/ocr` | `{image: "<base64>"}` | `{ok, text, boxes:[{text,conf}]}` |
 | POST | `/match` | `{image, templates:[{id,name,image,threshold}]}` | `{ok, matches:[{id,name,score,loc,scale}]}` |
+| POST | `/resize` | `{image, maxSide}` | `{ok, image, width, height, bytes}` —— 缩图给 VLM 用 |
+
+> `/resize` 是为性能加的：VLM 请求体是整张图的 base64，820KB 的图 base64 约 1.1MB，
+> 每次换渠道都要重传。本地缩到长边 1024 后通常只剩几十 KB（实测 1094KB → 120KB，135ms）。
+> 不过**有公网 URL 时根本不传图**（见 §4「传图方式」），缩图只是兜底。
 
 > **重排（rerank）不在这个服务里** —— 那属检索能力，与识图无关。
 > `.taptap-pvz2-forum-moderator` 的 `rerank_server.py`（默认 8790）专门做那件事。
@@ -204,6 +209,34 @@ OCR 与模板匹配不受影响，照常工作。
 > anthropic 风格渠道会强制 thinking（`thinking.type=disabled` 会被 400 拒），
 > 所以本 skill 对这类渠道自动把 `max_tokens` 抬到至少 8000、超时放宽到 150s，
 > 并从返回块里跳过 thinking、只取正文。
+
+### 传图方式（性能关键）
+
+**优先传公网 URL**（`options.vision.preferUrl`，默认开）：
+
+```js
+// 有公网地址 → 直接把地址交给模型，本地一个字节都不用传
+{ type: 'image', url: 'https://cdn.example/a.jpg' }
+```
+
+实测：帖子图本来就在 CDN 上，让模型自己去取 —— 本地零上传，
+换渠道重试也不会重复上传（这正是之前单张图烧 100 秒的主因）。
+没有公网 URL 时才回落到 base64，且**先用本地 `/resize` 缩图**。
+
+### 渠道选择与重试（也是性能关键）
+
+| 机制 | 默认 | 作用 |
+|---|---|---|
+| 记住上次成功渠道 | 开 | 下次优先用它，省掉试探 |
+| 失败渠道冷却 | 10 分钟 | 冷却期内不重试，别拿大 payload 反复白撞 |
+| 单次最多试几条 | 4 条 | 不把所有渠道轮一遍 |
+| 按实测延迟排序 | 开 | 快模型先试；没实测时按名字先验（flash/mini/small/lite/turbo 优先） |
+
+> **为什么要有「按延迟排序 + 快模型先验」**：实测同一张图，
+> `qwen3.8-max` 这类 thinking 模型要 50~80 秒，而 `flash` 级只要 3~5 秒，
+> 拿到的东西对下游够用。默认优先试快的，慢的留作兜底。
+
+调参：`options.vision.maxChannelTries` / `channelCooldownMs` / `debug: true`（打印每条渠道耗时）。
 
 ## 5. 验证安装成功
 

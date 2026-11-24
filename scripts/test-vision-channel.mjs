@@ -1,9 +1,14 @@
 // 视觉渠道与多模态离线测试 —— mock fetch，不打网络。
 //
-// 2026-11-24 重构：看图通道实现在独立 skill image-recognition-ai-ocr（vision.mjs），
-// 渠道由调用方注入（本 skill 用 llm.mjs 的 chatVision）。两边都测：
-//   ① 本 skill 的 llm.mjs 多模态拼装仍完好（chatVision / resolveVisionChannels / isVisionModel）
-//   ② 识图 skill 的 describeImages 能正确消费注入的渠道
+// 2026-11-24 重构后的职责划分：
+//   · 看图通道实现在独立 skill image-recognition-ai-ocr（vision.mjs）
+//   · **本 skill 不注入 chatVision、不参与选模型**（大哥 2026-11-24：注入不该涉及模型）
+//     —— 识图 skill 自己按 ②自备 KEY → ③DSH 路由 解析渠道
+// 所以这里分三块测：
+//   ① 本 skill llm.mjs 的多模态拼装仍完好（chatVision / resolveVisionChannels / isVisionModel）
+//      —— 它是**库能力**，其它地方还要用
+//   ② 识图 skill 的三级渠道解析（自备 KEY / DSH / 注入回落）
+//   ③ describeImages 能正确消费渠道（含注入这条可选路径）
 //
 // 跑：node scripts/test-vision-channel.mjs
 import { pathToFileURL } from 'node:url';

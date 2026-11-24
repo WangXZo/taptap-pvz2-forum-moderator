@@ -19,7 +19,6 @@ import { extractImages } from './http.mjs';
 import { looksLikeCodeAsk } from './code-guard.mjs';
 import { detectFriendRequest } from './mod-task.mjs';
 import { looksLikeQuestion } from './qa.mjs';
-import { chatVision } from './llm.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(HERE, '..', '..'); // scripts/lib → skill 根
@@ -238,7 +237,15 @@ export async function enrichPostImages(
       options: {
         ocr: { enabled: ic.ocr?.enabled !== false, server: ic.ocr?.server, timeoutMs: ic.ocr?.timeoutMs },
         features: { enabled: useFeatures, server: ic.features?.server, timeoutMs: ic.features?.timeoutMs },
-        vision: { enabled: ic.vision?.enabled !== false, chatVision, temperature: ic.vision?.temperature, maxTokens: ic.vision?.maxTokens, timeoutMs: ic.vision?.timeoutMs },
+        // ⚠️ 只管"要不要跑 / 多少钱"，**不碰模型选择**：
+        //    识图 skill 自己解析看图渠道（它的 KEY 环境变量 → DSH 模型路由），
+        //    本 skill 不注入 chatVision —— 选哪个模型是宿主与识图 skill 的事
+        vision: {
+          enabled: ic.vision?.enabled !== false,
+          temperature: ic.vision?.temperature,
+          maxTokens: ic.vision?.maxTokens,
+          timeoutMs: ic.vision?.timeoutMs,
+        },
         prefilter: {
           quality: ic.prefilter?.quality !== false,
           vlmBinary: ic.prefilter?.vlmBinary !== false,

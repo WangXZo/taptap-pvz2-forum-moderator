@@ -135,7 +135,7 @@
 
 - **取图实测**：帖子配图在 `moment.topic.footer_images[]`，feed 层就带；匿名 + `X-UA` 头可读；图床无防盗链。
 - **本地 OCR**：`pip install rapidocr onnxruntime pillow numpy` → 在识图 skill 里 `python scripts/server.py`（端口 8791）。
-- **看图模型**：跟 DSH 走（填 `config.llm.vision` 就用你自己的 Key，否则自动挑 DSH 里的视觉模型）；没有就降级跳过。
+- **看图模型**：**识图 skill 自己决定用哪个模型** —— 它读 DSH 的模型路由，按模型声明的 `input` 含 `image` 来挑（VLM 与通用 LLM 一视同仁）；也可以给它填自己的 KEY（`IR_VISION_*` 环境变量）。本 skill **不参与选模型**，只管"要不要看图"。没有可用渠道就降级跳过。
 - **游戏特征模板库**：**留在本 skill** 的 `assets/game-features/`（`features.json` + 模板图），运行时传给识图 skill。
 - **识别结果按图缓存**（`data/image-cache.json`），不重复花钱。
 - **识图 skill 没装也能跑**：找不到就跳过图片识别，主流程照跑（日志里说明一句）。

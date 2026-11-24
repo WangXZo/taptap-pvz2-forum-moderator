@@ -15,6 +15,9 @@
                    → {"ok": true, "text": "...", "boxes": [{"text","conf"}]}
     POST /match    ← {"image": "<base64>", "templates": [{"id","name","image","threshold"}]}
                    → {"ok": true, "matches": [{"id","name","score","loc","scale"}]}
+    POST /resize   ← {"image": "<base64>", "maxSide": 1024}
+                   → {"ok": true, "image": "<base64 jpeg>", "width", "height", "bytes"}
+                   给 VLM 用的缩图：大图 base64 动辄 1MB，逐渠道重传极其耗时
 
 设计说明：
     - 只监听本地回环；图片由调用方下载后传 base64（避免服务端去抓外网）。
@@ -120,6 +123,24 @@ def match_templates(scene, templates):
     return matches
 
 
+def resize_image(img, max_side=1024, quality=85):
+    """等比缩到长边 max_side 以内，转 JPEG。返回 (base64, w, h, bytes)。
+
+    为什么服务端缩图：VLM 请求体里是整张图的 base64。原图 820KB → base64 约 1.1MB，
+    每换一条渠道都要重传，实测能把一张图拖到 100 秒。缩到 1024 长边后通常只剩几十 KB。
+    本地缩图免费且快（毫秒级），比让远端解析大图划算得多。
+    """
+    w, h = img.size
+    longest = max(w, h)
+    if max_side > 0 and longest > max_side:
+        scale = max_side / float(longest)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=quality, optimize=True)
+    raw = buf.getvalue()
+    return base64.b64encode(raw).decode("ascii"), img.size[0], img.size[1], len(raw)
+
+
 class Handler(BaseHTTPRequestHandler):
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -140,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.rstrip("/")
-        if path not in ("/ocr", "/match"):
+        if path not in ("/ocr", "/match", "/resize"):
             self._send(404, {"ok": False, "error": "not found"})
             return
         try:
@@ -152,6 +173,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raw = base64.b64decode(b64)
             img = Image.open(io.BytesIO(raw)).convert("RGB")
+            if path == "/resize":
+                # 缩图：给 VLM 用。原图动辄 800KB（base64 后 1.1MB），
+                # 每换一条渠道就重传一次 → 实测单张要 100 秒。缩到长边 maxSide 后再传，快很多。
+                out = resize_image(img, int(payload.get("maxSide") or 1024))
+                self._send(200, {
+                    "ok": True,
+                    "image": out[0],
+                    "width": out[1],
+                    "height": out[2],
+                    "bytes": out[3],
+                })
+                return
             arr = np.asarray(img)
             if path == "/match":
                 matches = match_templates(arr, payload.get("templates", []))

@@ -29,6 +29,7 @@ const result = await recognize(input);
 | `onlyBest` | boolean | 否 | `match` 只返回最高分，默认 `false` |
 | `hint` | string | 否 | 任务说明（`text` 兜底读字 / `feature` 必填更佳） |
 | `templates` | array | 否 | `feature` 的模板库 `[{id,name,image,threshold}]` |
+| `maxDescChars` | number | 否 | `feature` 描述**输出长度**（字符）。默认 **200**；传 `0` = 不限；传 `null`/空 = 用默认 |
 | `context` | string | 否 | 一句话背景资料 |
 | `materials` | array \| object | 否 | 补充资料，见 §2.3 |
 | `prompt` | string | 否 | 覆盖内置任务提示词（少用） |
@@ -49,6 +50,15 @@ const result = await recognize(input);
 | `vision.chatVision` | — | 注入看图函数（见 install.md §4） |
 | `vision.model` | — | 仅用于标注来源 |
 | `visionFallback` | `true` | `text` 任务 OCR 空时是否用 VLM 兜底 |
+| `vision.preferUrl` | `true` | **优先把公网 URL 交给模型**（本地零上传）；无 URL 才回落到 base64 |
+| `vision.shrink` | `true` | 走 base64 时先用本地 `/resize` 缩图（长边默认 1024） |
+| `vision.shrinkMaxSide` | `1024` | 缩图长边上限 |
+| `vision.shrinkServer` | `http://127.0.0.1:8791` | 缩图用的本地服务 |
+| `vision.maxChannelTries` | `4` | 单次调用最多试几条渠道（别把 11 条全轮一遍） |
+| `vision.channelCooldownMs` | `600000` | 失败渠道冷却多久（期间不重试，避免反复传大图） |
+| `vision.debug` | `false` | 打印每条渠道的尝试与耗时 |
+| `featureVisionForRichText` | `false` | 组合任务里，**文字已读够的图是否仍让 VLM 描述**（默认跳过，省几十秒） |
+| `richTextChars` | `20` | 上面那条判定的字数阈值 |
 | `cache` | 内存 | 自己的缓存对象（`{get,set}`） |
 | `cacheFile` | — | 落盘缓存路径（会调 `save()`） |
 | `cacheTtlHours` | `168` | |

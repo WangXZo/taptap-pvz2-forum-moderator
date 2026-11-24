@@ -12,7 +12,7 @@ import { qualityPrefilter, parseBinaryAnswer, vlmBinaryPrefilter } from '../scri
 import { tryParseJson, toConfidence } from '../scripts/json.mjs';
 import { buildMatchPrompt, normalizeMatchResult } from '../scripts/tasks/match.mjs';
 import { deriveLabels } from '../scripts/tasks/text.mjs';
-import { buildFeaturePrompt } from '../scripts/tasks/feature.mjs';
+import { buildFeaturePrompt, DEFAULT_MAX_DESC_CHARS, tokensForChars } from '../scripts/tasks/feature.mjs';
 import {
   resolveVision,
   resolveOwnKey,
@@ -22,7 +22,13 @@ import {
   supportsImageInput,
   toApiContent,
   callOnce,
+  orderChannels,
+  noteChannel,
+  channelLatency,
+  _resetChannelMemory,
 } from '../scripts/vision.mjs';
+import { shrinkImage } from '../scripts/shrink.mjs';
+import { describeImages as describeImagesForTest } from '../scripts/vision.mjs';
 import { parseProviders, parseCredRefs, modelIds } from '../scripts/dsh-routes.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -298,6 +304,17 @@ section('feature prompt');
   t('含任务说明', buildFeaturePrompt('识别植物').includes('识别植物'));
   t('缺说明给通用任务', buildFeaturePrompt('').includes('描述这张图片'));
   t('要求不编造', buildFeaturePrompt('x').includes('不要编造'));
+
+  // 描述输出长度（入参，可空，默认 200）
+  t('默认 200 字写进提示词', buildFeaturePrompt('x').includes('200 字以内'));
+  t('传 60 字生效', buildFeaturePrompt('x', { maxDescChars: 60 }).includes('60 字以内'));
+  t('传 0 = 不限', buildFeaturePrompt('x', { maxDescChars: 0 }).includes('长度不限'));
+  t('传空 = 用默认', buildFeaturePrompt('x', { maxDescChars: null }).includes('200 字以内'));
+  t('DEFAULT_MAX_DESC_CHARS = 200', DEFAULT_MAX_DESC_CHARS === 200);
+  t('tokensForChars 按字数换算', tokensForChars(200) >= 200 && tokensForChars(200) < 1200);
+  t('tokensForChars 0 → 默认预算', tokensForChars(0) === 1200);
+  t('tokensForChars 下限保护', tokensForChars(1) >= 96);
+  t('tokensForChars 上限保护', tokensForChars(99999) <= 4000);
 }
 
 // ═══════════════ 10. 渠道解析（三级：注入 → 自备KEY → DSH 路由）═══════════════
@@ -449,7 +466,76 @@ section('渠道解析 · 优先级（注入 > 自备KEY > DSH）');
   t('渠道列表里 DSH 排在后面（若有）', chs.slice(1).every((c) => c.source === 'dsh'));
 }
 
-section('多模态拼装与调用');
+section('渠道记忆与排序（省重传）');
+{
+  const mk = (p, m) => ({ provider: p, model: m, api: 'openai-completions', baseURL: 'http://x/v1', apiKey: 'k' });
+  const A = mk('pa', 'slow-max');
+  const B = mk('pb', 'fast-flash');
+  const C = mk('pc', 'other');
+  const list = [A, B, C];
+
+  _resetChannelMemory();
+  // 冷启动：带 flash 的名字先试（命名先验，不写死模型）
+  const cold = orderChannels(list);
+  t('冷启动：flash 类先试', cold[0].provider === 'pb');
+  t('冷启动：无实测的排后面', cold[cold.length - 1].provider !== 'pb');
+
+  // 实测后以实测为准
+  _resetChannelMemory();
+  noteChannel(A, true, 1000, { elapsedMs: 900 });
+  const afterA = orderChannels(list);
+  t('成功过的排最前', afterA[0].provider === 'pa');
+  t('channelLatency 记录实测值', channelLatency(A) === 900);
+
+  // 失败进冷却，冷却期内不出现
+  _resetChannelMemory();
+  noteChannel(B, false, Date.now(), { cooldownMs: 60000 });
+  const cooled = orderChannels(list);
+  t('冷却中的渠道被剔除', !cooled.some((c) => c.provider === 'pb'));
+  const later = orderChannels(list, Date.now() + 61000);
+  t('冷却到期后回到列表', later.some((c) => c.provider === 'pb'));
+
+  _resetChannelMemory();
+}
+
+section('VLM 传图方式（优先公网 URL）');
+{
+  const calls = [];
+  const spy = async (cfg, opts) => {
+    calls.push(opts.messages[0].content);
+    return { ok: true, text: 'ok' };
+  };
+  const withUrl = { ref: 'i1', url: 'https://cdn.example/a.jpg', base64: 'QUJD', format: 'jpg' };
+  await describeImagesForTest([withUrl], { prompt: 'p', config: { chatVision: spy, shrink: false } });
+  const c1 = calls[0];
+  t('有公网 URL → 传 url', c1.some((b) => b.type === 'image' && b.url === 'https://cdn.example/a.jpg'));
+  t('有公网 URL → 不传 base64', !c1.some((b) => b.type === 'image' && b.base64));
+
+  const noUrl = { ref: 'i2', url: '', base64: 'QUJD', format: 'jpg' };
+  await describeImagesForTest([noUrl], { prompt: 'p', config: { chatVision: spy, shrink: false } });
+  t('无 URL → 回落到 base64', calls[1].some((b) => b.type === 'image' && b.base64 === 'QUJD'));
+
+  await describeImagesForTest([withUrl], { prompt: 'p', config: { chatVision: spy, shrink: false, preferUrl: false } });
+  t('preferUrl=false → 强制 base64', calls[2].some((b) => b.type === 'image' && b.base64 === 'QUJD'));
+}
+
+section('缩图（走本地服务）');
+{
+  const img = { ref: 'i1', base64: 'A'.repeat(400), format: 'jpg' };
+  mockFetch((url) => (url.endsWith('/resize')
+    ? { ok: true, status: 200, json: async () => ({ ok: true, image: 'SHRUNK', width: 1024, height: 463, bytes: 1200 }) }
+    : jsonRes({}, 404)));
+  const r = await shrinkImage(img, { server: 'http://127.0.0.1:8791' });
+  restoreFetch();
+  t('缩图成功替换 base64', r.shrunk === true && r.image.base64 === 'SHRUNK');
+  t('缩图后格式标 jpg', r.image.format === 'jpg');
+
+  mockFetch(() => { throw new Error('refused'); });
+  const r2 = await shrinkImage(img, { server: 'http://127.0.0.1:8791' });
+  restoreFetch();
+  t('服务不可达 → 原图继续（不抛错）', r2.shrunk === false && r2.image.base64 === img.base64);
+  t('不可达给出原因', Boolean(r2.reason));
+}
 {
   const oa = toApiContent([{ type: 'text', text: '看图' }, { type: 'image', base64: 'QUJD', mediaType: 'image/png' }], 'openai-completions');
   t('openai：image → image_url data URI', oa[1].type === 'image_url' && oa[1].image_url.url.startsWith('data:image/png;base64,'));
