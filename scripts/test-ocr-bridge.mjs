@@ -15,7 +15,7 @@ function t(name, cond, extra = '') {
 
 const entry = resolveImageEntry();
 if (!entry) {
-  console.error('✗ 找不到 image-recognition-ai-ocr 能力包');
+  console.error('✗ 找不到 image-recognition-ai-ocr 识图 skill');
   process.exit(1);
 }
 const pkg = await import(pathToFileURL(entry).href);

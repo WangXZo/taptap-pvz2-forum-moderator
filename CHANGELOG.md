@@ -35,7 +35,7 @@
 | 通用资料（场景分类法） | 识图 skill 内置 `assets/materials/` |
 | 业务判断（该不该回、怎么回） | **下游自己做** |
 
-- **不给** `recognizePost` / `mergeInto` 这类便捷入口 —— 能力包不假设调用方的对象结构
+- **不给** `recognizePost` / `mergeInto` 这类便捷入口 —— 识图 skill 不假设调用方的对象结构
 - 只保留 `extractor` 注入：只告诉它「去哪取图」，不要求对象长什么样
 - PVZ2 的看图 prompt 与模板库**留在本 skill**，运行时注入/传入
 

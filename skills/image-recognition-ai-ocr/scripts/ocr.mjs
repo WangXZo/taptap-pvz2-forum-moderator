@@ -1,6 +1,6 @@
 // OCR 通道：图片 → 文字
 //
-// 走本地 OCR 服务（本能力包自带 scripts/server.py，默认 127.0.0.1:8791）：
+// 走本地 OCR 服务（本 skill自带 scripts/server.py，默认 127.0.0.1:8791）：
 //   POST /ocr  ← { image: "<base64>" }  → { ok, text, boxes:[{text,conf}] }
 //
 // 服务不在 / 超时 / 报错 → **降级返回空**（不抛错），调用方按「没读到」处理。

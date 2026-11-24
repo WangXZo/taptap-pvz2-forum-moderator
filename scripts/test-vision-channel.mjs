@@ -3,7 +3,7 @@
 // 2026-11-24 重构：看图通道实现在独立 skill image-recognition-ai-ocr（vision.mjs），
 // 渠道由调用方注入（本 skill 用 llm.mjs 的 chatVision）。两边都测：
 //   ① 本 skill 的 llm.mjs 多模态拼装仍完好（chatVision / resolveVisionChannels / isVisionModel）
-//   ② 能力包的 describeImages 能正确消费注入的渠道
+//   ② 识图 skill 的 describeImages 能正确消费注入的渠道
 //
 // 跑：node scripts/test-vision-channel.mjs
 import { pathToFileURL } from 'node:url';
@@ -18,7 +18,7 @@ function t(name, cond, extra = '') {
 
 const entry = resolveImageEntry();
 if (!entry) {
-  console.error('✗ 找不到 image-recognition-ai-ocr 能力包');
+  console.error('✗ 找不到 image-recognition-ai-ocr 识图 skill');
   process.exit(1);
 }
 const pkg = await import(pathToFileURL(entry).href);
@@ -79,7 +79,7 @@ console.log('\n== ① 本 skill llm.mjs：chatVision 多模态拼装 ==');
   t('文本回复正常', r3.text === '普通文本回复');
 }
 
-console.log('\n== ② 能力包 describeImages（消费注入渠道）==');
+console.log('\n== ② 识图 skill describeImages（消费注入渠道）==');
 {
   // 注入一个假渠道，不碰网络
   const injected = (cfg, opts) => {
@@ -99,7 +99,7 @@ console.log('\n== ② 能力包 describeImages（消费注入渠道）==');
   t('缓存命中标记 cached', r2.cached === true);
 }
 
-console.log('\n== ② 能力包：无渠道 → 降级不抛错 ==');
+console.log('\n== ② 识图 skill：无渠道 → 降级不抛错 ==');
 {
   const r = await describeImages([{ ref: 'img1', base64: 'QUJD' }], { prompt: 'x', config: { env: {} } });
   t('无渠道 → 空文本', r.text === '');

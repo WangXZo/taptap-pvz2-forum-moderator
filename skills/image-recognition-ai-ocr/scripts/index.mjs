@@ -180,7 +180,8 @@ export async function recognize(input = {}) {
     ms: Date.now() - t0,
   };
 
-  if (opt.cacheFile && typeof cache.save === 'function') cache.save();
+  // 落盘（调用方既给了 cacheFile、又自己传了 cache=null 时，不能假设 cache 一定有 save）
+  if (opt.cacheFile && typeof cache?.save === 'function') cache.save();
 
   if (taskList.length === 1) {
     return { ok: true, task: taskList[0], results: perTask[taskList[0]] || [], meta };

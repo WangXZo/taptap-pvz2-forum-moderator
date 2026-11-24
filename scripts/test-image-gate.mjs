@@ -21,7 +21,7 @@ const img = (over = {}) => ({
 });
 const item = (images, topic = {}) => ({ moment: { id_str: '1', topic: { type: 2, title: '', summary: '', footer_images: images, ...topic } } });
 
-/** 假 recognize：模拟能力包的组合任务返回 */
+/** 假 recognize：模拟识图 skill 的组合任务返回 */
 function fakeRecognize({ textOut = '获得奖励：紫手套碎片×15、钻石×334', features = [], desc = '' } = {}) {
   return async () => ({
     ok: true,
@@ -34,7 +34,7 @@ function fakeRecognize({ textOut = '获得奖励：紫手套碎片×15、钻石�
   });
 }
 
-console.log('\n== 能力包可发现 ==');
+console.log('\n== 识图 skill 可发现 ==');
 {
   const entry = resolveImageEntry();
   t('找到 image-recognition-ai-ocr 入口', Boolean(entry), String(entry || '（未装，属正常降级）'));
@@ -79,7 +79,7 @@ console.log('\n== loadTemplates（PVZ2 模板库留在本 skill）==');
   t('读到特征定义', defs.length >= 1);
   t('含钻石特征', defs.some((d) => d.id === 'diamond' && d.name === '钻石'));
   t('dir 指向 assets/game-features', dir.replace(/\\/g, '/').endsWith('assets/game-features'));
-  t('转成能力包要的 templates 格式', templates.length >= 1 && templates[0].image.length > 50);
+  t('转成识图 skill 要的 templates 格式', templates.length >= 1 && templates[0].image.length > 50);
   t('templates 带 threshold', typeof templates[0].threshold === 'number');
 }
 
@@ -120,7 +120,7 @@ console.log('\n== enrichPostImages（业务门控 + 回灌）==');
     ...base,
     recognize: async () => ({ ok: false, error: 'no images' }),
   });
-  t('能力包 ok:false → error 降级', r8.skipped.startsWith('error:'));
+  t('识图 skill ok:false → error 降级', r8.skipped.startsWith('error:'));
 }
 
 console.log('\n== 模板命中 → entities / celebrate ==');
@@ -143,16 +143,16 @@ console.log('\n== 模板命中 → entities / celebrate ==');
   t('无模板命中 entities 空', r2.entities.length === 0);
 }
 
-console.log('\n== 能力包缺失时静默跳过 ==');
+console.log('\n== 识图 skill 缺失时静默跳过 ==');
 {
   const prev = process.env.DSH_IMAGE_RECOGNITION;
   process.env.DSH_IMAGE_RECOGNITION = 'none';
   const m = await import('./lib/image-recognition.mjs?noskill=1');
   m._resetForTest();
   const r = await m.enrichPostImages(item([img()]), { title: '看图', text: '看图' });
-  t('缺能力包 → skipped=no-image-skill', r.skipped === 'no-image-skill');
-  t('缺能力包 → 文本原样返回', r.text === '看图');
-  t('缺能力包 → 不抛错', Boolean(r));
+  t('缺识图 skill → skipped=no-image-skill', r.skipped === 'no-image-skill');
+  t('缺识图 skill → 文本原样返回', r.text === '看图');
+  t('缺识图 skill → 不抛错', Boolean(r));
   if (prev === undefined) delete process.env.DSH_IMAGE_RECOGNITION;
   else process.env.DSH_IMAGE_RECOGNITION = prev;
 }

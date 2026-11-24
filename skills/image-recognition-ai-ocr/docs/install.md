@@ -171,4 +171,4 @@ Remove-Item $HOME\.dsh\skills\image-recognition-ai-ocr -Recurse
 Remove-Item Env:DSH_IMAGE_RECOGNITION -ErrorAction SilentlyContinue
 ```
 
-调用方会检测不到能力包，自动跳过图片识别（不报错）。
+调用方会检测不到识图 skill，自动跳过图片识别（不报错）。

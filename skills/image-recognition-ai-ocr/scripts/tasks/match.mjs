@@ -82,7 +82,9 @@ export async function runMatch(images, { intents = [], onlyBest = false, hint = 
   const prompt = buildMatchPrompt(intents, { hint });
 
   for (const img of images) {
-    const key = cacheKey('match', fingerprint(img), JSON.stringify(intents.map((i) => i.id)) + (onlyBest ? '|best' : ''));
+    // 缓存签名要带上 hint —— 同图同意图但判定说明不同，答案可能不同
+    const sig = JSON.stringify(intents.map((i) => i.id)) + (onlyBest ? '|best' : '') + '|' + (hint || '');
+    const key = cacheKey('match', fingerprint(img), sig);
     const r = await describeImages([img], { prompt, context, materials, config, log, cacheKey: key, cache, temperature: 0.1, maxTokens: 800 });
     if (r.error) {
       degraded.push(`match:${img.ref}:${r.error}`);

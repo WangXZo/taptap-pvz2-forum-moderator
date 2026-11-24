@@ -2,8 +2,8 @@
 //
 // 2026-11-24 重构：
 //   · 匹配引擎在独立 skill image-recognition-ai-ocr（features.mjs → server.py /match）
-//   · **模板库仍留在本 skill**（assets/game-features），运行时传给能力包
-// 所以两边都测：本 skill 的 loadTemplates 能读出库，能力包的 matchImage 能消费它。
+//   · **模板库仍留在本 skill**（assets/game-features），运行时传给识图 skill
+// 所以两边都测：本 skill 的 loadTemplates 能读出库，识图 skill 的 matchImage 能消费它。
 //
 // 跑：node scripts/test-features.mjs
 import { pathToFileURL } from 'node:url';
@@ -17,7 +17,7 @@ function t(name, cond, extra = '') {
 
 const entry = resolveImageEntry();
 if (!entry) {
-  console.error('✗ 找不到 image-recognition-ai-ocr 能力包');
+  console.error('✗ 找不到 image-recognition-ai-ocr 识图 skill');
   process.exit(1);
 }
 const pkg = await import(pathToFileURL(entry).href);
@@ -44,7 +44,7 @@ console.log('\n== 本 skill loadTemplates（模板库在本 skill）==');
   t('celebrate 特征可识别', defs.some((d) => d.trigger === 'celebrate'));
 }
 
-console.log('\n== 能力包 matchImage（消费传入的模板）==');
+console.log('\n== 识图 skill matchImage（消费传入的模板）==');
 {
   const { templates } = loadTemplates({});
   mock(() => matchRes([{ id: 'diamond', name: '钻石', score: 0.92 }]));
@@ -90,7 +90,7 @@ console.log('\n== 降级：无模板 / 服务挂 / 无命中 ==');
   t('无 base64 → 不请求', noB64.error === 'no-base64');
 }
 
-console.log('\n== 能力包内置资料（资料层）==');
+console.log('\n== 识图 skill 内置资料（资料层）==');
 {
   const mats = loadMaterials({});
   t('有内置资料', mats.length >= 1);

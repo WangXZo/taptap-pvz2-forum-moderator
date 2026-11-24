@@ -300,7 +300,7 @@ export async function runOnce({
   //   避免 core 自己写一套、其他通道写另一套（历史上漏过幂等门 → 同帖被回多次）。
   const layer = createSendLayer();
   // 图片识别结果缓存（S5）：按图 url hash，避免重复 OCR/VLM 省钱
-  //   缓存实现在能力包 image-recognition-ai-ocr 里，这里经薄壳拿（能力包没装 → 空缓存）
+  //   缓存实现在识图 skill image-recognition-ai-ocr 里，这里经薄壳拿（识图 skill 没装 → 空缓存）
   const imageCache = await getImageCache(resolve(SKILL_ROOT, 'data/image-cache.json'), {
     ttlHours: Number(config.image?.vision?.cacheTtlHours ?? 168),
   });

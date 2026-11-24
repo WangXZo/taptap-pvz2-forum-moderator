@@ -17,7 +17,7 @@ import { dirname, resolve, extname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-export const PKG_ROOT = resolve(HERE, '..'); // scripts/ → 能力包根
+export const PKG_ROOT = resolve(HERE, '..'); // scripts/ → skill 根
 const BUILTIN_DIR = resolve(PKG_ROOT, 'assets', 'materials');
 
 /** 单个资料项标准化 */

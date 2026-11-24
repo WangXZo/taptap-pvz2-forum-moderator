@@ -49,29 +49,26 @@ export async function runFeature(images, {
   for (const img of images) {
     const out = { image: img.ref, features: [], description: '', method: 'none' };
 
-    // ① 模板匹配（有模板才跑）
+    // ① 模板匹配（通道开着 + 有模板 才跑）
     if (features.enabled !== false && (templates || []).length) {
       const key = cacheKey('feature', fingerprint(img), tplIds);
       const cached = cache?.get?.(key);
       let hits = cached?.hits || [];
       if (!cached) {
         const r = await matchImage(img, templates, { config: features, log });
-        if (r.error && r.error !== 'no-templates') degraded.push(`template:${img.ref}:${r.error}`);
+        if (r.error) degraded.push(`template:${img.ref}:${r.error}`);
         hits = r.hits || [];
         cache?.set?.(key, { hits });
       }
+      methods.add('template');
       if (hits.length) {
         out.features.push(
           ...hits.map((h) => ({ id: h.id || null, name: h.name || '', method: 'template', score: h.score ?? null }))
         );
         out.method = 'template';
-        methods.add('template');
-      } else if (features.enabled !== false) {
-        methods.add('template');
       }
-    } else if ((templates || []).length && features.enabled === false) {
-      // 显式关掉就不记 degraded
     } else if (features.enabled !== false) {
+      // 通道开着但调用方没给模板 —— 说清楚，别让它以为"没识别到特征"
       degraded.push('template:no-templates');
     }
 

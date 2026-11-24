@@ -85,13 +85,14 @@
 冲突排查：
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8790,11434 -ErrorAction SilentlyContinue |
+Get-NetTCPConnection -LocalPort 8790,8791,11434 -ErrorAction SilentlyContinue |
   Select-Object LocalPort, State, OwningProcess
 ```
 
 改了端口要同步改配置：
 
-- `image.ocr.server` / `image.features.server` / `rerank.server` → 8790 系列
+- `image.ocr.server` / `image.features.server` → **8791**（识图 skill 的服务）
+- `rerank.server` → **8790**（本 skill 的 rerank_server.py）
 - `retrieve.embedEndpoint` → 11434
 
 ---

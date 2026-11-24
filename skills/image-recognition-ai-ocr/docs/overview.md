@@ -116,4 +116,4 @@ tasks: [...]    → 你都要，我一次跑完（共享取图/下载/缓存）
 - `taptap-pvz2-forum-moderator`（植物大战僵尸2 论坛版主 skill）：
   自己做业务门控（求码帖不读图）、注入 PVZ2 看图 prompt、传入自己的模板库，
   调本 skill 的 `recognize({tasks:['text','feature']})`，再把结果回灌到帖子正文。
-  它把本 skill 当作**独立能力包**引用 —— 两边可各自独立安装与使用。
+  它把本 skill 当作**独立 skill**引用 —— 两边可各自独立安装与使用。

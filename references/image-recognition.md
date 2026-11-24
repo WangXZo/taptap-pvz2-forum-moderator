@@ -145,7 +145,7 @@ python scripts/rerank_server.py --port 8790
 
 | 测试 | 断言数 | 覆盖 |
 |---|---|---|
-| `test-image-gate` | 45 | 业务门控（求码/相关）+ 回灌 + 模板加载 + 能力包缺失降级 |
+| `test-image-gate` | 45 | 业务门控（求码/相关）+ 回灌 + 模板加载 + 识图 skill 缺失降级 |
 | `test-image-pipeline` | 17 | 缓存 + 任务归一化 + 用真实识图 skill 跑通 OCR 回灌 |
 | `test-ocr-bridge` | 11 | OCR 通道契约与降级 |
 | `test-vision-channel` | 25 | 本 skill `llm.mjs` 多模态拼装 + 识图 skill 消费注入渠道 |

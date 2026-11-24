@@ -3,7 +3,7 @@
 
 ⚠️ 职责边界（2026-11-24 拆分）：
     本服务**只做检索重排**（/rerank）。
-    OCR 与模板匹配已迁到独立能力包 `image-recognition-ai-ocr` 的 scripts/server.py
+    OCR 与模板匹配已迁到独立 skill `image-recognition-ai-ocr` 的 scripts/server.py
     （默认端口 8791）。两者互不依赖，可各自独立启动。
 
     为什么拆：原来一个 ocr_server.py 同时提供 /ocr、/match、/rerank，

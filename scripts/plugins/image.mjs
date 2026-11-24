@@ -1,7 +1,7 @@
 // C10 插件：image（图片识别）。
-// 识别实现在独立能力包 `image-recognition-ai-ocr` 里，这里经薄壳调用
+// 识别实现在独立 skill `image-recognition-ai-ocr` 里，这里经薄壳调用
 // （lib/image-recognition.mjs：业务门控 + 注入本项目 prompt/模板 + 失败降级）。
-// 能力包没装 → 跳过图片识别，主流程照跑。
+// 识图 skill 没装 → 跳过图片识别，主流程照跑。
 // 内核经 onPost 调用，独立可开关(config.features.image)。
 import { enrichPostImages } from '../lib/image-recognition.mjs';
 

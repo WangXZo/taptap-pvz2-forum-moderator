@@ -1,16 +1,16 @@
-// 图片识别能力包适配层（薄壳 + 本项目的业务用法）
+// 图片识别 · 识图 skill 适配层（薄壳 + 本项目的业务用法）
 //
 // 分工（2026-11-24 设计）：
-//   · 独立能力包 `image-recognition-ai-ocr` —— 通用识图：给图片和任务，返回结构化 JSON
+//   · 独立 skill `image-recognition-ai-ocr` —— 通用识图：给图片和任务，返回结构化 JSON
 //   · 本文件（taptap 主 skill 侧）—— 论坛业务：
 //       ① 业务意图门控（求码/加好友帖不读图）
 //       ② 相关性启发式（正文长且明确 → 装饰配图，不值得读）
 //       ③ 把识别结果**回灌**成帖子文本（下游 QA/搜索/组答自动受益）
 //       ④ 注入本项目专用的看图 prompt 与模板库
 //
-// 找不到能力包 → 跳过图片识别，主流程照跑（skipped='no-image-skill'）。
+// 找不到识图 skill → 跳过图片识别，主流程照跑（skipped='no-image-skill'）。
 
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -24,7 +24,7 @@ import { chatVision } from './llm.mjs';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SKILL_ROOT = resolve(HERE, '..', '..'); // scripts/lib → skill 根
 
-/** PVZ2 专用看图提示词（能力包内置的是通用版，这里覆盖成领域版） */
+/** PVZ2 专用看图提示词（识图 skill 内置的是通用版，这里覆盖成领域版） */
 const PVZ2_PROMPT = `你是《植物大战僵尸2》论坛的看图助手。仔细看这张/这些游戏截图，用简洁中文输出要点（只描述图里真实可见的内容，看不清的不要猜，不要编造）：
 - 场景类型：错误弹窗 / 关卡进度 / 植物阵容 / 活动页面 / 植物图鉴 / 其他
 - 植物名称（若可见）
@@ -34,7 +34,7 @@ const PVZ2_PROMPT = `你是《植物大战僵尸2》论坛的看图助手。仔�
 - 玩家可能在问什么
 直接输出要点文本，不要用 markdown 标题。`;
 
-/** 找能力包入口：环境变量 → 独立安装目录 → 同父目录 → 本 skill 自带 skills/ */
+/** 找识图 skill 入口：环境变量 → 独立安装目录 → 同父目录 → 本 skill 自带 skills/ */
 export function resolveImageEntry() {
   const override = process.env.DSH_IMAGE_RECOGNITION;
   if (override === 'none') return null;
@@ -57,14 +57,14 @@ export async function loadImageMod(log = () => {}) {
     loadTried = true;
     const entry = resolveImageEntry();
     if (!entry) {
-      log('  [图片] 没找到 image-recognition-ai-ocr 能力包 → 跳过图片识别');
+      log('  [图片] 没找到 image-recognition-ai-ocr 识图 skill → 跳过图片识别');
       return null;
     }
     try {
       mod = await import(pathToFileURL(entry).href);
       log(`  [图片] 已加载 image-recognition-ai-ocr（${entry}）`);
     } catch (e) {
-      log(`  [图片] 能力包加载失败（${e.message}）→ 跳过图片识别`);
+      log(`  [图片] 识图 skill 加载失败（${e.message}）→ 跳过图片识别`);
       return null;
     }
   }
@@ -97,7 +97,7 @@ export function isCodeIntent({ title = '', text = '' } = {}, config = {}) {
 
 /**
  * 相关性启发式：正文长且明确 → 配图多半是装饰，不值得花钱读。
- * （通用「图有没有信息」由能力包的预筛负责；这里判的是**业务上值不值得**。）
+ * （通用「图有没有信息」由识图 skill 的预筛负责；这里判的是**业务上值不值得**。）
  */
 export function imageRelevance({ title = '', text = '', images = [] } = {}, config = {}) {
   if (!images.length) return 'none';
@@ -115,17 +115,40 @@ export function imageRelevance({ title = '', text = '', images = [] } = {}, conf
 
 // ───────────────────────── 模板库（PVZ2 专用，留在主 skill） ─────────────────────────
 
-/** 读 PVZ2 特征模板库 → 能力包要的 templates 格式 */
-export function loadTemplates(config = {}) {
+/**
+ * 模板库缓存 —— 为什么需要：
+ *   5 张模板图约 450KB，转 base64 后 ~600KB；每帖每图都要作为请求体发给识图服务。
+ *   不缓存的话，一个 13 图的帖要重复读盘 + 重复上传 13 次（≈8MB）。
+ *   模板是静态资产（换模板要重启），所以按目录缓存一次即可。
+ */
+let TPL_CACHE = null; // { dir, templates, defs }
+
+/** 读 PVZ2 特征模板库 → 识图 skill 要的 templates 格式（默认用进程内缓存） */
+export function loadTemplates(config = {}, { refresh = false } = {}) {
   const raw = config?.image?.features?.dir;
   const dir = raw
     ? resolve(String(raw).replace(/\{\{SKILL\}\}/g, SKILL_ROOT))
     : resolve(SKILL_ROOT, 'assets', 'game-features');
+
+  if (!refresh && TPL_CACHE && TPL_CACHE.dir === dir) return TPL_CACHE;
+
+  const { templates, defs } = readTemplates(dir);
+  TPL_CACHE = { dir, templates, defs };
+  return TPL_CACHE;
+}
+
+/** 仅供测试：清掉模板缓存，让下次重新读盘 */
+export function _resetTemplateCache() {
+  TPL_CACHE = null;
+}
+
+/** 真正读盘（不缓存） */
+function readTemplates(dir) {
   let defs = [];
   try {
     defs = JSON.parse(readFileSync(resolve(dir, 'features.json'), 'utf8')).features || [];
   } catch {
-    return { dir, templates: [], defs: [] };
+    return { templates: [], defs: [] };
   }
   const templates = [];
   for (const d of defs) {
@@ -143,7 +166,7 @@ export function loadTemplates(config = {}) {
       /* 单张模板读失败跳过 */
     }
   }
-  return { dir, templates, defs };
+  return { templates, defs };
 }
 
 /** 特征 id → 是否触发「庆祝」意图 */
@@ -156,9 +179,9 @@ function celebrateIds(defs) {
 // ───────────────────────── 主入口：识别 + 回灌 ─────────────────────────
 
 /**
- * 帖级图片增强（本项目业务封装）：取图 → 业务门控 → 调能力包 → 回灌文本
+ * 帖级图片增强（本项目业务封装）：取图 → 业务门控 → 调识图 skill → 回灌文本
  *
- * 这是**调用方的用法**，不是能力包的接口 —— 能力包只提供通用的 recognize()。
+ * 这是**调用方的用法**，不是识图 skill 的接口 —— 识图 skill 只提供通用的 recognize()。
  *
  * @returns {Promise<{text, imageText, images, relevance, skipped, sources, celebrate, entities}>}
  */
@@ -190,7 +213,7 @@ export async function enrichPostImages(
   if (relevance === 'decorative') return { ...base, text, relevance, skipped: 'decorative' };
   if (relevance === 'unknown') return { ...base, text, relevance, skipped: 'unknown' };
 
-  // ③ 调能力包
+  // ③ 调识图 skill
   let rec = recognize;
   if (!rec) {
     const m = await loadImageMod(log);
@@ -234,7 +257,7 @@ export async function enrichPostImages(
   }
 
   // ④ 汇总：文字 + 特征 + 庆祝标记
-  //    能力包单任务时 results 是数组（配 r.task），组合任务时是按任务分组的对象 —— 两种都吃
+  //    识图 skill 单任务时 results 是数组（配 r.task），组合任务时是按任务分组的对象 —— 两种都吃
   const byTask =
     r.results && typeof r.results === 'object' && !Array.isArray(r.results)
       ? r.results
@@ -294,7 +317,7 @@ export async function imageServiceHealth(config = {}) {
   return m.ocrHealth({ server: config?.image?.ocr?.server });
 }
 
-/** 空缓存（能力包未装时不识别，也就不需要缓存） */
+/** 空缓存（识图 skill 未装时不识别，也就不需要缓存） */
 function nullCache() {
   return {
     get() {
@@ -309,8 +332,8 @@ function nullCache() {
 }
 
 /**
- * 取识别结果缓存（能力包未装 → 空缓存）
- * 缓存在能力包里实现（按图 hash + 任务签名 + TTL），这里只是转手。
+ * 取识别结果缓存（识图 skill 未装 → 空缓存）
+ * 缓存在识图 skill 里实现（按图 hash + 任务签名 + TTL），这里只是转手。
  */
 export async function getImageCache(file, opts = {}) {
   const m = await loadImageMod();

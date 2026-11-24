@@ -21,7 +21,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 
 **校验失败不阻断运行** —— 配置项写错只打警告，守护不会因此停摆。
 
-## 字段总览（共 173 项）
+## 字段总览（共 177 项）
 
 | 分组 | 键 | 类型 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
@@ -75,9 +75,11 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 图片识别 | `image.enabled` | `boolean` | `true` | — | 启用 |
 | 图片识别 | `image.skipIntents` | `array` | `["friendCode","tiangongCode"]` | — | 求码/好友码帖不识别图片 |
 | 图片识别 | `image.bareCodeIsIntent` | `boolean` | `true` | — | 裸码也算求码 |
-| 图片识别 | `image.ocr.enabled` | `boolean` | `true` | — | 需独立 skill image-recognition-ai-ocr 的 scripts/server.py（端口 8791） |
+| 图片识别 | `image.ocr.enabled` | `boolean` | `true` | — | 由独立 skill image-recognition-ai-ocr 提供：python <该skill>/scripts/server.py（默认端口 8791） |
 | 图片识别 | `image.vision.enabled` | `boolean` | `true` | — | VLM 启用 |
-| 图片识别 | `image.features.enabled` | `boolean` | `true` | — | 模板匹配启用 |
+| 图片识别 | `image.features.enabled` | `boolean` | `true` | — | 模板库在本 skill 的 assets/game-features，运行时传给识图 skill |
+| 图片识别 | `image.prefilter.quality` | `boolean` | `true` | — | 免费的预筛：无图 / 体积过小 / 本批重复 → 不识别 |
+| 图片识别 | `image.prefilter.vlmBinary` | `boolean` | `true` | — | 先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关） |
 | 夸奖通道 | `praise.enabled` | `boolean` | `true` | — | 提问帖里已有好答案 → 在那条评论下盖楼夸一句 |
 | 夸奖通道 | `praise.signature` | `boolean` | `true` | — | 带签名 |
 | 夸奖通道 | `praise.minScore` | `integer` | `1` | ≥ 1，≤ 10 | 最低有效分 |
@@ -85,6 +87,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 分享互动 | `share.enabled` | `boolean` | `true` | — | 分享/记录/进度帖 → 去说一句鼓励，不答疑不评价数值 |
 | 分享互动 | `share.signature` | `boolean` | `true` | — | 带签名 |
 | 分享互动 | `share.maxPerRun` | `integer` | `2` | ≥ 1，≤ 50 | 单轮上限 |
+| 分享互动 | `share.codePraise` | `boolean` | `true` | — | 有人贴出天宫码 → 夸「无私分享」这个行为。关掉只停这一条通道；分享帖轻互动、天宫码撮合照常。 |
 | 情绪陪伴 | `comfort.enabled` | `boolean` | `true` | — | 纯情绪帖（绝了/可惜/憋屈）→ 陪一句共情，一帖一次 |
 | 情绪陪伴 | `comfort.signature` | `boolean` | `true` | — | 带签名 |
 | 情绪陪伴 | `comfort.maxPerRun` | `integer` | `2` | ≥ 1，≤ 50 | 单轮上限 |
@@ -123,9 +126,10 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 增量摄入 | `ingest.sources.official.enabled` | `boolean` | `false` | — | 官方公告源 |
 | 增量摄入 | `ingest.sources.official.urls` | `array` | `[]` | — | 官方公告 URL 列表 |
 | 增量摄入 | `ingest.sources.weekly.enabled` | `boolean` | `false` | — | 周报 md 源 |
-| 评价分析 | `review.enabled` | `boolean` | `false` | — | **只读分析，绝不自动回复评价**（评价处置归人工） |
-| 评价分析 | `review.autoAnalyze` | `boolean` | `false` | — | 自动分析 |
-| 评价分析 | `review.lowScoreMax` | `integer` | `2` | ≥ 1，≤ 5 | 低分阈值 |
+| 游戏评价（review） | `review.enabled` | `boolean` | `false` | — | **只读分析 + 低分提醒，不自动回复**（这与下面的 accountLost 是两件事） |
+| 游戏评价（review） | `review.autoAnalyze` | `boolean` | `false` | — | 自动分析 |
+| 游戏评价（review） | `review.lowScoreMax` | `integer` | `2` | ≥ 1，≤ 5 | 低分阈值 |
+| 游戏评价（review） | `review.accountLost` | `object` | `{}` | — | 发现评价在说「账号/存档丢失」→ 回官方客服口径的自查指引（大哥 2026-11-23 要求） |
 | 管理任务 | `modTasks.enabled` | `boolean` | `true` | — | 常驻 mod-watch：好友码帖识别与回复。**删除动作永不自动执行** |
 | 管理任务 | `modTasks.intervalSeconds` | `integer` | `120` | ≥ 30，≤ 3600 | 轮询间隔(秒) |
 | 管理任务 | `modTasks.session` | `string` | `"tapmod"` | — | opencli 会话名 |
@@ -369,11 +373,18 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`image.bareCodeIsIntent`** — 裸码也算求码
   默认 `true`
 - **`image.ocr.enabled`** — OCR 启用
-  需独立 skill image-recognition-ai-ocr 的 scripts/server.py（端口 8791）
+  由独立 skill image-recognition-ai-ocr 提供：python <该skill>/scripts/server.py（默认端口 8791）
   默认 `true`
 - **`image.vision.enabled`** — VLM 启用
   默认 `true`
 - **`image.features.enabled`** — 模板匹配启用
+  模板库在本 skill 的 assets/game-features，运行时传给识图 skill
+  默认 `true`
+- **`image.prefilter.quality`** — 质量预筛
+  免费的预筛：无图 / 体积过小 / 本批重复 → 不识别
+  默认 `true`
+- **`image.prefilter.vlmBinary`** — VLM 二分类预筛
+  先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关）
   默认 `true`
 
 ### 夸奖通道 · `praise`
@@ -399,6 +410,9 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
   默认 `true`
 - **`share.maxPerRun`** — 单轮上限
   默认 `2`
+- **`share.codePraise`** — 天宫码捧场（夸无私分享）
+  有人贴出天宫码 → 夸「无私分享」这个行为。关掉只停这一条通道；分享帖轻互动、天宫码撮合照常。
+  默认 `true`
 
 ### 情绪陪伴 · `comfort`
 
@@ -516,16 +530,19 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`ingest.sources.weekly.enabled`** — 周报 md 源
   默认 `false`
 
-### 评价分析 · `review`
+### 游戏评价（review） · `review`
 
 
-- **`review.enabled`** — 启用
-  **只读分析，绝不自动回复评价**（评价处置归人工）
+- **`review.enabled`** — 评价分析启用
+  **只读分析 + 低分提醒，不自动回复**（这与下面的 accountLost 是两件事）
   默认 `false`
 - **`review.autoAnalyze`** — 自动分析
   默认 `false`
 - **`review.lowScoreMax`** — 低分阈值
   默认 `2`
+- **`review.accountLost`** — 账号丢失专项回复
+  发现评价在说「账号/存档丢失」→ 回官方客服口径的自查指引（大哥 2026-11-23 要求）
+  默认 `{}`
 
 ### 管理任务 · `modTasks`
 
@@ -765,4 +782,4 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 ---
 
-生成时间：2026-11-23 02:30:19
+生成时间：2026-11-24 08:34:46

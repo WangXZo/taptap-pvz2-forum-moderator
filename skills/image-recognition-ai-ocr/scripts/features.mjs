@@ -1,6 +1,6 @@
 // 模板匹配通道：图片 → 已知特征
 //
-// 走本地服务（本能力包自带 scripts/server.py）：
+// 走本地服务（本 skill自带 scripts/server.py）：
 //   POST /match ← { image, templates:[{id,name,image(base64),threshold}] }
 //               → { ok, matches:[{id,name,score,loc,scale}] }
 //

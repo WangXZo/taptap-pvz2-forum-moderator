@@ -1,4 +1,4 @@
-// 图片识别流水线离线测试：缓存 + 能力包编排 + 组合任务
+// 图片识别流水线离线测试：缓存 + 识图 skill 编排 + 组合任务
 //
 // 2026-11-24 重构：实现已在独立 skill image-recognition-ai-ocr（任务驱动）。
 // 本测试验证「本 skill 侧取到的实现能正常跑」，并用注入的假 recognize 测回灌。
@@ -17,9 +17,9 @@ function t(name, cond, extra = '') {
 }
 
 const entry = resolveImageEntry();
-t('找到能力包入口', Boolean(entry), String(entry || ''));
+t('找到识图 skill 入口', Boolean(entry), String(entry || ''));
 if (!entry) {
-  console.log('\n结果：0 通过 / 1 失败（能力包缺失）');
+  console.log('\n结果：0 通过 / 1 失败（识图 skill 缺失）');
   process.exit(1);
 }
 const pkg = await import(pathToFileURL(entry).href);
@@ -27,7 +27,7 @@ const pkg = await import(pathToFileURL(entry).href);
 const img = { ref: 'img1', url: 'https://img2-tc.tapimg.com/x.jpg', base64: 'A'.repeat(200), format: 'jpg', bytes: 200 };
 const item = { moment: { id_str: '1', topic: { type: 2, title: '活动奖励', footer_images: [{ original_url: 'https://img2-tc.tapimg.com/x.jpg', original_format: 'jpeg' }] } } };
 
-console.log('\n== 缓存（能力包实现）==');
+console.log('\n== 缓存（识图 skill 实现）==');
 {
   const file = join(tmpdir(), `img-cache-test-${Date.now()}.json`);
   const c = pkg.loadCache(file, { ttlHours: 168 });
@@ -82,7 +82,7 @@ console.log('\n== 识别器全关 → 空结果不抛错 ==');
   t('有降级说明', r.meta.degraded.length >= 1);
 }
 
-console.log('\n== enrichPostImages 用真实能力包（注入假 fetch）==');
+console.log('\n== enrichPostImages 用真实识图 skill（注入假 fetch）==');
 {
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (url) => {
@@ -104,7 +104,7 @@ console.log('\n== enrichPostImages 用真实能力包（注入假 fetch）==');
   };
   const r = await enrichPostImages(item, { config: cfg, title: '活动奖励是什么', text: '看图' });
   globalThis.fetch = realFetch;
-  t('走真实能力包拿到 OCR 文本', r.imageText.includes('钻石334'), r.imageText || r.skipped);
+  t('走真实识图 skill 拿到 OCR 文本', r.imageText.includes('钻石334'), r.imageText || r.skipped);
   t('文本已回灌', r.text.includes('[图片内容]'));
   t('sources 含 ocr', r.sources.includes('ocr'));
 }
