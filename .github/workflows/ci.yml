@@ -1,0 +1,58 @@
+name: CI
+on:
+  push:
+    branches: [main, 'feat/**', 'fix/**', 'chore/**', 'contrib/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 回归测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 装依赖
+        run: npm ci || npm install
+      - name: 跑全部测试
+        run: npm test
+
+  qa-entries:
+    name: 答疑库条目校验
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 校验条目格式
+        run: node scripts/qa-lint.mjs
+
+  privacy:
+    name: 隐私扫描
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: 扫个人信息
+        run: |
+          if [ -f scripts/publish-repo.mjs ]; then
+            node scripts/publish-repo.mjs --check --repo "$RUNNER_TEMP/repo"
+          else
+            echo "publish-repo.mjs 不存在，跳过"
+          fi

@@ -73,6 +73,21 @@ export async function loadConfig(file, { log = null } = {}) {
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/**
+ * 条目目录（一条一文件形态）· 2026-11-25
+ *
+ * 从 qaFile 推导：`<...>/qa/答疑库.md` → `<...>/qa/entries`
+ * 这样所有 loadQaLibrary 调用点**零改动**就能切到新形态。
+ *
+ * @param {string} qaFile
+ * @returns {string} 条目目录绝对路径
+ */
+export function qaEntriesDirOf(qaFile) {
+  const f = String(qaFile || '');
+  if (!f) return '';
+  return resolve(dirname(f), 'entries');
+}
+
 export const argvOf = (argv) => {
   const has = (f) => argv.includes(f);
   const argOf = (n, d) => {

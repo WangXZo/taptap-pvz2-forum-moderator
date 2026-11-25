@@ -62,6 +62,10 @@ const DEFAULT_FILES = [
   'scripts/collect.mjs',
   'scripts/emoji-map.mjs',
   'scripts/qa-index.mjs',
+  'scripts/qa-lint.mjs',
+  'scripts/qa-merge.mjs',
+  'scripts/qa-resplit.mjs',
+  'scripts/qa-split-once.mjs',
   'scripts/post-records.mjs',
   'scripts/removed-list.mjs',
   'scripts/config.json',
@@ -84,6 +88,12 @@ const DEFAULT_FILES = [
   'scripts/test-cold-store.mjs',
   'scripts/test-comfort.mjs',
   'scripts/test-publish-mask.mjs',
+  'scripts/test-qa-collab.mjs',
+  'playbook/踩坑.md',
+  'playbook/答疑库治理.md',
+  'playbook/识图调优.md',
+  'playbook/运营SOP.md',
+  '.github/workflows/ci.yml',
   'scripts/test-interact.mjs',
   'scripts/test-limits-codes.mjs',
   'scripts/test-match.mjs',
@@ -143,6 +153,10 @@ const DEFAULT_FILES = [
   'scripts/lib/qa-junk.mjs',
   'scripts/lib/qa-vector.mjs',
   'scripts/lib/qa.mjs',
+  'scripts/lib/qa-entry.mjs',
+  'scripts/lib/qa-merge.mjs',
+  'scripts/lib/qa-split.mjs',
+  'scripts/lib/qa-github.mjs',
   'scripts/lib/remove-post.mjs',
   'scripts/lib/replier.mjs',
   'scripts/lib/reply-nested.mjs',
@@ -627,6 +641,32 @@ async function main() {
       console.log(`  写入 ${QA_FILE}（摘自昵称遮罩 ${qaNames.length} 个）`);
     } catch (e) {
       console.log(`  跳过 ${QA_FILE}（读不到：${e.code || e.message}）`);
+    }
+  }
+
+  // 条目目录（一条一文件形态）：逐个脱敏后写入
+  // 为什么要单独处理：条目文件不进 DEFAULT_FILES 白名单（193 个文件，白名单会撑爆），
+  //   但它们是答疑库的**新真源** —— 不发布的话，别人 clone 下来只有旧的单文件。
+  let entryCount = 0;
+  if (!CHECK_ONLY) {
+    try {
+      const { readdir } = await import('node:fs/promises');
+      const srcDir = join(SKILL, 'qa', 'entries');
+      const dstDir = join(REPO, 'qa', 'entries');
+      const files = (await readdir(srcDir).catch(() => [])).filter((f) => f.endsWith('.md'));
+      if (files.length) {
+        await mkdir(dstDir, { recursive: true });
+        for (const f of files) {
+          const raw = await readFile(join(srcDir, f), 'utf8');
+          const masked = maskQa(raw);
+          qaNames.push(...(masked.names || []));
+          await writeFile(join(dstDir, f), masked.text, 'utf8');
+          entryCount++;
+        }
+        console.log(`  写入 qa/entries/（${entryCount} 个条目，摘自昵称遮罩）`);
+      }
+    } catch (e) {
+      console.log(`  跳过 qa/entries/（${e.code || e.message}）`);
     }
   }
 

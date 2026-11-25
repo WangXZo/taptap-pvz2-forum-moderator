@@ -7,8 +7,30 @@
 //   - 版本：通用
 //   ---
 //   回复正文，可以多行。
+//
+// ## 两种存储形态（2026-11-25 多人协作改造）
+//
+// ① 单文件 `qa/答疑库.md` —— 旧形态，仍支持（兼容期保留）
+// ② 一条一文件 `qa/entries/<id>.md` —— 新形态，多人并行加条目不撞 git 冲突
+//
+// 条目文件可含**多个要点**（claim），每点带自己的置信度与来源：
+//
+//   ---
+//   id: q-塔黄无尽搭配
+//   question: 买了塔黄无尽用什么好
+//   keywords: [塔黄, 保龄球]
+//   ---
+//   ## 要点
+//   - [70%] 优先买神器保龄球
+//     - 来源: https://…
+//   - [50%] 卡波建议塔黄空吸到最高
+//
+// **下游零改动**：多要点会被拼成 answer 供既有检索/回复逻辑使用，
+// 结构化 claims 供合并与置信度聚合使用。
 
 import { readFile } from 'node:fs/promises';
+import { readAllEntries, confLabelOf as entryConfLabelOf, plainTextOf } from './qa-entry.mjs';
+import { qaEntriesDirOf } from './paths.mjs';
 
 const STOP = new Set(
   ('的了是我你他她它吗呢吧啊呀哦在有和就都也不没很还这那什么怎么为什么如何哪个可以能不能请问一下帮帮忙' +
@@ -16,7 +38,76 @@ const STOP = new Set(
     .split('')
 );
 
-export async function loadQaLibrary(file) {
+/**
+ * 条目文件 → 与 parseQa 相同形状的 entry
+ * 下游（打分 / 回复 / 组装）不用改，只多了 claims 与稳定 id
+ */
+export function entryToQa(entry) {
+  const claims = entry.claims || [];
+  // answer = 纯文本（要点拼接，或原始正文）—— 下游照旧当一段正文用
+  const answer = plainTextOf(entry);
+  // 置信度：frontmatter 优先；否则取要点里最高的
+  let confidence = entry.confidence;
+  if (confidence == null && claims.length) {
+    const nums = claims.map((c) => c.confidence).filter((n) => Number.isFinite(n));
+    confidence = nums.length ? Math.max(...nums) : null;
+  }
+  if (confidence == null) confidence = entry.source ? 50 : 95;
+  return {
+    question: entry.question,
+    keywords: entry.keywords || [],
+    version: entry.version || '通用',
+    signature: entry.signature || null,
+    source: entry.source || null,
+    summarizedAt: entry.updated || null,
+    confidence,
+    confidenceLabel: entryConfLabelOf(confidence),
+    auto: !!entry.source,
+    semanticConfirm: !!entry.semanticConfirm,
+    answer,
+    id: entry.id,            // 稳定 id（不再随问法漂移）
+    claims,                 // 结构化要点（合并/聚合用）
+  };
+}
+
+/** 加载条目目录（一一文件形态） */
+export async function loadQaEntries(dir) {
+  const entries = await readAllEntries(dir);
+  return entries.map(entryToQa);
+}
+
+/**
+ * 加载答疑库：优先条目目录，没有则退回单文件
+ * @param {string} file 单文件路径（兼容）
+ * @param {string} [dir] 条目目录（优先）
+ */
+export async function loadQaLibraryAny(file, dir) {
+  if (dir) {
+    const entries = await loadQaEntries(dir);
+    if (entries.length) return entries;
+  }
+  return loadQaLibrary(file);
+}
+
+/**
+ * 加载答疑库
+ *
+ * 2026-11-25 起：**优先读条目目录**（一条一文件），目录不存在或为空时退回单文件。
+ * 这样所有调用点零改动就能用上新形态，且任何时候都能退回旧形态。
+ *
+ * @param {string} file 单文件路径（兼容）
+ * @param {object} [o]
+ * @param {string} [o.dir] 条目目录（默认从 file 推导：同级的 entries/）
+ * @param {string} [o.mode] 'auto'（默认）| 'entries'（强制条目目录）| 'file'（强制单文件）
+ */
+export async function loadQaLibrary(file, o = {}) {
+  const mode = o.mode || 'auto';
+  const dir = o.dir || qaEntriesDirOf(file);
+  if (mode !== 'file' && dir) {
+    const entries = await loadQaEntries(dir);
+    if (entries.length) return entries;
+    if (mode === 'entries') return [];
+  }
   const raw = await readFile(file, 'utf8');
   return parseQa(raw);
 }

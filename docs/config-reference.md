@@ -21,7 +21,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 
 **校验失败不阻断运行** —— 配置项写错只打警告，守护不会因此停摆。
 
-## 字段总览（共 177 项）
+## 字段总览（共 190 项）
 
 | 分组 | 键 | 类型 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
@@ -202,6 +202,19 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 答疑库检索 | `qa.vector.backend` | `char | http` | `"char"` | — | char = 字符 n-gram TF-IDF（零依赖）；http = 接本地 embeddings 服务，失败自动退回 char |
 | 答疑库检索 | `qa.vector.endpoint` | `string` | *(空)* | — | 向量服务地址 |
 | 答疑库检索 | `qa.vector.model` | `string` | *(空)* | — | 向量模型名 |
+| 多人协作 | `collab.enabled` | `boolean` | `true` | — | 启用协作合并 |
+| 多人协作 | `collab.entriesDir` | `string` | `"{{SKILL}}/qa/entries"` | — | 一条一文件（多人并行加条目不撞 git 冲突） |
+| 多人协作 | `collab.remote.owner` | `string` | *(空)* | — | 例：WangXZo |
+| 多人协作 | `collab.remote.repo` | `string` | *(空)* | — | 例：taptap-pvz2-forum-moderator |
+| 多人协作 | `collab.remote.access` | `gh-cli | api-token | git` | `"gh-cli"` | — | gh-cli = 调 gh api（本机实测：git/curl 的 TLS 被重置但 gh 能通）；api-token = 直连 api.github.com，token 从 tokenEnv 读；git = 常规 fetch/push |
+| 多人协作 | `collab.remote.tokenEnv` | `string` | `"GH_TOKEN"` | — | access=api-token 时从哪个环境变量读 token |
+| 多人协作 | `collab.remote.defaultBranch` | `string` | `"main"` | — | 默认分支 |
+| 多人协作 | `collab.merge.window.start` | `string` | `"02:00"` | — | 本地时间。窗口内随机取一个时刻执行，避开多人同时拉取/提交 |
+| 多人协作 | `collab.merge.window.end` | `string` | `"05:00"` | — | 本地时间。每个提交者可按自己习惯改自己的窗口 |
+| 多人协作 | `collab.merge.randomize` | `boolean` | `true` | — | 每天在窗口内随机定一个时刻，只跑一次 |
+| 多人协作 | `collab.merge.lockFile` | `string` | `"{{SKILL}}/data/merge-lock.json"` | — | 记录当日随机时刻与执行状态，保证一天只跑一次 |
+| 多人协作 | `collab.merge.contribPrefix` | `string` | `"contrib/"` | — | 免 PR 直提的分支命名空间 |
+| 多人协作 | `collab.merge.writeBack` | `string` | `"github-main,local-runtime,local-src"` | — | github-main / local-runtime / local-src，逗号分隔 |
 
 ## 分组说明
 
@@ -780,6 +793,48 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 - **`qa.vector.model`** — 向量模型名
   默认 `""`
 
+### 多人协作 · `collab`
+
+多人提交代码、合并各自积累的答疑库、共享经验。⚠️ 每个人的 GitHub 渠道不一样，remotes 要按自己的情况改（access: gh-cli / api-token / git）
+
+- **`collab.enabled`** — 启用协作合并
+  默认 `true`
+- **`collab.entriesDir`** — 条目目录
+  一条一文件（多人并行加条目不撞 git 冲突）
+  默认 `"{{SKILL}}/qa/entries"`
+- **`collab.remote.owner`** — GitHub owner
+  例：WangXZo
+  默认 `""`
+- **`collab.remote.repo`** — GitHub 仓库名
+  例：taptap-pvz2-forum-moderator
+  默认 `""`
+- **`collab.remote.access`** — 访问方式
+  gh-cli = 调 gh api（本机实测：git/curl 的 TLS 被重置但 gh 能通）；api-token = 直连 api.github.com，token 从 tokenEnv 读；git = 常规 fetch/push
+  默认 `"gh-cli"`，取值 gh-cli / api-token / git
+- **`collab.remote.tokenEnv`** — Token 环境变量
+  access=api-token 时从哪个环境变量读 token
+  默认 `"GH_TOKEN"`
+- **`collab.remote.defaultBranch`** — 默认分支
+  默认 `"main"`
+- **`collab.merge.window.start`** — 合并窗口起
+  本地时间。窗口内随机取一个时刻执行，避开多人同时拉取/提交
+  默认 `"02:00"`
+- **`collab.merge.window.end`** — 合并窗口止
+  本地时间。每个提交者可按自己习惯改自己的窗口
+  默认 `"05:00"`
+- **`collab.merge.randomize`** — 窗口内随机时刻
+  每天在窗口内随机定一个时刻，只跑一次
+  默认 `true`
+- **`collab.merge.lockFile`** — 合并锁文件
+  记录当日随机时刻与执行状态，保证一天只跑一次
+  默认 `"{{SKILL}}/data/merge-lock.json"`
+- **`collab.merge.contribPrefix`** — 贡献分支前缀
+  免 PR 直提的分支命名空间
+  默认 `"contrib/"`
+- **`collab.merge.writeBack`** — 写回目标
+  github-main / local-runtime / local-src，逗号分隔
+  默认 `"github-main,local-runtime,local-src"`
+
 ---
 
-生成时间：2026-11-25 02:33:43
+生成时间：2026-11-25 09:55:09

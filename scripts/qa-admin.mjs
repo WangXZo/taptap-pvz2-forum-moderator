@@ -27,13 +27,17 @@
 //        --question "买了塔黄无尽用什么好"
 
 import { readFile, writeFile, copyFile, stat } from 'node:fs/promises';
-import { loadConfig } from './lib/paths.mjs';
+import { loadConfig, expand } from './lib/paths.mjs';
 import { listComments } from './lib/http.mjs';
 import { buildQaEntry } from './lib/summarize.mjs';
 import { loadState } from './lib/state.mjs';
 import { entryKeyOf } from './lib/usage.mjs';
 import { tagsFromConfig, purgeTagged } from './lib/qa-health.mjs';
-import { purgeJunk, DEFAULT_JUNK_PATTERNS } from './lib/qa-junk.mjs';
+import { purgeJunk, compilePatterns, DEFAULT_JUNK_PATTERNS } from './lib/qa-junk.mjs';
+import { maskQa } from './publish-repo.mjs';
+import { readAllEntries, slugId, writeEntryFile } from './lib/qa-entry.mjs';
+import { mergeClaims } from './lib/qa-merge.mjs';
+import { splitClaims, seedClaimConfidence } from './lib/qa-split.mjs';
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -330,9 +334,148 @@ async function cmdPurgeJunk() {
   console.log(`主库 ${res.before} → ${res.after} 条（备份：${res.backupFile}）`);
 }
 
+/**
+ * 提交一条问答（2026-11-25 多人协作改造 P4）
+ *
+ * 贡献者只管**贴一段答案**，其余全自动：
+ *   ① 质量闸（垃圾 / 自签名 / 隐私 / 脱敏）
+ *   ② 自动拆要点（LLM；拆不动就整段当一个要点）
+ *   ③ 与已有条目合并（同问题 → 并入要点；不同问题 → 新条目）
+ *   ④ 原子写入条目文件（一条一文件，不覆盖别人的）
+ *
+ * 用法：
+ *   node scripts/qa-admin.mjs submit --question "买了塔黄无尽用什么好" --answer-file 答案.md
+ *   node scripts/qa-admin.mjs submit --question "…" --answer "…" [--source URL] [--keywords a,b]
+ *   node scripts/qa-admin.mjs submit --question "…" --answer "…" --no-split   # 不调 LLM
+ *   node scripts/qa-admin.mjs submit --question "…" --answer "…" --dry-run    # 只看结果不写
+ */
+async function cmdSubmit() {
+  const question = arg('question').trim();
+  const answerFile = arg('answer-file');
+  let answer = arg('answer');
+  if (!answer && answerFile) {
+    try {
+      answer = await readFile(answerFile, 'utf8');
+    } catch (e) {
+      console.log(`读不了答案文件：${e.message}`);
+      return;
+    }
+  }
+  const source = arg('source').trim();
+  const keywordsArg = arg('keywords');
+  const dryRun = flag('dry-run');
+  const noSplit = flag('no-split');
+
+  if (!question) {
+    console.log('缺 --question（问法）');
+    return;
+  }
+  if (!String(answer || '').trim()) {
+    console.log('缺答案：给 --answer "…" 或 --answer-file 文件');
+    return;
+  }
+
+  // ── ① 质量闸 ──
+  const reasons = [];
+
+  // ①a 垃圾（求码/加好友/广告）
+  const rules = compilePatterns(config.qa?.junkPatterns?.length ? config.qa.junkPatterns : DEFAULT_JUNK_PATTERNS);
+  const junk = rules.find((r) => r.re.test(question));
+  if (junk) reasons.push(`问法命中垃圾规则「${junk.source}」`);
+
+  // ①b 自签名（我们自己回复过的条目不该进库）
+  const sig = (config.reply?.signature || '').trim();
+  if (sig && String(answer).includes(sig)) reasons.push('答案里带我们自己的签名');
+
+  // ①c 隐私（手机号/邮箱/QQ群）
+  const priv = [
+    [/\b1[3-9]\d{9}\b/, '手机号'],
+    [/[\w.+-]+@[\w-]+\.[\w.]+/, '邮箱'],
+    [/(?:QQ|qq)\s*(?:群)?\s*[:：]?\s*\d{5,}/, 'QQ号/群号'],
+  ];
+  for (const [re, what] of priv) {
+    if (re.test(String(answer))) reasons.push(`答案里出现${what}`);
+  }
+
+  if (reasons.length) {
+    console.log('❌ 被质量闸拦下：');
+    for (const r of reasons) console.log(`  · ${r}`);
+    console.log('\n（拿不准就别硬塞 —— 错答案会被自动发出去，比不回答更糟）');
+    return;
+  }
+
+  // ①d 脱敏（昵称/好友码/天宫码）
+  const masked = maskQa(String(answer));
+  const clean = masked.text;
+  if (masked.names?.length) console.log(`已遮罩昵称 ${masked.names.length} 个`);
+
+  // ── ② 自动拆要点 ──
+  let claims = [{ text: clean.trim(), confidence: null }];
+  let splitMethod = 'disabled';
+  if (!noSplit) {
+    try {
+      const r = await splitClaims({ answer: clean.trim(), question, config: config.llm || {}, log: () => {} });
+      claims = r.claims;
+      splitMethod = r.method;
+    } catch (e) {
+      console.log(`拆要点失败（${e.message}）→ 整段当一个要点`);
+    }
+  }
+  claims = seedClaimConfidence(claims, { source: source || null, manual: !source });
+
+  // ── ③ 与已有条目合并 ──
+  const dir = expand(config.collab?.entriesDir || '{{SKILL}}/qa/entries');
+  const entries = await readAllEntries(dir);
+  const id = slugId(question);
+  const existing = entries.find((e) => e.id === id);
+
+  let finalClaims = claims;
+  let mode = '新建';
+  if (existing) {
+    const r = await mergeClaims(existing.claims || [], claims, {});
+    finalClaims = r.claims;
+    mode = r.merged > 0 ? `补充到已有条目（合并 ${r.merged} 个要点）` : '补充到已有条目（要点不同，作并列补充）';
+    if (r.conflicts.length) {
+      console.log('⚠️ 与已有要点矛盾，已标 conflict，请人复核：');
+      for (const c of r.conflicts) console.log(`  · ${c.text} ↔ ${c.against}`);
+    }
+  }
+
+  const entry = {
+    id,
+    question,
+    keywords: keywordsArg
+      ? keywordsArg.split(/[,，、;；\s]+/).map((s) => s.trim()).filter(Boolean)
+      : existing?.keywords || [],
+    version: '通用',
+    confidence: Math.max(...finalClaims.map((c) => c.confidence || 0)),
+    updated: new Date().toISOString().slice(0, 10),
+    source: source || existing?.source || '',
+    claims: finalClaims,
+  };
+
+  console.log(`\n${mode}：${question}`);
+  console.log(`要点 ${finalClaims.length} 个（拆分方式：${splitMethod}）：`);
+  for (const c of finalClaims) {
+    const mark = c.sources?.length ? ` [${c.confidence}% | ${c.sources.length}源]` : ` [${c.confidence}% | 新增]`;
+    console.log(`  -${mark} ${c.text.slice(0, 60)}`);
+  }
+
+  if (dryRun) {
+    console.log('\n[dry-run] 没写文件（加 --apply 或去掉 --dry-run 才会写）');
+    return;
+  }
+
+  // ── ④ 原子写入 ──
+  const name = await writeEntryFile(dir, entry, { overwrite: true });
+  console.log(`\n✅ 已写入 ${join(dir, name)}`);
+  console.log('（要分享给其他人：等每日合并，或手动跑 node scripts/qa-merge.mjs --apply）');
+}
+
 const CMDS = {
   show: cmdShow,
   append: cmdAppend,
+  submit: cmdSubmit,
   keywords: cmdKeywords,
   register: cmdRegister,
   rebuild: cmdRebuild,

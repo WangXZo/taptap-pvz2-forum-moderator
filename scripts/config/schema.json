@@ -300,6 +300,21 @@
       "vector.backend": { "type": "string", "enum": ["char", "http"], "default": "char", "label": "向量后端", "description": "char = 字符 n-gram TF-IDF（零依赖）；http = 接本地 embeddings 服务，失败自动退回 char" },
       "vector.endpoint": { "type": "string", "default": "", "label": "向量服务地址" },
       "vector.model": { "type": "string", "default": "", "label": "向量模型名" }
+    }},
+    "collab": { "label": "多人协作", "description": "多人提交代码、合并各自积累的答疑库、共享经验。⚠️ 每个人的 GitHub 渠道不一样，remotes 要按自己的情况改（access: gh-cli / api-token / git）", "fields": {
+      "enabled": { "type": "boolean", "default": true, "label": "启用协作合并" },
+      "entriesDir": { "type": "string", "default": "{{SKILL}}/qa/entries", "label": "条目目录", "description": "一条一文件（多人并行加条目不撞 git 冲突）" },
+      "remote.owner": { "type": "string", "default": "", "label": "GitHub owner", "description": "例：WangXZo" },
+      "remote.repo": { "type": "string", "default": "", "label": "GitHub 仓库名", "description": "例：taptap-pvz2-forum-moderator" },
+      "remote.access": { "type": "string", "enum": ["gh-cli", "api-token", "git"], "default": "gh-cli", "label": "访问方式", "description": "gh-cli = 调 gh api（本机实测：git/curl 的 TLS 被重置但 gh 能通）；api-token = 直连 api.github.com，token 从 tokenEnv 读；git = 常规 fetch/push" },
+      "remote.tokenEnv": { "type": "string", "default": "GH_TOKEN", "label": "Token 环境变量", "description": "access=api-token 时从哪个环境变量读 token" },
+      "remote.defaultBranch": { "type": "string", "default": "main", "label": "默认分支" },
+      "merge.window.start": { "type": "string", "default": "02:00", "label": "合并窗口起", "description": "本地时间。窗口内随机取一个时刻执行，避开多人同时拉取/提交" },
+      "merge.window.end": { "type": "string", "default": "05:00", "label": "合并窗口止", "description": "本地时间。每个提交者可按自己习惯改自己的窗口" },
+      "merge.randomize": { "type": "boolean", "default": true, "label": "窗口内随机时刻", "description": "每天在窗口内随机定一个时刻，只跑一次" },
+      "merge.lockFile": { "type": "string", "default": "{{SKILL}}/data/merge-lock.json", "label": "合并锁文件", "description": "记录当日随机时刻与执行状态，保证一天只跑一次" },
+      "merge.contribPrefix": { "type": "string", "default": "contrib/", "label": "贡献分支前缀", "description": "免 PR 直提的分支命名空间" },
+      "merge.writeBack": { "type": "string", "default": "github-main,local-runtime,local-src", "label": "写回目标", "description": "github-main / local-runtime / local-src，逗号分隔" }
     }}
   }
 }

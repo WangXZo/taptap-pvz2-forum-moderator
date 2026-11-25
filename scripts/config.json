@@ -240,6 +240,28 @@
     },
     "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
   },
+  "collab": {
+    "enabled": true,
+    "entriesDir": "{{SKILL}}/qa/entries",
+    "remote": {
+      "owner": "",
+      "repo": "",
+      "access": "gh-cli",
+      "tokenEnv": "GH_TOKEN",
+      "defaultBranch": "main"
+    },
+    "merge": {
+      "window": {
+        "start": "02:00",
+        "end": "05:00"
+      },
+      "randomize": true,
+      "lockFile": "{{SKILL}}/data/merge-lock.json",
+      "contribPrefix": "contrib/",
+      "writeBack": "github-main,local-runtime,local-src"
+    },
+    "note": "多人协作（2026-11-25）：①答疑库一条一文件（qa/entries/），多人加条目不撞 git 冲突 ②条目内可拆多个要点，每点带置信度与多来源 ③每日在 [start,end] 窗口内随机取一个时刻做 N 路合并（GitHub main + contrib/* + 本地运行副本 + 本地真源）；窗口按本地时间算，每个提交者按自己习惯改自己的 ④远端访问方式每人不同：access 选 gh-cli / api-token / git，remote.owner 与 remote.repo 要填自己的"
+  },
   "pipeline": "v2",
   "pipelineNote": "M6 管线开关：v1=现稳定链路(语义门)；v2=facts优先检索+分档验证(影子对比无回归后切换)。",
   "retrieve": {
