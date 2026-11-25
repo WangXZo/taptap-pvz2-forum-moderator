@@ -56,6 +56,14 @@
 auto 按文字量二选一，但 PVZ2 需要**模板匹配**认植物/奖励图标、判庆祝场景，这与有没有文字无关。
 显式传任务时识图 skill 仍会「文字已读够就不做 VLM 描述」，该省的照省。
 
+### 七、识图 skill 独立仓库上线
+
+- 新建 **<https://github.com/WangXZo/image-recognition-ai-ocr>**（public，独立安装即可用）
+- 主 skill 仓库里仍带一份 `skills/image-recognition-ai-ocr/`（离线分发用），两边内容一致
+- 独立仓库带 `README.md`（GitHub 首页）+ `.gitignore`，指向 `docs/` 三份文档
+- 发布方式：本机到 github.com 的 **HTTPS 握手被重置**（curl/git 都不行，gh CLI 可以），
+  故走 **GitHub git-data API** 推送（blob → tree → commit → ref），脚本见 `output/发布-识图skill独立仓库.md`
+
 ### 验证
 - 识图 skill 自测 **209 断言**（+23：auto 分流、纯判断只调 1 次模型、一图一条、被挡图留行、描述字数、截断抢救）
 - 主 skill **80 套**全绿；work ↔ live 零差异（部署时校验）

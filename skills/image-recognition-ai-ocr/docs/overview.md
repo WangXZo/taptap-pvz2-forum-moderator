@@ -134,3 +134,6 @@ auto 已经用 OCR 文字量做了分流，纯判断本身就是在判断这张�
   自己做业务门控（求码帖不读图）、注入 PVZ2 看图 prompt、传入自己的模板库，
   调本 skill 的 `recognize({tasks:['text','feature']})`，再把结果回灌到帖子正文。
   它把本 skill 当作**独立 skill**引用 —— 两边可各自独立安装与使用。
+
+本 skill 有**独立 Git 仓库**：<https://github.com/WangXZo/image-recognition-ai-ocr>
+（主 skill 仓库里也带了一份 `skills/image-recognition-ai-ocr/`，供离线分发用；两边内容一致）。

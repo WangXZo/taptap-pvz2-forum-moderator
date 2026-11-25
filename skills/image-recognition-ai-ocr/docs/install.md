@@ -17,7 +17,13 @@
 
 ## 2. 安装技能本体
 
-把整个 `image-recognition-ai-ocr/` 目录放到能被找到的位置即可。
+本 skill 有**独立 Git 仓库**，直接 clone 即可：
+
+```bash
+git clone https://github.com/WangXZo/image-recognition-ai-ocr.git
+```
+
+然后放到能被找到的位置：
 
 ```powershell
 # 方式一：装进 DSH 的 skills 目录（推荐）

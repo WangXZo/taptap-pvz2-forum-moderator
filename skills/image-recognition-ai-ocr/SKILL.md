@@ -73,6 +73,8 @@ const r2 = await recognize({
 | [docs/install.md](docs/install.md) | 安装、依赖清单、本地服务启动、看图渠道配置、排障 |
 | [docs/api.md](docs/api.md) | 完整输入输出契约（给下游对接用） |
 
+独立仓库：<https://github.com/WangXZo/image-recognition-ai-ocr>（`git clone` 即可安装）
+
 ## 文件
 
 ```
