@@ -177,6 +177,14 @@ function celebrateIds(defs) {
 
 // ───────────────────────── 主入口：识别 + 回灌 ─────────────────────────
 
+/** 把 method（可能是 `ocr+vlm` 这种组合）拆成单通道来源，去重后并入 sources */
+function addSources(sources, method) {
+  for (const m of String(method || '').split('+')) {
+    const k = m.trim();
+    if (k && k !== 'none' && !sources.includes(k)) sources.push(k);
+  }
+}
+
 /**
  * 帖级图片增强（本项目业务封装）：取图 → 业务门控 → 调识图 skill → 回灌文本
  *
@@ -264,19 +272,17 @@ export async function enrichPostImages(
   }
 
   // ④ 汇总：文字 + 特征 + 庆祝标记
-  //    识图 skill 单任务时 results 是数组（配 r.task），组合任务时是按任务分组的对象 —— 两种都吃
-  const byTask =
-    r.results && typeof r.results === 'object' && !Array.isArray(r.results)
-      ? r.results
-      : { [r.task || 'text']: Array.isArray(r.results) ? r.results : [] };
-  const textRes = (byTask.text || []).filter((x) => x.text);
-  const featRes = (byTask.feature || []).filter((x) => x.features?.length || x.description);
+  //    识图 skill 2026-11-25 起统一「一图一条」：text / description / features 都在同一条里，
+  //    不再有 byTask 分组（auto 模式下每张图跑的任务可以不同）。
+  const rows = Array.isArray(r.results) ? r.results : [];
+  const textRes = rows.filter((x) => x.text);
+  const featRes = rows.filter((x) => x.features?.length || x.description);
   const parts = [];
   const sources = [];
 
   for (const t of textRes) {
     parts.push(t.text);
-    if (!sources.includes(t.method) && t.method !== 'none') sources.push(t.method);
+    addSources(sources, t.method);
   }
   const celIds = celebrateIds(defs);
   let celebrate = false;

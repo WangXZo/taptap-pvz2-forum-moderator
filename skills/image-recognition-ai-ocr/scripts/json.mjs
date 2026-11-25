@@ -41,6 +41,53 @@ export function tryParseJson(text) {
   return null;
 }
 
+/**
+ * 抢救被截断的 JSON：把文本里**每一个能完整闭合的对象**单独抠出来解析。
+ *
+ * 为什么要这个（2026-11-25 实测）：判定任务输出是"一个意图一个对象"的数组，
+ * 一旦撞到 maxTokens 上限，尾巴被切掉 → 整个 JSON 解析失败 → 这一张图的判定全丢。
+ * 其实前两个意图的对象是完整的，只丢最后一个才对。抢救后至少保住大部分。
+ *
+ * @returns {Array<object>} 能解析成功的对象（含嵌套对象）
+ */
+export function salvageJsonObjects(text) {
+  const t = String(text || '');
+  const out = [];
+  const stack = [];
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') {
+      inStr = true;
+      continue;
+    }
+    if (ch === '{') {
+      stack.push(i);
+      continue;
+    }
+    if (ch === '}') {
+      const start = stack.pop();
+      if (start === undefined) continue;
+      const slice = t.slice(start, i + 1);
+      if (!slice.includes(':')) continue;
+      try {
+        const v = JSON.parse(slice);
+        if (v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length) out.push(v);
+      } catch {
+        /* 这个对象本身也是断的，跳过 */
+      }
+    }
+  }
+  return out;
+}
+
 /** 从文本里抠出数字并夹到 [0,1]（模型偶尔给 92 表示 92%） */
 export function toConfidence(v, fallback = 0) {
   let n = typeof v === 'number' ? v : parseFloat(String(v ?? '').replace('%', ''));

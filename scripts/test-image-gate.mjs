@@ -21,15 +21,26 @@ const img = (over = {}) => ({
 });
 const item = (images, topic = {}) => ({ moment: { id_str: '1', topic: { type: 2, title: '', summary: '', footer_images: images, ...topic } } });
 
-/** 假 recognize：模拟识图 skill 的组合任务返回 */
+/** 假 recognize：模拟识图 skill 的返回（2026-11-25 起统一「一图一条」） */
 function fakeRecognize({ textOut = '获得奖励：紫手套碎片×15、钻石×334', features = [], desc = '' } = {}) {
   return async () => ({
     ok: true,
+    mode: 'explicit',
     tasks: ['text', 'feature'],
-    results: {
-      text: [{ image: 'img1', text: textOut, lines: [], labels: ['含数字'], method: 'ocr' }],
-      feature: [{ image: 'img1', features, description: desc, method: features.length ? 'template' : 'vlm' }],
-    },
+    results: [
+      {
+        image: 'img1',
+        tasks: ['text', 'feature'],
+        text: textOut,
+        chars: textOut.length,
+        lines: [],
+        labels: ['含数字'],
+        matches: null,
+        features,
+        description: desc,
+        method: features.length ? 'ocr+template' : 'ocr+vlm',
+      },
+    ],
     meta: { images: [{ ref: 'img1' }], methods: ['ocr'], degraded: [], skipped: [], ms: 10 },
   });
 }
@@ -112,7 +123,7 @@ console.log('\n== enrichPostImages（业务门控 + 回灌）==');
 
   const r7 = await enrichPostImages(item([img()]), {
     ...base,
-    recognize: async () => ({ ok: true, results: { text: [], feature: [] }, meta: { degraded: ['ocr:img1:HTTP 500'] } }),
+    recognize: async () => ({ ok: true, results: [], meta: { degraded: ['ocr:img1:HTTP 500'] } }),
   });
   t('识别空 → empty-recognition 带原因', r7.skipped.startsWith('empty-recognition') && r7.skipped.includes('ocr'));
 

@@ -1,6 +1,6 @@
 {
   "name": "taptap-pvz2-forum-moderator",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "description": "TapTap 论坛版主/答疑组自动化助手：2 分钟守护队列、LLM 按三层上下文生成回复、按类别 TTL 冷热分离、玩家回信后继续互动、社区答案自动沉淀、答疑库没命中时联网补答（可选 baidu-websearch）、刷屏自我审查+刹车、缺口报表",
   "type": "module",
   "license": "MIT",

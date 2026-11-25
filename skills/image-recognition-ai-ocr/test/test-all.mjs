@@ -9,8 +9,8 @@ import { normalizeImages, fingerprint, parseDataUri, looksLikeBase64, genericExt
 import { loadCache, memoryCache, cacheKey } from '../scripts/cache.mjs';
 import { loadMaterials, formatMaterials, learnMaterial } from '../scripts/materials.mjs';
 import { qualityPrefilter, parseBinaryAnswer, vlmBinaryPrefilter } from '../scripts/prefilter.mjs';
-import { tryParseJson, toConfidence } from '../scripts/json.mjs';
-import { buildMatchPrompt, normalizeMatchResult } from '../scripts/tasks/match.mjs';
+import { tryParseJson, toConfidence, salvageJsonObjects } from '../scripts/json.mjs';
+import { buildMatchPrompt, normalizeMatchResult, matchMaxTokens } from '../scripts/tasks/match.mjs';
 import { deriveLabels } from '../scripts/tasks/text.mjs';
 import { buildFeaturePrompt, DEFAULT_MAX_DESC_CHARS, tokensForChars } from '../scripts/tasks/feature.mjs';
 import {
@@ -84,7 +84,9 @@ section('normalizeTasks');
   t('去重保序', JSON.stringify(normalizeTasks({ tasks: ['text', 'text', 'feature'] }).tasks) === '["text","feature"]');
   t('大小写容忍', JSON.stringify(normalizeTasks({ task: 'TEXT' }).tasks) === '["text"]');
   t('未知任务 → error', Boolean(normalizeTasks({ task: 'nope' }).error));
-  t('缺任务 → error', Boolean(normalizeTasks({}).error));
+  t('缺任务 → auto（不再报错）', normalizeTasks({}).auto === true && normalizeTasks({}).tasks.length === 0);
+  t('显式 auto 也走 auto', normalizeTasks({ task: 'auto' }).auto === true);
+  t('显式任务不走 auto', normalizeTasks({ task: 'text' }).auto === false);
   t('TASKS 常量', TASKS.join(',') === 'match,text,feature');
 }
 
@@ -257,6 +259,18 @@ section('match 纯函数');
   t('提示词含意图 id', p.includes('id="error"') && p.includes('id="activity"'));
   t('提示词含补充说明', p.includes('看画面主体'));
   t('提示词要求 JSON', p.includes('JSON'));
+  t('提示词明令不读字/不描述', p.includes('不要读图中的文字') && p.includes('不要描述画面'));
+  t('提示词限定 reason 一句话', p.includes('不超过 20 字'));
+  t('判定预算随意图数增长', matchMaxTokens(2) > matchMaxTokens(1));
+  t('判定预算下限够写满 JSON', matchMaxTokens(1) >= 320);
+  t('判定预算有上限', matchMaxTokens(99) <= 1200);
+
+  // 截断抢救：最后一个对象被切掉时，前面的完整对象要能保住
+  const broken = '{"matches":[{"intent":"error","confidence":0.9,"reason":"红框"},{"intent":"activity","confidence":0.1,"reason":"不是活动"';
+  t('截断 JSON 常规解析失败', tryParseJson(broken) === null);
+  const salv = salvageJsonObjects(broken);
+  t('抢救出完整对象（断掉的那个不算）', salv.length === 1 && salv[0].intent === 'error');
+  t('抢救后归一化仍补齐漏答意图', normalizeMatchResult({ matches: salv }, intents).length === 2);
 
   const norm = normalizeMatchResult(
     { matches: [{ intent: 'error', confidence: 0.93, reason: '红框' }, { intent: 'activity', confidence: 0.05 }] },
@@ -580,11 +594,11 @@ section('recognize 编排');
 {
   // 参数校验
   const bad1 = await recognize({ images: [] });
-  t('缺 task → ok:false', bad1.ok === false && String(bad1.error).includes('task'));
-  const bad2 = await recognize({ task: 'text', images: [] });
-  t('缺 images → ok:false', bad2.ok === false);
+  t('缺 images → ok:false', bad1.ok === false && String(bad1.error).includes('images'));
+  const bad2 = await recognize({ task: 'nope', images: ['https://img/x.jpg'] });
+  t('未知任务 → ok:false', bad2.ok === false);
 
-  // 单一任务：text（OCR mock）
+  // 单一任务：text（OCR mock）→ 一图一条
   mockFetch((url) => {
     if (url.endsWith('/health')) return jsonRes({ ok: true });
     if (url.endsWith('/ocr')) return jsonRes({ ok: true, text: '网络连接失败\n错误码 10086', boxes: [{ text: 'a', conf: 0.97 }] });
@@ -597,13 +611,46 @@ section('recognize 编排');
   });
   restoreFetch();
   t('text ok', r1.ok === true && r1.task === 'text');
+  t('results 是一图一条', Array.isArray(r1.results) && r1.results.length === 1);
   t('拿到文字', r1.results[0].text.includes('10086'));
   t('带标签', r1.results[0].labels.includes('含数字'));
+  t('带字数（下游不用自己数）', r1.results[0].chars === r1.results[0].text.length && r1.results[0].chars > 0);
+  t('tasks 记录产出任务', JSON.stringify(r1.results[0].tasks) === '["text"]');
   t('method=ocr', r1.results[0].method === 'ocr');
   t('meta.methods 含 ocr', r1.meta.methods.includes('ocr'));
   t('meta.images 有条目', r1.meta.images.length === 1);
+  t('meta.mode=explicit', r1.meta.mode === 'explicit');
 
-  // 组合任务
+  // auto：OCR 读到字 → 只出 text，不再描述
+  mockFetch((url) => {
+    if (url.endsWith('/ocr')) return jsonRes({ ok: true, text: '活动奖励：钻石×334 限时领取', boxes: [] });
+    return imgRes();
+  });
+  const rA = await recognize({
+    images: ['https://img/a.jpg'],
+    options: { ocr: { server: 'http://127.0.0.1:8791' }, vision: { enabled: false } },
+  });
+  restoreFetch();
+  t('不传 task = auto', rA.ok === true && rA.mode === 'auto' && rA.meta.mode === 'auto');
+  t('auto 文字够 → 只跑 text', JSON.stringify(rA.results[0].tasks) === '["text"]');
+  t('auto 文字够 → 不描述', rA.results[0].description === '');
+
+  // auto：OCR 读不到字 → 按画面类做特征描述
+  mockFetch((url) => (url.endsWith('/ocr') ? jsonRes({ ok: true, text: '', boxes: [] }) : imgRes()));
+  const rA2 = await recognize({
+    images: ['https://img/b.jpg'],
+    options: {
+      ocr: { server: 'http://127.0.0.1:8791' },
+      features: { enabled: false },
+      vision: { chatVision: () => Promise.resolve({ ok: true, text: '对战胜利结算界面' }) },
+    },
+  });
+  restoreFetch();
+  t('auto 无字 → 转画面类', JSON.stringify(rA2.results[0].tasks) === '["feature"]');
+  t('auto 无字 → 有描述', rA2.results[0].description.includes('结算'));
+  t('auto 无字 → text 留空', rA2.results[0].text === '' && rA2.results[0].chars === 0);
+
+  // 组合任务：text + feature 合并进同一行
   mockFetch((url) => {
     if (url.endsWith('/ocr')) return jsonRes({ ok: true, text: '测试文字123', boxes: [] });
     if (url.endsWith('/match')) return jsonRes({ ok: true, matches: [{ id: 'd', name: '钻石', score: 0.9 }] });
@@ -623,10 +670,10 @@ section('recognize 编排');
     },
   });
   restoreFetch();
-  t('组合 ok', r2.ok === true && Array.isArray(r2.tasks));
-  t('results 按任务分组', r2.results.text && r2.results.feature);
-  t('text 有结果', r2.results.text[0].text.includes('123'));
-  t('feature 有模板命中', r2.results.feature[0].features.some((f) => f.name === '钻石'));
+  t('组合 ok', r2.ok === true && JSON.stringify(r2.tasks) === '["text","feature"]');
+  t('组合结果仍是一图一条', Array.isArray(r2.results) && r2.results.length === 1);
+  t('text 与 feature 在同一行', r2.results[0].tasks.includes('text') && r2.results[0].tasks.includes('feature'));
+  t('feature 有模板命中', r2.results[0].features.some((f) => f.name === '钻石'));
   t('组合只下载一次图', r2.meta.images.length === 1);
 
   // 降级：无 VLM 渠道 → 不抛错
@@ -641,16 +688,18 @@ section('recognize 编排');
   t('无渠道降级不抛错', r3.ok === true);
   t('degraded 含 vlm 说明', r3.meta.degraded.some((d) => d.startsWith('vlm') || d.startsWith('text-vlm')), JSON.stringify(r3.meta.degraded));
 
-  // 预筛挡掉
+  // 预筛挡掉：行还在，只是带 skipped 原因、没跑任务
   const r4 = await recognize({
     task: 'text',
     images: ['data:image/png;base64,' + 'A'.repeat(10)],
     options: { prefilter: { quality: true, vlmBinary: false }, vision: { enabled: false } },
   });
   t('过小图被预筛挡下', r4.meta.skipped.some((s) => s.reason === 'too-small'));
-  t('全被挡则结果空', r4.results.length === 0);
+  t('被挡的图仍留一行且标 skipped', r4.results.length === 1 && r4.results[0].skipped === 'too-small');
+  t('被挡的图没跑任何任务', r4.results[0].tasks.length === 0);
 
-  // match 任务（注入渠道）
+  // match：默认不跑 VLM 二分类预筛 → 每图只 1 次模型调用
+  let visionCalls = 0;
   mockFetch((url) => (url.includes('/chat/completions') ? openaiRes('{"matches":[{"intent":"error","confidence":0.91,"reason":"红框"}]}') : imgRes()));
   const r5 = await recognize({
     task: 'match',
@@ -660,16 +709,20 @@ section('recognize 编排');
       { id: 'activity', label: '活动页' },
     ],
     options: {
-      prefilter: { vlmBinary: false },
-      vision: { chatVision: (cfg, opts) => {
-        // 走内置 mock fetch 路径：直接返回固定 JSON（模拟模型）
-        return Promise.resolve({ ok: true, text: '{"matches":[{"intent":"error","confidence":0.91,"reason":"红框"}]}' });
-      } },
+      prefilter: { vlmBinary: true }, // 即使配置成开，纯判断也要跳过
+      vision: {
+        chatVision: () => {
+          visionCalls += 1;
+          return Promise.resolve({ ok: true, text: '{"matches":[{"intent":"error","confidence":0.91,"reason":"红框"}]}' });
+        },
+      },
     },
   });
   restoreFetch();
-  t('match 返回两条（含补零）', r5.results.length === 2);
-  t('match 最高分是 error', r5.results[0].intent === 'error' && r5.results[0].confidence === 0.91);
+  t('纯判断跳过预筛二分类（只 1 次调用）', visionCalls === 1, `实际 ${visionCalls} 次`);
+  t('match 结果在同行的 matches', Array.isArray(r5.results[0].matches) && r5.results[0].matches.length === 2);
+  t('match 最高分是 error', r5.results[0].matches[0].intent === 'error' && r5.results[0].matches[0].confidence === 0.91);
+  t('match 不产文字也不产描述', r5.results[0].text === '' && r5.results[0].description === '');
 }
 
 console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

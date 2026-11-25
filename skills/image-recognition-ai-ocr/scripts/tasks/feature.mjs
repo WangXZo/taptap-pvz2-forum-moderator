@@ -111,7 +111,7 @@ export async function runFeature(images, {
         prompt: buildFeaturePrompt(hint, { maxDescChars }),
         context,
         materials,
-        config: { ...vision, chatVision: vision.chatVision },
+        config: vision,
         log,
         cacheKey: key,
         cache,

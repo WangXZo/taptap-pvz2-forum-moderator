@@ -3,6 +3,11 @@
 // 手段顺序：**OCR 优先**（本地免费、快、准）→ OCR 读不出且允许时 VLM 兜底。
 // 为什么 OCR 优先：文字类内容 OCR 比 VLM 准且免费；VLM 只在画面杂乱、
 // OCR 拿不到时兜底（VLM 读字会漏、会臆造）。
+//
+// 大哥 2026-11-25 口径：读字任务**关注文本量，不限制文本**。
+//   · OCR 原文全量返回：服务端不截断、客户端也不截断（不 trim 中间、不限行数/字数）
+//   · VLM 兜底把输出预算放宽到 4000 token，并明令"有多少读多少，禁止概括/省略"
+//   · 不注入资料与背景（与读字无关，只会拖慢首字）
 
 import { ocrImage } from '../ocr.mjs';
 import { describeImages } from '../vision.mjs';
@@ -14,8 +19,12 @@ const VLM_TEXT_PROMPT = `任务：把这张图片里能看到的文字**原样**
 要求：
 - 按画面从上到下、从左到右的顺序输出
 - 保持原换行，不要合并成一段
+- **有多少读多少，禁止概括、禁止省略、禁止只给要点**；图上字多就多给
 - 看不清的字用「?」代替，不要猜
 - 只输出读到的文字本身，不要任何说明、不要加标题`;
+
+/** OCR 兜底 VLM 的输出预算（读字要的是"量"，给足） */
+const VLM_TEXT_MAX_TOKENS = 4000;
 
 /**
  * 从文字内容派生通用标签（不依赖任何业务知识）
@@ -46,13 +55,10 @@ export function deriveLabels(text) {
  */
 export async function runText(images, {
   hint = '',
-  context = '',
-  materials = [],
   ocr = {},
   vision = {},
   visionFallback = true,
   visionEnabled = true,
-  config = {},
   cache = null,
   log = () => {},
 } = {}) {
@@ -61,9 +67,9 @@ export async function runText(images, {
   const methods = new Set();
 
   for (const img of images) {
-    const out = { image: img.ref, text: '', lines: [], labels: [], method: 'none' };
+    const out = { image: img.ref, text: '', chars: 0, lines: [], labels: [], method: 'none' };
 
-    // ① OCR
+    // ① OCR（原文全量，不截断）
     if (ocr.enabled !== false) {
       const key = cacheKey('ocr', fingerprint(img), 'ocr');
       const cached = cache?.get?.(key);
@@ -79,20 +85,18 @@ export async function runText(images, {
       }
     }
 
-    // ② OCR 没读到 → VLM 兜底
+    // ② OCR 没读到 → VLM 兜底（也算"要把字读出来"，只是换条路）
     const wantVision = visionEnabled !== false && vision.enabled !== false && visionFallback;
     if (!out.text && wantVision) {
       const key = cacheKey('text', fingerprint(img), hint || 'default');
       const r = await describeImages([img], {
         prompt: hint ? `${VLM_TEXT_PROMPT}\n补充要求：${hint}` : VLM_TEXT_PROMPT,
-        context,
-        materials,
-        config: { ...vision, chatVision: vision.chatVision },
+        config: vision,
         log,
         cacheKey: key,
         cache,
         temperature: 0,
-        maxTokens: 1500,
+        maxTokens: VLM_TEXT_MAX_TOKENS,
       });
       if (r.text) {
         out.text = r.text;
@@ -103,6 +107,8 @@ export async function runText(images, {
       }
     }
 
+    // 文本量入结果：下游"关注文本量"就不用自己数字数
+    out.chars = String(out.text || '').length;
     out.labels = deriveLabels(out.text);
     results.push(out);
   }

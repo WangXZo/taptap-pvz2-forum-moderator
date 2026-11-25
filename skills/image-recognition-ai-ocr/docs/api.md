@@ -13,6 +13,25 @@ const result = await recognize(input);
 
 `recognize` **永不抛错**（网络/服务/模型问题一律降级），只有参数非法时返回 `ok: false`。
 
+### 1.1 auto 模式（不传 `task`）
+
+调用方通常判断不出「这是截图还是画面」，所以默认交给本 skill 分流，**每张图只做该做的事**：
+
+```
+质量预筛（免费）
+  → OCR（免费，本地 ≈1.9s/图）
+    → 按文字量分流：
+        字数 ≥ richTextChars(默认 20)  → 文字图：出 text（全量原文，不截断）
+        字数 <  richTextChars          → 画面图：出 feature 描述（默认 ≤200 字）
+  → 调用方给了 intents → 再补一次 match（只为判断，不读字、不描述）
+```
+
+要点：
+
+- auto 下**不跑 VLM 二分类预筛**（OCR 文字量已经承担了「图里有没有内容」的判断），每图少一次模型调用
+- auto 只挑**一类**内容任务：文字图不描述、画面图不读字；需要两者都要时显式传 `tasks: ['text','feature']`
+- 想强制某一种任务就显式传 `task`，**显式优先，内部规则不介入**
+
 ---
 
 ## 2. 输入
@@ -21,11 +40,11 @@ const result = await recognize(input);
 
 | 字段 | 类型 | 必需 | 说明 |
 |---|---|---|---|
-| `task` | string \| string[] | 二选一 | `'match'` / `'text'` / `'feature'` |
-| `tasks` | string[] | 二选一 | 组合任务，等价于 `task` 传数组 |
+| `task` | string \| string[] | 否 | `'match'` / `'text'` / `'feature'`；**留空 = auto**（本 skill 按图片内容自行判断，见 §1.1） |
+| `tasks` | string[] | 否 | 组合任务，等价于 `task` 传数组 |
 | `images` | array | **必需** | 图片：URL / base64 / dataURI / 对象 |
 | `extractor` | function | 否 | `(obj) => url[]`，从你的对象里取图 |
-| `intents` | array | `match` 必需 | `[{id, label, description}]` |
+| `intents` | array | `match` 必需 | `[{id, label, description}]`；auto 下给了就顺带跑判断 |
 | `onlyBest` | boolean | 否 | `match` 只返回最高分，默认 `false` |
 | `hint` | string | 否 | 任务说明（`text` 兜底读字 / `feature` 必填更佳） |
 | `templates` | array | 否 | `feature` 的模板库 `[{id,name,image,threshold}]` |
@@ -40,7 +59,7 @@ const result = await recognize(input);
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `prefilter.quality` | `true` | 免费质量预筛（无图/过小/重复） |
-| `prefilter.vlmBinary` | `true` | VLM 二分类「这图有信息吗」 |
+| `prefilter.vlmBinary` | `true` | VLM 二分类「这图有信息吗」。**auto 与纯 `match` 一律跳过**（与"每图时间最短"冲突，省一次调用）；显式 `text`/`feature` 才按此配置跑 |
 | `ocr.enabled` | `true` | OCR 通道开关 |
 | `ocr.server` | `http://127.0.0.1:8791` | 本地服务地址 |
 | `ocr.timeoutMs` | `30000` | |
@@ -57,8 +76,8 @@ const result = await recognize(input);
 | `vision.maxChannelTries` | `4` | 单次调用最多试几条渠道（别把 11 条全轮一遍） |
 | `vision.channelCooldownMs` | `600000` | 失败渠道冷却多久（期间不重试，避免反复传大图） |
 | `vision.debug` | `false` | 打印每条渠道的尝试与耗时 |
-| `featureVisionForRichText` | `false` | 组合任务里，**文字已读够的图是否仍让 VLM 描述**（默认跳过，省几十秒） |
-| `richTextChars` | `20` | 上面那条判定的字数阈值 |
+| `featureVisionForRichText` | `false` | 显式 `text`+`feature` 时，**文字已读够的图是否仍让 VLM 描述**（默认跳过，省几十秒） |
+| `richTextChars` | `20` | auto 分流阈值，以及上面那条判定共用的字数门槛 |
 | `cache` | 内存 | 自己的缓存对象（`{get,set}`） |
 | `cacheFile` | — | 落盘缓存路径（会调 `save()`） |
 | `cacheTtlHours` | `168` | |
@@ -94,26 +113,48 @@ const result = await recognize(input);
 
 ### 3.1 外壳
 
-**单一任务**
-
 ```json
-{ "ok": true, "task": "text", "results": [ ... ], "meta": { ... } }
+{ "ok": true, "mode": "auto", "results": [ ... ], "meta": { ... } }
 ```
 
-**组合任务**
+- `mode`：`auto`（没传 task）/ `explicit`（传了 task）
+- `results`：**永远是数组，一图一条**（2026-11-25 起）。组合任务也不再按任务分组 ——
+  auto 下每张图跑的任务可能不同，分组本身不成立。
+- 兼容字段：显式单任务仍带 `task`，显式多任务仍带 `tasks`；读结果统一读 `results`。
+
+### 3.2 结果行（一图一条）
 
 ```json
-{ "ok": true, "tasks": ["text","feature"],
-  "results": { "text": [ ... ], "feature": [ ... ] },
-  "meta": { ... } }
+{ "image": "img1", "url": "https://x/a.jpg",
+  "tasks": ["text"],
+  "text": "网络连接失败\n错误码 10086", "chars": 16,
+  "lines": [{ "text": "网络连接失败", "score": 0.97 }],
+  "labels": ["含中文", "含数字", "错误提示"],
+  "matches": null, "features": [], "description": "",
+  "method": "ocr" }
 ```
 
-### 3.2 `meta`
+| 字段 | 说明 |
+|---|---|
+| `image` / `url` | 图 ref 与来源地址 |
+| `tasks` | 这张图**真正产出了内容**的任务；空数组 = 没产出（被预筛挡下或没通道） |
+| `text` | `text` 任务：**全量原文**，不截断、不限行数 |
+| `chars` | `text` 的字数（下游关注文本量时不用自己数） |
+| `lines` | 逐行文字与置信度 |
+| `labels` | 通用标签，见 §3.4 |
+| `matches` | `match` 任务：`[{intent,label,confidence,reason,missing?}]`，按置信度降序；没跑就是 `null` |
+| `features` | `feature` 任务：模板命中 |
+| `description` | `feature` 任务：模型描述（长度受 `maxDescChars` 控制） |
+| `method` | 实际用到的通道：`ocr` / `vlm` / `template`，可组合成 `ocr+vlm`、`template+vlm` |
+| `skipped` | 被预筛挡下时的原因；有它时 `tasks` 必为空 |
+
+### 3.3 `meta`
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
+| `mode` | string | `auto` / `explicit` |
 | `images` | array | `[{ref, url, format, bytes, error?}]`，`ref` 形如 `img1` |
-| `tasks` | string[] | 本次执行的任务 |
+| `tasks` | string[] | 本次执行的任务（auto 下是各行 `tasks` 的并集） |
 | `methods` | string[] | 实际用到的通道：`template` / `ocr` / `vlm` |
 | `degraded` | string[] | 降级说明，格式 `<通道>:<ref>:<原因>` 或 `<通道>:<原因>` |
 | `skipped` | array | `[{ref, reason}]`，被预筛挡下的图 |
@@ -132,46 +173,52 @@ const result = await recognize(input);
 - `match:<ref>:unparsable` — 模型没按 JSON 回
 - `match:no-intents` — 没传 intents
 
-### 3.3 `match` 的结果项
+### 3.4 `match` 的字段
 
 ```json
-{ "image": "img1", "intent": "error_dialog", "label": "错误弹窗",
-  "confidence": 0.93, "reason": "画面中央有红框提示与错误码 10086" }
+"matches": [
+  { "intent": "error_dialog", "label": "错误弹窗",
+    "confidence": 0.93, "reason": "画面中央红框提示" }
+]
 ```
 
 | 字段 | 说明 |
 |---|---|
-| `image` | 图 ref |
 | `intent` | 意图 id（与输入 `intents[].id` 对应） |
 | `label` | 意图标签 |
 | `confidence` | `0~1`，已归一（`92` → `0.92`） |
-| `reason` | 判定依据 |
+| `reason` | 判定依据，**一句话 ≤20 字**（判定任务不做描述，写长了纯浪费） |
 | `missing` | `true` 表示模型漏答、此处补 `confidence: 0` |
 
 **排序**：按 `confidence` 降序。`onlyBest: true` 时每图只留第一条。
 
-### 3.4 `text` 的结果项
+### 3.5 `text` 的字段
 
 ```json
-{ "image": "img1",
-  "text": "网络连接失败\n错误码 10086",
-  "lines": [{ "text": "网络连接失败", "score": 0.97 }],
-  "labels": ["含中文", "含数字", "错误提示"],
-  "method": "ocr" }
+"text": "网络连接失败\n错误码 10086",
+"chars": 16,
+"lines": [{ "text": "网络连接失败", "score": 0.97 }],
+"labels": ["含中文", "含数字", "错误提示"],
+"method": "ocr"
 ```
+
+**文本量不受限**：OCR 原文全量返回（服务端不截断、客户端不 trim 中间、不限行数/字数）；
+OCR 读空时才用 VLM 兜底，兜底预算 4000 token，提示词明令「有多少读多少，禁止概括/省略」。
 
 `labels` 取值（通用派生，不含业务知识）：`含中文` `含英文` `含数字` `错误提示` `含链接` `含时间` `含奖励` `多行文本` `长文本`。
 
 `method`：`ocr` / `vlm` / `none`。
 
-### 3.5 `feature` 的结果项
+### 3.6 `feature` 的字段
 
 ```json
-{ "image": "img1",
-  "features": [{ "id": "diamond", "name": "钻石", "method": "template", "score": 0.91 }],
-  "description": "画面展示一张植物卡片：瓷砖萝卜；右下角有钻石图标 ×334。",
-  "method": "template+vlm" }
+"features": [{ "id": "diamond", "name": "钻石", "method": "template", "score": 0.91 }],
+"description": "画面展示一张植物卡片：瓷砖萝卜；右下角有钻石图标 ×334。",
+"method": "template+vlm"
 ```
+
+`description` 长度由 `maxDescChars` 控制：默认 200 字、传 `0` = 不限、传 `null`/空 = 用默认。
+提示词里写「总长度控制在 N 字以内」，并按字数换算输出预算。
 
 `method`：`template` / `vlm` / `template+vlm` / `none`。
 
@@ -185,8 +232,10 @@ const result = await recognize(input);
 | 不静默 | 被跳过、被降级的都有记录 |
 | 幂等 | 同图同任务同参数 → 命中缓存，结果一致 |
 | 不漏报 | 模型漏答的意图补 `confidence: 0, missing: true` |
-| 参数错才 `ok:false` | 只缺 `task` / `images` / 未知任务类型 |
+| 不丢图 | 每张输入图都有一条结果行（被预筛挡下的带 `skipped` 原因） |
+| 参数错才 `ok:false` | 只缺 `images` / 未知任务类型 |
 | 组合共享下载 | `tasks:['text','feature']` 只下载一次图 |
+| 判定最省 | 纯 `match` 不跑 VLM 二分类、不读字、不描述，每图仅 1 次模型调用 |
 
 ---
 
@@ -205,8 +254,8 @@ const result = await recognize(input);
 | `ocrHealth(config)` / `ocrImage(img, opts)` / `ocrImages(imgs, opts)` | OCR |
 | `matchImage(img, templates, opts)` / `matchImages(...)` | 模板匹配 |
 | `prefilter(images, opts)` / `qualityPrefilter(...)` / `vlmBinaryPrefilter(...)` / `parseBinaryAnswer(text)` | 预筛 |
-| `tryParseJson(text)` / `toConfidence(v)` | 模型输出解析 |
+| `tryParseJson(text)` / `toConfidence(v)` / `salvageJsonObjects(text)` | 模型输出解析（后者用于抢救被截断的 JSON） |
 | `deriveLabels(text)` | 文字标签派生 |
-| `buildMatchPrompt(intents, opts)` / `normalizeMatchResult(parsed, intents, opts)` | `match` 细节 |
-| `buildFeaturePrompt(hint)` | `feature` 提示词 |
-| `TASKS` | `['match','text','feature']` |
+| `buildMatchPrompt(intents, opts)` / `normalizeMatchResult(parsed, intents, opts)` / `matchMaxTokens(n)` | `match` 细节 |
+| `buildFeaturePrompt(hint, opts)` / `tokensForChars(n)` / `DEFAULT_MAX_DESC_CHARS` | `feature` 细节 |
+| `TASKS` / `AUTO` / `AUTO_RICH_CHARS` | `['match','text','feature']` / `'auto'` / `20` |

@@ -77,8 +77,10 @@ console.log('\n== 识别器全关 → 空结果不抛错 ==');
   });
   globalThis.fetch = realFetch;
   t('组合任务 ok', r.ok === true);
-  t('text 结果为空文本', r.results.text[0].text === '');
-  t('feature 结果为空描述', r.results.feature[0].description === '');
+  // 2026-11-25 起结果统一「一图一条」：text/description/features 都在同一行
+  t('结果一图一条', Array.isArray(r.results) && r.results.length === 1);
+  t('text 结果为空文本', r.results[0].text === '' && r.results[0].chars === 0);
+  t('feature 结果为空描述', r.results[0].description === '');
   t('有降级说明', r.meta.degraded.length >= 1);
 }
 

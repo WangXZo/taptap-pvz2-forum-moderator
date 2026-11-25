@@ -36,10 +36,14 @@ collect.mjs 取帖（feed item 含 topic.footer_images）
       ├ loadTemplates(config)          读本 skill 的 assets/game-features 模板库
       └ recognize({ tasks:['text','feature'], images:[item], extractor:extractImages,
                     prompt: PVZ2_PROMPT, templates, options:{ ocr, features, vision:{enabled,temperature,…}, prefilter }})
-            → 识图 skill：预筛 → OCR/模板/VLM → 结构化结果
+            → 识图 skill：预筛 → OCR/模板/VLM → 结构化结果（**一图一条**）
       → 汇总 text + features + celebrate → 回灌 post.text
   └ post.text/imageText/images/imageSources → looksQ / QA匹配 / websearch / composeReply
 ```
+
+> 本 skill **显式传 `tasks:['text','feature']`，不用识图 skill 的 auto**（2026-11-25）：
+> auto 会按文字量二选一（文字图不做特征），而 PVZ2 需要**模板匹配**来认植物/奖励图标、判定庆祝场景，
+> 这跟有没有文字无关。显式传任务时识图 skill 仍会"文字已读够就不再做 VLM 描述"，该省的照省。
 
 **注入关系**（单向，不互相依赖）：
 
@@ -123,6 +127,7 @@ python scripts/rerank_server.py --port 8790
 - `ocr.server` / `features.server` 指向**识图 skill** 的服务（8791）；`rerank.server` 指向**本 skill** 的服务（8790）。
 - 相关性门控：求助意图/正文短→相关；正文长且明确→配图跳过；判不明默认按相关（`unknownAsRelevant`）。
 - 预筛：`quality`=免费质量预筛；`vlmBinary`=先用 VLM 问「这图有信息吗」，无信息就不做后续识别（省成本）。都可关。
+  注意：识图 skill 在 **auto / 纯 match** 场景会跳过 `vlmBinary`；本 skill 是显式 `text`+`feature`，仍按此配置跑。
 - 缓存：`data/image-cache.json`，按图指纹 + 任务签名，TTL `cacheTtlHours`（默认 168h），避免重复识别省钱。
 
 ## 7. 扩展游戏特征模板库
@@ -161,8 +166,8 @@ python scripts/rerank_server.py --port 8790
 | `test-vision-channel` | 25 | 本 skill `llm.mjs` 多模态拼装 + 识图 skill 消费注入渠道 |
 | `test-features` | 19 | 本 skill 读模板库 + 识图 skill 消费传入模板 |
 
-> 识图 skill 自带 `test/test-all.mjs`（110 断言，覆盖三类任务、预筛、资料层、组合任务、降级语义）。
-> 全套 `npm test`（79 套）。
+> 识图 skill 自带 `test/test-all.mjs`（209 断言，覆盖三类任务、auto 分流、预筛、资料层、组合任务、降级语义）。
+> 全套 `npm test`（80 套）。
 
 ## 10. 已知限制 / 后续
 

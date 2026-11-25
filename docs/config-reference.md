@@ -79,7 +79,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 图片识别 | `image.vision.enabled` | `boolean` | `true` | — | VLM 启用 |
 | 图片识别 | `image.features.enabled` | `boolean` | `true` | — | 模板库在本 skill 的 assets/game-features，运行时传给识图 skill |
 | 图片识别 | `image.prefilter.quality` | `boolean` | `true` | — | 免费的预筛：无图 / 体积过小 / 本批重复 → 不识别 |
-| 图片识别 | `image.prefilter.vlmBinary` | `boolean` | `true` | — | 先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关） |
+| 图片识别 | `image.prefilter.vlmBinary` | `boolean` | `true` | — | 先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关）。识图 skill 在 auto / 纯判断场景会自动跳过它；本 skill 传的是显式 text+feature，故按此配置生效 |
 | 夸奖通道 | `praise.enabled` | `boolean` | `true` | — | 提问帖里已有好答案 → 在那条评论下盖楼夸一句 |
 | 夸奖通道 | `praise.signature` | `boolean` | `true` | — | 带签名 |
 | 夸奖通道 | `praise.minScore` | `integer` | `1` | ≥ 1，≤ 10 | 最低有效分 |
@@ -384,7 +384,7 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
   免费的预筛：无图 / 体积过小 / 本批重复 → 不识别
   默认 `true`
 - **`image.prefilter.vlmBinary`** — VLM 二分类预筛
-  先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关）
+  先问模型「这图有信息吗」，无信息就不做后续识别（省成本，可关）。识图 skill 在 auto / 纯判断场景会自动跳过它；本 skill 传的是显式 text+feature，故按此配置生效
   默认 `true`
 
 ### 夸奖通道 · `praise`
@@ -782,4 +782,4 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 ---
 
-生成时间：2026-11-24 08:34:46
+生成时间：2026-11-25 02:33:43
