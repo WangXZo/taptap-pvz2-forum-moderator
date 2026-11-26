@@ -1,11 +1,14 @@
 #!/usr/bin/env node
-// 答疑库管理工具（答疑库的增删改查 + 灾备重建）
+// 答疑库管理工具（增删改查 + 提交管道 + 灾备重建）
 //
 // 用法：node scripts/qa-admin.mjs <子命令> [参数]
+//   submit    --question <问法> --answer-file <文件>        ★ 推荐：提交一条问答
+//             （或 --answer "…"；可带 --source --keywords --no-split --dry-run）
+//             自动：质量闸 → 拆要点 → 合并 → 原子写入 qa/entries/
 //   show      [--source <url>] [--contains <关键词>]   查看条目
 //   append    --source <url> --question <问法> --keywords <词,逗号分隔>
 //             --answer <答案> [--from <摘自>] [--version 通用]
-//             [--answer-file <文件>]                     追加一条问答（原子写 + 来源去重）
+//             [--answer-file <文件>]                     追加一条（写 qa/entries/）
 //   keywords  --source <url> --keywords <词,逗号分隔>   改某条目的关键词
 //   register  --source <url> --question <问法>           登记使用统计（手工条目必做）
 //   rebuild                                            从 data/qa-usage.json 的来源重建沉淀条目
@@ -14,6 +17,9 @@
 //   purge-junk [--apply]                               剔除「广告/灌水/分享」等垃圾条目（默认只体检）
 //
 // 说明：
+//   · 2026-11-25 起答疑库是**一条一文件**（qa/entries/<id>.md），运行时优先读目录；
+//     单文件 qa/答疑库.md 只是兼容回退，别再往里写
+//   · 手工加的条目**必须**再跑一次 register，否则 30 天后会被归档（因为它没有引用记录）
 //   * 所有路径都来自 scripts/config.json（跟着 skill 目录走），拷给别人照样能用
 //   * 手工加的条目**必须**再跑一次 register，否则 30 天后会被归档（因为它没有引用记录）
 //   * 答案里的 \n 会被还原成换行；也可用 --answer-file 读文件
@@ -35,7 +41,7 @@ import { entryKeyOf } from './lib/usage.mjs';
 import { tagsFromConfig, purgeTagged } from './lib/qa-health.mjs';
 import { purgeJunk, compilePatterns, DEFAULT_JUNK_PATTERNS } from './lib/qa-junk.mjs';
 import { maskQa } from './publish-repo.mjs';
-import { readAllEntries, slugId, writeEntryFile } from './lib/qa-entry.mjs';
+import { readAllEntries, slugId, writeEntryFile, sourcesOfEntry } from './lib/qa-entry.mjs';
 import { mergeClaims } from './lib/qa-merge.mjs';
 import { splitClaims, seedClaimConfidence } from './lib/qa-split.mjs';
 
@@ -100,27 +106,36 @@ async function cmdAppend() {
     console.error('缺参数：--source / --question / --keywords / --answer');
     process.exit(1);
   }
-  const raw = await readRaw();
-  if (raw.includes(source)) {
-    console.log('已存在同来源条目，跳过（要改内容请用 keywords 或直接编辑文件）');
+
+  // ⚠️ 2026-11-25：必须写进 entries/ 目录 —— 运行时优先读目录，
+  //    再写旧的单文件等于写进黑洞（页面上永远看不到）。
+  const entriesDir = expand(config.collab?.entriesDir || '{{SKILL}}/qa/entries');
+  const existing = await readAllEntries(entriesDir);
+  if (existing.some((e) => sourcesOfEntry(e).includes(source))) {
+    console.log('已存在同来源条目，跳过（要改内容请用 submit 或直接编辑条目文件）');
     process.exit(0);
   }
+
   const now = new Date();
   const p = (n) => String(n).padStart(2, '0');
-  const ts = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())} ${p(now.getHours())}:${p(now.getMinutes())}:${p(now.getSeconds())}`;
+  const dateStr = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
   const from = arg('from');
   const version = arg('version', '通用');
-  const block =
-    `\n## 问：${question}\n` +
-    `- 关键词：${keywords}\n` +
-    `- 版本：${version}\n` +
-    `- 来源：${source}\n` +
-    `- 总结时间：${ts}\n` +
-    (from ? `- 摘自：${from}\n` : '') +
-    `---\n${answer}\n`;
-  await writeRaw(raw.replace(/\s*$/, '\n') + block);
-  const count = (splitBlocks(await readRaw()).filter((b) => /^##\s/m.test(b))).length;
-  console.log(`已追加：${question.slice(0, 30)}（当前 ${count} 条）`);
+
+  const entry = {
+    id: slugId(question),
+    question,
+    keywords: keywords.split(/[,，、;；\s]+/).map((s) => s.trim()).filter(Boolean),
+    version,
+    confidence: null, // 不写 → 由 qa.mjs 按来源性质补默认（有来源=50）
+    updated: dateStr,
+    source,
+    author: from || '',
+    claims: [{ text: String(answer).trim(), confidence: 50, sources: [source] }],
+  };
+  const name = await writeEntryFile(entriesDir, entry, { overwrite: false });
+  const count = (await readAllEntries(entriesDir)).length;
+  console.log(`已追加：${question.slice(0, 30)} → ${name}（当前 ${count} 条）`);
   console.log('提醒：手工条目还要跑一次 register，否则 30 天后会被归档');
 }
 

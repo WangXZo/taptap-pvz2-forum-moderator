@@ -287,7 +287,7 @@
     }},
     "paths": { "label": "文件路径（内部）", "description": "⚠️ 内部字段，一般不用改。`{{SKILL}}` 会展开成 skill 根目录，所以 skill 换位置也不用改这里", "fields": {
       "dataDir": { "type": "string", "default": "{{SKILL}}/data", "label": "数据目录" },
-      "qaFile": { "type": "string", "default": "{{SKILL}}/qa/答疑库.md", "label": "答疑库文件" },
+      "qaFile": { "type": "string", "default": "{{SKILL}}/qa/答疑库.md", "label": "答疑库文件（兼容回退）", "description": "⚠️ 2026-11-25 起答疑库改为一条一文件（collab.entriesDir）；此单文件仅作兼容回退 —— entries/ 为空时才读它，新内容别写这里" },
       "usageFile": { "type": "string", "default": "{{SKILL}}/data/qa-usage.json", "label": "引用统计" },
       "archiveDir": { "type": "string", "default": "{{SKILL}}/qa/归档", "label": "归档目录" },
       "stateFile": { "type": "string", "default": "{{SKILL}}/data/state.json", "label": "守护状态" },

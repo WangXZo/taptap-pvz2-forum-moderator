@@ -8,9 +8,9 @@
 //
 // 退出码：0 = 全绿；1 = 有问题（每条都给出怎么修）
 
-import { readFile, access, stat } from 'node:fs/promises';
+import { readFile, access, stat, readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
-import { loadConfig, SKILL_ROOT } from './lib/paths.mjs';
+import { loadConfig, SKILL_ROOT, expand } from './lib/paths.mjs';
 import { loadQaLibrary } from './lib/qa.mjs';
 import { scanTagged, tagsFromConfig } from './lib/qa-health.mjs';
 import { resolveOpencliMain, makeRunner, doctorOk } from './lib/replier.mjs';
@@ -142,9 +142,37 @@ try {
   ok(`加载成功：${qa.length} 条（社区沉淀 ${auto} 条 / 人工 ${qa.length - auto} 条）`);
   if (qa.length < 10) warn1('条目偏少', '命中率会低 —— 见 qa/待补充问题.md，认领几条补上');
 
+  // 形态：条目目录（新）vs 单文件（兼容回退）
+  const entriesDir = expand(config.collab?.entriesDir || '{{SKILL}}/qa/entries');
+  let entryFiles = [];
+  try {
+    entryFiles = (await readdir(entriesDir)).filter((f) => f.endsWith('.md'));
+  } catch {
+    /* 目录不存在 */
+  }
+  if (entryFiles.length) {
+    const withClaims = qa.filter((e) => (e.claims || []).length).length;
+    const multi = qa.filter((e) => (e.claims || []).length > 1).length;
+    ok(`形态：一条一文件（qa/entries/ ${entryFiles.length} 个文件，${withClaims} 条有要点，${multi} 条多要点）`);
+  } else {
+    warn1('答疑库还是旧的单文件形态', 'qa/entries/ 为空 → 运行时退回读 qa/答疑库.md。迁移：node scripts/qa-split-once.mjs --apply');
+  }
+
+  // 要点质量：拆过要点、但要点上没有来源 → 置信度只能吃默认值
+  // 注意：整段回退的条目（没拆要点）不算 —— 它的来源在条目级，不是缺
+  const noSrc = qa.filter((e) => (e.claims || []).length > 1 && e.claims.some((c) => !(c.sources || []).length));
+  if (noSrc.length && entryFiles.length) {
+    console.log(`      ${noSrc.length} 条「多要点但要点缺来源」（置信度只能按默认）—— 有出处就补 - 来源:`);
+  }
+
   // 带自己标签的脏条目（曾经的 bug：把自己的夸奖沉淀成答案）
-  const raw = await readFile(config.paths.qaFile, 'utf8');
-  const hits = scanTagged(raw, tagsFromConfig(config)).hits;
+  // 兼容两形态：目录就逐文件扫，单文件就整体扫
+  const targets = entryFiles.length ? entryFiles.map((f) => join(entriesDir, f)) : [config.paths.qaFile];
+  let hits = [];
+  for (const t of targets) {
+    const raw = await readFile(t, 'utf8').catch(() => '');
+    hits = hits.concat(scanTagged(raw, tagsFromConfig(config)).hits);
+  }
   if (hits.length) {
     warn1(`有 ${hits.length} 条携带自己标签的条目`, 'node scripts/qa-admin.mjs purge-tag --apply  清掉');
     hits.slice(0, 3).forEach((h) => console.log(`      《${h.question.slice(0, 24)}》 命中「${h.tag}」`));
@@ -152,7 +180,7 @@ try {
     ok('没有携带自己标签的脏条目');
   }
 } catch (e) {
-  bad1(`答疑库读不了：${e.message}`, '检查 qa/答疑库.md 是否存在、格式是否正确');
+  bad1(`答疑库读不了：${e.message}`, '检查 qa/entries/ 或 qa/答疑库.md 是否存在、格式是否正确');
 }
 
 // ---------- 6. 运行时目录 ----------

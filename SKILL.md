@@ -44,18 +44,13 @@ opencli doctor
 # 2) 拿自己的 user_id（用于判断「是否已回复」），填进 scripts/config.json
 node scripts/whoami.mjs
 
-# 3) 写答疑库：直接编辑 qa/答疑库.md（格式见 assets/qa-library.example.md）
+# 3) 写答疑库：一条一文件写进 qa/entries/（格式见 assets/qa-library.example.md）
+#    也可以一条命令提交（自动质量闸 + 拆要点 + 合并）：
+#    node scripts/qa-admin.mjs submit --question "…" --answer-file 答案.md
 
-# 4) 全部自检（改规则前后都要跑，28 套）
-node scripts/test-api-contents.mjs && node scripts/test-archive.mjs && node scripts/test-code-match-templates.mjs && \
-node scripts/test-cold-store.mjs && node scripts/test-collect-scope.mjs && node scripts/test-comfort.mjs && \
-node scripts/test-complaint.mjs && node scripts/test-doctor-ok.mjs && node scripts/test-interact.mjs && \
-node scripts/test-limits-codes.mjs && node scripts/test-match.mjs && node scripts/test-mod-task.mjs && \
-node scripts/test-post-records.mjs && node scripts/test-praise.mjs && node scripts/test-publish-mask.mjs && \
-node scripts/test-qa-health.mjs && node scripts/test-qa-vector.mjs && node scripts/test-question.mjs && \
-node scripts/test-removed-list.mjs && node scripts/test-review-api.mjs && node scripts/test-scene-feedback.mjs && \
-node scripts/test-summarize.mjs && node scripts/test-summon.mjs && node scripts/test-thread-context.mjs && \
-node scripts/test-variants.mjs && node scripts/test-watch-semantics.mjs && node scripts/test-watch-queue.mjs && node scripts/test-websearch.mjs
+# 4) 全部自检（改规则前后都要跑，81 套）
+npm test
+node scripts/qa-lint.mjs            # 条目格式校验
 
 # 5) 跑一轮（判定 + 预览回复，不发送）
 node scripts/watch.mjs --once --dry-run

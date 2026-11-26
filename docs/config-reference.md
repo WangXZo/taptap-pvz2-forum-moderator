@@ -191,7 +191,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 守护循环 | `watch.minOpGapMs` | `integer` | `300` | ≥ 0，≤ 60000 | 操作最小间隔(ms) |
 | 守护循环 | `watch.wafCooldownMinutes` | `integer` | `15` | ≥ 1，≤ 1440 | WAF 冷却分钟 |
 | 文件路径（内部） | `paths.dataDir` | `string` | `"{{SKILL}}/data"` | — | 数据目录 |
-| 文件路径（内部） | `paths.qaFile` | `string` | `"{{SKILL}}/qa/答疑库.md"` | — | 答疑库文件 |
+| 文件路径（内部） | `paths.qaFile` | `string` | `"{{SKILL}}/qa/答疑库.md"` | — | ⚠️ 2026-11-25 起答疑库改为一条一文件（collab.entriesDir）；此单文件仅作兼容回退 —— entries/ 为空时才读它，新内容别写这里 |
 | 文件路径（内部） | `paths.usageFile` | `string` | `"{{SKILL}}/data/qa-usage.json"` | — | 引用统计 |
 | 文件路径（内部） | `paths.archiveDir` | `string` | `"{{SKILL}}/qa/归档"` | — | 归档目录 |
 | 文件路径（内部） | `paths.stateFile` | `string` | `"{{SKILL}}/data/state.json"` | — | 守护状态 |
@@ -764,7 +764,8 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 - **`paths.dataDir`** — 数据目录
   默认 `"{{SKILL}}/data"`
-- **`paths.qaFile`** — 答疑库文件
+- **`paths.qaFile`** — 答疑库文件（兼容回退）
+  ⚠️ 2026-11-25 起答疑库改为一条一文件（collab.entriesDir）；此单文件仅作兼容回退 —— entries/ 为空时才读它，新内容别写这里
   默认 `"{{SKILL}}/qa/答疑库.md"`
 - **`paths.usageFile`** — 引用统计
   默认 `"{{SKILL}}/data/qa-usage.json"`
@@ -837,4 +838,4 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 ---
 
-生成时间：2026-11-25 09:55:09
+生成时间：2026-11-26 02:29:33

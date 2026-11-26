@@ -255,7 +255,9 @@ npm uninstall -g @jackwener/opencli @taptap/cli
     lib/                   内核模块
     plugins/               通道插件
     workers/               发送线程
-  qa/答疑库.md              知识库
+  qa/entries/              知识库（一条一文件，要点级置信度）
+  qa/答疑库.md             旧单文件形态（兼容回退：entries/ 为空时才读）
+  playbook/                经验沉淀（踩坑/答疑库治理/识图调优/运营SOP）
   references/              详细文档
   docs/                    安装与配置文档（本目录）
   data/                    运行数据（自动创建）

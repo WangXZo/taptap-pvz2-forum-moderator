@@ -36,22 +36,37 @@
 
 ## 答疑库在哪
 
-**仓库里有一份脱敏副本**（`qa/答疑库.md`）—— 发布时由 `publish-repo.mjs` 自动脱敏后覆盖：
+答疑库是**一条一文件**（2026-11-25 起）：`qa/entries/<id>.md`，一个文件一个问题。
+这样多人同时补内容不会撞 git 冲突，评审也看得出改了哪条。
+
+**仓库里有一份脱敏副本**（`qa/entries/`）—— 发布时由 `publish-repo.mjs` 自动脱敏后覆盖：
 「摘自」的玩家昵称、好友码、天宫码都会被遮罩，答案正文保持可读。
 
 你运行时用的是 **运行目录** 里那份：
 
 ```
-~/.dsh/skills/taptap-pvz2-forum-moderator/qa/答疑库.md
+~/.dsh/skills/taptap-pvz2-forum-moderator/qa/entries/<id>.md
 ```
 
-- 新建：`cp assets/qa-library.example.md qa/答疑库.md`
-- 格式见 [assets/qa-library.example.md](assets/qa-library.example.md)
+**怎么加一条**（推荐用命令，会自动过质量闸 + 拆要点 + 合并）：
+
+```bash
+node scripts/qa-admin.mjs submit --question "买了塔黄无尽用什么好" --answer-file 答案.md
+```
+
+也可以直接手写条目文件，格式见 [assets/qa-library.example.md](assets/qa-library.example.md)。
+
+- 一个答案会被拆成**多个要点**，每点带自己的置信度与来源
+- 多来源对同一点佐证 → 置信度自动聚合（2 源=70，官方=95）
+- 新答案**不会覆盖**已有高置信度要点，只会作为补充要点并列
 - 守护进程会**自动往里沉淀**社区已答的问题（社区沉淀条目匹配分 ×0.9，低于人工条目）
 - 每 24 小时体检一次，剔除「正文里带我们自己签名」的脏条目
 - **想把自己的沉淀分享出去**：`node scripts/publish-repo.mjs --repo <仓库目录>`
   —— 它脱敏后写进仓库，并扫一遍个人信息（有真值就当场拦下）
-- **想把仓库的新问答拿回运行目录**：`node scripts/qa-sync.mjs --to-runtime --apply`
+- **想把仓库/别人的新问答拿回来**：`node scripts/qa-merge.mjs --apply`（每日自动跑一次）
+
+> `qa/答疑库.md`（单文件）是**旧形态**，仅作兼容回退 —— `qa/entries/` 为空时才会读它。
+> 新内容别再写进单文件（写了运行时也看不到）。
 
 > ⚠️ **永远不要手工用仓库副本覆盖运行中的库** ——
 > 历史教训：一夜自动沉淀的 10 条被旧副本冲没了。
@@ -232,7 +247,7 @@ node scripts/emoji-map.mjs              # 采集「表情名 → id」表
 node scripts/report-gaps.mjs            # 生成「待补充问题清单」
 ```
 
-### 自检（改规则前后必跑，33 套）
+### 自检（改规则前后必跑，81 套）
 
 ```bash
 npm test

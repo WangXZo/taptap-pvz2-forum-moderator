@@ -106,7 +106,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\schedule.ps1 -Action
 **不要带**：`data/`、`reports/`、`logs/`、`scripts/node-path.txt`、`qa/答疑库.md.backup.md`、`qa/答疑库.md.before-*`、`qa/答疑库.md.before-purge-*`、`qa/归档/`
 
 > `scripts/` 里包含两个管理 CLI（`qa-admin.mjs` / `post-admin.mjs`）、DOM 探针（`probe-dom.mjs`）、
-> 28 套回归测试，以及部署脚本（`schedule.ps1` / `run-watch.cmd`）—— 都随 skill 走，别人拿到就能用。
+> 81 套回归测试，以及部署脚本（`schedule.ps1` / `run-watch.cmd`）—— 都随 skill 走，别人拿到就能用。
 > 用法见 `references/admin.md`。
 
 > ⚠️ **答疑库的方向永远是「运行中的那份 → 构建源 / 留档」，不能反着来。**

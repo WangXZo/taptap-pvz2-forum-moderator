@@ -167,7 +167,7 @@ python scripts/rerank_server.py --port 8790
 | `test-features` | 19 | 本 skill 读模板库 + 识图 skill 消费传入模板 |
 
 > 识图 skill 自带 `test/test-all.mjs`（209 断言，覆盖三类任务、auto 分流、预筛、资料层、组合任务、降级语义）。
-> 全套 `npm test`（80 套）。
+> 全套 `npm test`（81 套）。
 
 ## 10. 已知限制 / 后续
 
