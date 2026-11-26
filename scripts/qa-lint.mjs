@@ -76,7 +76,10 @@ for (const f of files) {
         bad(f, `要点置信度越界：${c.confidence}（${c.text.slice(0, 20)}）`);
       }
       for (const s of c.sources || []) {
-        if (!/^https?:\/\//i.test(s)) bad(f, `来源不是链接：${s}`);
+        // 允许人工标注的来源（如「玩家论坛社区」）；只对「看起来像网址但不合法」的报警
+        if (/^https?:\/\//i.test(s)) continue;
+        if (/^(玩家论坛社区|社区|人工|官方公告|版主确认)$/.test(s)) continue;
+        if (/^[a-z]+:\/\//i.test(s)) bad(f, `来源协议不对：${s}`);
       }
     }
   }

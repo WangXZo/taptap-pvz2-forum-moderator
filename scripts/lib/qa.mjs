@@ -62,7 +62,8 @@ export function entryToQa(entry) {
     summarizedAt: entry.updated || null,
     confidence,
     confidenceLabel: entryConfLabelOf(confidence),
-    auto: !!entry.source,
+    // 「自动沉淀」= 有**真实网页链接**的来源。人工标注的来源（如「玩家论坛社区」）不算，不给它打折
+    auto: /^https?:\/\//i.test(String(entry.source || '')),
     semanticConfirm: !!entry.semanticConfirm,
     answer,
     id: entry.id,            // 稳定 id（不再随问法漂移）
@@ -172,7 +173,8 @@ export function parseQa(raw) {
       // 没写：人工条目 95（可信，人复核过）/ 社区沉淀 50（中置信度，玩家说法）
       confidence: confidence === null ? (source ? 50 : 95) : confidence,
       confidenceLabel: confLabelOf(confidence === null ? (source ? 50 : 95) : confidence),
-      auto: !!source, // 自动沉淀 → 匹配时打折（低于人工条目）
+      // 只有真实网页链接才算自动沉淀（会打折 ×0.9）；人工标注来源不打折
+      auto: /^https?:\/\//i.test(String(source || '')),
       semanticConfirm,
       answer,
       id: slug(question),
