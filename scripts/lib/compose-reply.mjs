@@ -252,6 +252,64 @@ export function condenseMaterial(qaHits = [], { query = '', maxEntries = 3 } = {
 }
 
 /**
+ * 资料库（qa/资料/）按需加载 + 匹配（2026-11-26）
+ *
+ * 为什么放在这里而不是让调用方传：
+ *   调用点有多个（reply / post-admin / 插件），每个都加一遍参数容易漏。
+ *   放在这里 = 所有组答自动带上资料，且带缓存不会反复读盘。
+ *
+ * 资料库和答疑库的分工：
+ *   答疑库 = 「问 X → 答 Y」的现成答案（匹配到直接照答）
+ *   资料库 = 机制/流程/规则的事实基础（当参考材料，模型自己组织话）
+ */
+let _docCache = null;
+let _docCacheAt = 0;
+let _docCacheDir = '';
+
+async function getDocMaterials(dir) {
+  const now = Date.now();
+  if (_docCache && _docCacheDir === dir && now - _docCacheAt < 60000) return _docCache;
+  const { loadMaterials } = await import('./qa-materials.mjs');
+  const docs = await loadMaterials(dir);
+  _docCache = docs;
+  _docCacheAt = now;
+  _docCacheDir = dir;
+  return docs;
+}
+
+/** 测试用：清资料缓存 */
+export function _resetDocMaterialsCache() {
+  _docCache = null;
+  _docCacheAt = 0;
+  _docCacheDir = '';
+}
+
+/**
+ * 把命中的资料整理成「参考资料」块
+ * @returns {Promise<string>} 空字符串 = 没命中/没启用
+ */
+export async function buildDocMaterial(config = {}, query = '') {
+  if (config?.qa?.materials?.enabled === false) return '';
+  const qaFile = config?.paths?.qaFile;
+  if (!qaFile) return '';
+  try {
+    const { dirname, join } = await import('node:path');
+    const dir = config?.qa?.materials?.dir || join(dirname(qaFile), '资料');
+    const docs = await getDocMaterials(dir);
+    if (!docs.length) return '';
+    const { matchMaterials, formatMaterials } = await import('./qa-materials.mjs');
+    const hits = matchMaterials(query, docs, {
+      topN: Number(config?.qa?.materials?.topN ?? 2),
+      minScore: Number(config?.qa?.materials?.minScore ?? 8),
+    });
+    if (!hits.length) return '';
+    return formatMaterials(hits, { maxCharsPerSection: Number(config?.qa?.materials?.maxCharsPerSection ?? 400) });
+  } catch {
+    return ''; // 资料读不了不影响组答
+  }
+}
+
+/**
  * 生成一条回复
  *
  * @param {object} o
@@ -302,6 +360,9 @@ export async function composeReply({
     ...ctx.chain.map((n) => `${n.title || ''} ${n.text || ''}`),
   ].join(' ');
   const material = materialOverride != null ? materialOverride : condenseMaterial(qaHits, { query: topicForMatch });
+  // 资料库（qa/资料/）：机制/流程/规则类事实，作为**参考材料**（不是答案）
+  const docMaterial = await buildDocMaterial(config, topicForMatch);
+  const materialAll = [material, docMaterial].filter(Boolean).join('\n');
   // 图片识别内容（S5，2026-11-16）：帖子文本里的 [图片内容] 是 OCR/看图来的二手信息，按 50% 置信度框定。
   const hasImageContent =
     /\[图片内容\]/.test(ctx.target?.text || '') || ctx.chain.some((n) => /\[图片内容\]/.test(n?.text || ''));
@@ -317,8 +378,8 @@ export async function composeReply({
     '',
     `## 这次的任务`,
     TASK_BRIEF[finalKind] || TASK_BRIEF.answer,
-    material
-      ? `\n## 参考资料（已按本楼话题挑出相关部分，**仅供参考**：用自己的话讲，不许照抄、不许整段搬）\n${material}`
+    materialAll
+      ? `\n## 参考资料（已按本楼话题挑出相关部分，**仅供参考**：用自己的话讲，不许照抄、不许整段搬）\n${materialAll}`
       : '',
     webNote
       ? `\n## 听来的二手说法（不是官方口径，信任度按 50%）\n` +

@@ -238,6 +238,12 @@
       "model": "",
       "note": "char=字符n-gram TF-IDF（默认，零依赖）；http=接本地 embeddings 服务（OpenAI 兼容接口），失败自动退回 char"
     },
+    "materials": {
+      "enabled": true,
+      "topN": 2,
+      "minScore": 8,
+      "maxCharsPerSection": 400
+    },
     "vectorNote": "答疑库相似度检索：相似度项 = max(bigram dice, 向量余弦)。向量只加分不扣分，且最多贡献 0.4 —— 光靠向量到不了 autoReplyScore，不会因误召回而自动发错答案。"
   },
   "collab": {

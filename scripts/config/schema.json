@@ -299,7 +299,11 @@
     "qa": { "label": "答疑库检索", "description": "答疑库相似度检索的向量设置", "fields": {
       "vector.backend": { "type": "string", "enum": ["char", "http"], "default": "char", "label": "向量后端", "description": "char = 字符 n-gram TF-IDF（零依赖）；http = 接本地 embeddings 服务，失败自动退回 char" },
       "vector.endpoint": { "type": "string", "default": "", "label": "向量服务地址" },
-      "vector.model": { "type": "string", "default": "", "label": "向量模型名" }
+      "vector.model": { "type": "string", "default": "", "label": "向量模型名" },
+      "materials.enabled": { "type": "boolean", "default": true, "label": "资料库参与组答", "description": "qa/资料/ 里的机制/流程/规则当参考材料喂给 LLM；关掉则只用答疑库答案" },
+      "materials.topN": { "type": "integer", "default": 2, "min": 1, "max": 5, "label": "最多带几份资料" },
+      "materials.minScore": { "type": "integer", "default": 8, "min": 1, "max": 100, "label": "资料命中门槛", "description": "分数低于此值不参考（宁可不参考，也不拿错资料误导模型）" },
+      "materials.maxCharsPerSection": { "type": "integer", "default": 400, "min": 100, "max": 2000, "label": "单节资料字数上限" }
     }},
     "collab": { "label": "多人协作", "description": "多人提交代码、合并各自积累的答疑库、共享经验。⚠️ 每个人的 GitHub 渠道不一样，remotes 要按自己的情况改（access: gh-cli / api-token / git）", "fields": {
       "enabled": { "type": "boolean", "default": true, "label": "启用协作合并" },

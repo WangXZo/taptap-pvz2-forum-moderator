@@ -89,6 +89,7 @@ const DEFAULT_FILES = [
   'scripts/test-comfort.mjs',
   'scripts/test-publish-mask.mjs',
   'scripts/test-qa-collab.mjs',
+  'scripts/test-qa-materials.mjs',
   'playbook/踩坑.md',
   'playbook/写playbook的规范.md',
   'playbook/答疑库治理.md',
@@ -158,6 +159,7 @@ const DEFAULT_FILES = [
   'scripts/lib/qa-merge.mjs',
   'scripts/lib/qa-split.mjs',
   'scripts/lib/qa-github.mjs',
+  'scripts/lib/qa-materials.mjs',
   'scripts/lib/remove-post.mjs',
   'scripts/lib/replier.mjs',
   'scripts/lib/reply-nested.mjs',
@@ -673,6 +675,55 @@ async function main() {
       }
     } catch (e) {
       console.log(`  跳过 qa/entries/（${e.code || e.message}）`);
+    }
+  }
+
+  // 资料库（qa/资料/）：机制/流程/规则，同样逐个脱敏后写入
+  // 与 entries 一样不进白名单（文件会持续增加），扫目录复制
+  let docCount = 0;
+  if (!CHECK_ONLY) {
+    try {
+      const { readdir } = await import('node:fs/promises');
+      const srcDir = join(SKILL, 'qa', '资料');
+      const dstDir = join(REPO, 'qa', '资料');
+      const files = (await readdir(srcDir).catch(() => [])).filter((f) => f.endsWith('.md'));
+      if (files.length) {
+        await mkdir(dstDir, { recursive: true });
+        for (const f of files) {
+          const raw = await readFile(join(srcDir, f), 'utf8');
+          const masked = maskQa(raw);
+          qaNames.push(...(masked.names || []));
+          await writeFile(join(dstDir, f), masked.text, 'utf8');
+          docCount++;
+        }
+        console.log(`  写入 qa/资料/（${docCount} 份资料）`);
+      }
+    } catch (e) {
+      console.log(`  跳过 qa/资料/（${e.code || e.message}）`);
+    }
+  }
+
+  // 素材库（qa/素材/）：暂不能作答案但有信息量的原始内容
+  let rawCount = 0;
+  if (!CHECK_ONLY) {
+    try {
+      const { readdir } = await import('node:fs/promises');
+      const srcDir = join(SKILL, 'qa', '素材');
+      const dstDir = join(REPO, 'qa', '素材');
+      const files = (await readdir(srcDir).catch(() => [])).filter((f) => f.endsWith('.md'));
+      if (files.length) {
+        await mkdir(dstDir, { recursive: true });
+        for (const f of files) {
+          const raw = await readFile(join(srcDir, f), 'utf8');
+          const masked = maskQa(raw);
+          qaNames.push(...(masked.names || []));
+          await writeFile(join(dstDir, f), masked.text, 'utf8');
+          rawCount++;
+        }
+        console.log(`  写入 qa/素材/（${rawCount} 份素材）`);
+      }
+    } catch (e) {
+      console.log(`  跳过 qa/素材/（${e.code || e.message}）`);
     }
   }
 

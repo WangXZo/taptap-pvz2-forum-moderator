@@ -21,7 +21,7 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 
 **校验失败不阻断运行** —— 配置项写错只打警告，守护不会因此停摆。
 
-## 字段总览（共 190 项）
+## 字段总览（共 194 项）
 
 | 分组 | 键 | 类型 | 默认 | 范围 | 说明 |
 |---|---|---|---|---|---|
@@ -202,6 +202,10 @@ schema 默认值  <  scripts/config.json  <  scripts/config.local.json  <  环�
 | 答疑库检索 | `qa.vector.backend` | `char | http` | `"char"` | — | char = 字符 n-gram TF-IDF（零依赖）；http = 接本地 embeddings 服务，失败自动退回 char |
 | 答疑库检索 | `qa.vector.endpoint` | `string` | *(空)* | — | 向量服务地址 |
 | 答疑库检索 | `qa.vector.model` | `string` | *(空)* | — | 向量模型名 |
+| 答疑库检索 | `qa.materials.enabled` | `boolean` | `true` | — | qa/资料/ 里的机制/流程/规则当参考材料喂给 LLM；关掉则只用答疑库答案 |
+| 答疑库检索 | `qa.materials.topN` | `integer` | `2` | ≥ 1，≤ 5 | 最多带几份资料 |
+| 答疑库检索 | `qa.materials.minScore` | `integer` | `8` | ≥ 1，≤ 100 | 分数低于此值不参考（宁可不参考，也不拿错资料误导模型） |
+| 答疑库检索 | `qa.materials.maxCharsPerSection` | `integer` | `400` | ≥ 100，≤ 2000 | 单节资料字数上限 |
 | 多人协作 | `collab.enabled` | `boolean` | `true` | — | 启用协作合并 |
 | 多人协作 | `collab.entriesDir` | `string` | `"{{SKILL}}/qa/entries"` | — | 一条一文件（多人并行加条目不撞 git 冲突） |
 | 多人协作 | `collab.remote.owner` | `string` | *(空)* | — | 例：WangXZo |
@@ -793,6 +797,16 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
   默认 `""`
 - **`qa.vector.model`** — 向量模型名
   默认 `""`
+- **`qa.materials.enabled`** — 资料库参与组答
+  qa/资料/ 里的机制/流程/规则当参考材料喂给 LLM；关掉则只用答疑库答案
+  默认 `true`
+- **`qa.materials.topN`** — 最多带几份资料
+  默认 `2`
+- **`qa.materials.minScore`** — 资料命中门槛
+  分数低于此值不参考（宁可不参考，也不拿错资料误导模型）
+  默认 `8`
+- **`qa.materials.maxCharsPerSection`** — 单节资料字数上限
+  默认 `400`
 
 ### 多人协作 · `collab`
 
@@ -838,4 +852,4 @@ config.json 的**顶层**标量（这一组的字段不带前缀，直接就是�
 
 ---
 
-生成时间：2026-11-26 02:29:33
+生成时间：2026-11-26 06:35:57
