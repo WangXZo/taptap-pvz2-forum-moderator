@@ -4,8 +4,8 @@ reports/
 logs/
 scripts/node-path.txt
 
-# 答疑库：**随仓库分发**（发布时由 publish-repo.mjs 脱敏后写入 qa/答疑库.md）
-#   所以正文那份要提交；这里只忽略真正不该进库的东西
+# 答疑库：**一条一文件**（qa/entries/）随仓库分发，发布时由 publish-repo.mjs 逐个脱敏后写入
+#   单文件 qa/答疑库.md 只是本机回退，**不再发布**（2026-11-26 起）
 qa/待补充问题.md
 qa/归档/
 
