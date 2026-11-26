@@ -250,10 +250,55 @@ function formatTime(d) {
 }
 
 /**
- * 追加条目到 QA 库文件（只追加，不覆盖已有内容）
- * @returns {{added:boolean, reason?:string}}
+ * 追加条目到答疑库（只追加，不覆盖已有内容）
+ *
+ * ⚠️ 2026-11-26 修：以前只写单文件 `qa/答疑库.md`，但运行时已**优先读 `qa/entries/`**，
+ *    结果守护进程自动沉淀的条目写进单文件后**永远读不到**（实测 live 单文件 197 条、
+ *    entries 只有 193 条，4 条沉淀成了黑洞）。
+ *    现在：**写条目目录**（新真源）；单文件仅当条目目录不存在时才写（纯兼容）。
+ *
+ * @param {string} file 单文件路径（兼容）
+ * @param {object} entry 条目
+ * @param {object} [o] {entriesDir} 条目目录；不给则按 file 同级推导 entries/
+ * @returns {{added:boolean, reason?:string, where?:string}}
  */
-export async function appendQaEntry(file, entry) {
+export async function appendQaEntry(file, entry, o = {}) {
+  const { pathOfEntriesDir } = await import('./paths.mjs');
+  const entriesDir = o.entriesDir || pathOfEntriesDir(file);
+
+  // 优先写条目目录（一条一文件）
+  if (entriesDir) {
+    try {
+      const { readAllEntries, writeEntryFile, slugId, sourcesOfEntry } = await import('./qa-entry.mjs');
+      const existing = await readAllEntries(entriesDir);
+      // 去重：同一来源链接不重复收录
+      if (entry.source && existing.some((e) => sourcesOfEntry(e).includes(entry.source))) {
+        return { added: false, reason: 'source_exists', where: 'entries' };
+      }
+      const now = new Date();
+      const p = (n) => String(n).padStart(2, '0');
+      const dateStr = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+      const text = String(entry.answer || '').trim();
+      const newEntry = {
+        id: slugId(entry.question),
+        question: entry.question,
+        keywords: entry.keywords || [],
+        version: entry.version || '通用',
+        confidence: entry.confidence ?? null,
+        updated: dateStr,
+        source: entry.source || '',
+        author: entry.fromAuthor || '',
+        claims: [{ text, confidence: entry.confidence ?? 50, sources: entry.source ? [entry.source] : [] }],
+      };
+      await writeEntryFile(entriesDir, newEntry, { overwrite: false });
+      return { added: true, where: 'entries' };
+    } catch (e) {
+      // 目录写失败 → 回落单文件，别让沉淀直接丢
+      o.log?.(`  [沉淀] 写条目目录失败（${e.message}）→ 回落单文件`);
+    }
+  }
+
+  // 兼容：单文件
   const { readFile, writeFile, access } = await import('node:fs/promises');
   let raw = '';
   try {
@@ -262,9 +307,8 @@ export async function appendQaEntry(file, entry) {
   } catch {
     raw = '# 植物大战僵尸2 · 答疑库\n';
   }
-  // 去重：同一来源链接不重复收录
   if (entry.source && raw.includes(entry.source)) {
-    return { added: false, reason: 'source_exists' };
+    return { added: false, reason: 'source_exists', where: 'file' };
   }
   const kw = entry.keywords.length ? entry.keywords.join(', ') : '';
   const block =
@@ -277,5 +321,5 @@ export async function appendQaEntry(file, entry) {
     `- 摘自：${entry.fromAuthor}${entry.fromBadges?.length ? `（${entry.fromBadges.join('/')}）` : ''}\n` +
     `---\n${entry.answer}\n`;
   await writeFile(file, raw.replace(/\s*$/, '\n') + block, 'utf8');
-  return { added: true };
+  return { added: true, where: 'file' };
 }

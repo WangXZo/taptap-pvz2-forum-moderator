@@ -134,19 +134,20 @@ if (!verifyOnly) {
   console.log(`写入 ${wrote} 个，跳过已存在 ${skippedExisting} 个`);
 }
 
-// ── 校验：条目数一致 + 正文逐字相同 ──
+// ── 校验：条目数一致 + 正文无丢失 ──
+// ⚠️ 2026-11-26：已经拆过要点的条目，正文是 `## 要点` 段，不再等于原整段 ——
+//    对这类只校验「原文的实义字符覆盖」，不要求逐字相同（逐字比会大批误报）。
 const files = (await readdir(entriesDir).catch(() => [])).filter((f) => f.endsWith('.md'));
 let textMismatch = 0;
 let kwLost = 0;
 let confLost = 0;
 let checked = 0;
+let skippedAsserted = 0;
 for (const b of blocks) {
   const p = parseBlock(b);
   if (!p.question || !p.answer) continue;
-  let id = slugId(p.question);
-  // 与写入口径一致的 id 去重
   const idx = entries.findIndex((e) => e.question === p.question && e.answer === p.answer);
-  if (idx >= 0) id = entries[idx].id;
+  const id = idx >= 0 ? entries[idx].id : slugId(p.question);
   const f = join(entriesDir, `${id}.md`);
   let txt;
   try {
@@ -156,11 +157,28 @@ for (const b of blocks) {
   }
   const parsed = parseEntryFile(txt);
   checked++;
-  // 正文比对：文件正文（原样）应等于原块正文
-  const bodyInFile = parsed.body.replace(/^##\s*要点\s*$/m, '').trim();
-  if (bodyInFile !== p.answer) {
-    textMismatch++;
-    if (textMismatch <= 3) console.log(`  正文不一致：${id}\n    原：${p.answer.slice(0, 60)}\n    新：${bodyInFile.slice(0, 60)}`);
+  const hasClaimsSection = /^#{1,3}\s*要点\s*$/m.test(parsed.body || '');
+  if (hasClaimsSection) {
+    // 已拆要点 → 只查覆盖（原文实义字符是否都出现在要点里）
+    const src = new Set([...String(p.answer)].filter((ch) => !/[\s\p{P}\p{S}\d]/u.test(ch)));
+    let covered = 0;
+    const claimText = (parsed.claims || []).map((c) => c.text).join('');
+    for (const ch of src) if (claimText.includes(ch)) covered++;
+    const cov = src.size ? covered / src.size : 1;
+    // 阈值 80%：拆点会用玩家口气改写措辞，字符覆盖天然到不了 100%（实测 85~86% 属正常）；
+    // 真丢信息会远低于此。首次拆点的闸（qa-resplit 的 checkCoverage）仍是 90%，两处用途不同。
+    if (cov < 0.8) {
+      textMismatch++;
+      if (textMismatch <= 3) console.log(`  要点覆盖不足 ${(cov * 100).toFixed(0)}%：${id}`);
+    } else {
+      skippedAsserted++;
+    }
+  } else {
+    const bodyInFile = parsed.body.trim();
+    if (bodyInFile !== p.answer) {
+      textMismatch++;
+      if (textMismatch <= 3) console.log(`  正文不一致：${id}\n    原：${p.answer.slice(0, 60)}\n    新：${bodyInFile.slice(0, 60)}`);
+    }
   }
   if ((parsed.keywords || []).length !== p.keywords.length) {
     kwLost++;
@@ -172,8 +190,8 @@ for (const b of blocks) {
   }
 }
 
-console.log(`\n校验：比对 ${checked} 条`);
-console.log(`  正文逐字相同：${textMismatch === 0 ? '✅ 全对' : `❌ ${textMismatch} 条不一致`}`);
+console.log(`\n校验：比对 ${checked} 条（其中 ${skippedAsserted} 条已拆要点，按覆盖率查）`);
+console.log(`  正文/要点无丢失：${textMismatch === 0 ? '✅ 全对' : `❌ ${textMismatch} 条有问题`}`);
 console.log(`  关键词无丢失：${kwLost === 0 ? '✅' : `❌ ${kwLost} 条不一致`}`);
 console.log(`  置信度无丢失：${confLost === 0 ? '✅' : `❌ ${confLost} 条不一致`}`);
 console.log(`  条目数：源 ${blocks.length} → 目录 ${files.length}`);

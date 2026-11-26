@@ -158,11 +158,13 @@ try {
     warn1('答疑库还是旧的单文件形态', 'qa/entries/ 为空 → 运行时退回读 qa/答疑库.md。迁移：node scripts/qa-split-once.mjs --apply');
   }
 
-  // 要点质量：拆过要点、但要点上没有来源 → 置信度只能吃默认值
-  // 注意：整段回退的条目（没拆要点）不算 —— 它的来源在条目级，不是缺
-  const noSrc = qa.filter((e) => (e.claims || []).length > 1 && e.claims.some((c) => !(c.sources || []).length));
+  // 要点质量：**有来源的条目**，要点上却一个来源都没挂 → 来源没落到要点级
+  // ⚠️ 人工条目（无 source）不算 —— 它的出处就是"人写的"，没有网页链接是正常的
+  const noSrc = qa.filter(
+    (e) => e.source && (e.claims || []).length > 1 && e.claims.every((c) => !(c.sources || []).length)
+  );
   if (noSrc.length && entryFiles.length) {
-    console.log(`      ${noSrc.length} 条「多要点但要点缺来源」（置信度只能按默认）—— 有出处就补 - 来源:`);
+    console.log(`      ${noSrc.length} 条「有来源但要点没挂来源」（置信度只能按默认）—— 可跑 node scripts/qa-resplit.mjs --apply 补`);
   }
 
   // 带自己标签的脏条目（曾经的 bug：把自己的夸奖沉淀成答案）

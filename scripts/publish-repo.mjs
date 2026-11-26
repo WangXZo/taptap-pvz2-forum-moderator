@@ -514,6 +514,11 @@ async function findUnlisted(files) {
   const listed = new Set(files);
   const SPECIAL = new Set(['scripts/config.json', QA_FILE, EVIDENCE_FILE]); // 单独脱敏写入
   const SKIP_DIRS = new Set(['data', 'reports', 'qa', 'logs', 'node_modules', '.git']);
+  // 本机运行时产物 / 不该分发的东西（存在但不必进仓库）
+  const SKIP_FILES = new Set([
+    'scripts/node-path.txt', // 写入本机 node 路径，换机器就失效
+    'scripts/config.local.json', // 个人配置覆盖，本来就该私藏
+  ]);
   const missing = [];
   const walk = async (dir) => {
     let entries = [];
@@ -531,7 +536,7 @@ async function findUnlisted(files) {
       }
       const rel = relative(SKILL, p).split(sep).join('/');
       if (!/\.(mjs|md|json|ps1|cmd|txt)$/i.test(rel)) continue;
-      if (listed.has(rel) || SPECIAL.has(rel)) continue;
+      if (listed.has(rel) || SPECIAL.has(rel) || SKIP_FILES.has(rel)) continue;
       missing.push(rel);
     }
   };

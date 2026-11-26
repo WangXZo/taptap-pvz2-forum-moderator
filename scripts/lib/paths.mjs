@@ -88,6 +88,9 @@ export function qaEntriesDirOf(qaFile) {
   return resolve(dirname(f), 'entries');
 }
 
+/** 同义别名（summarize/qa-admin 等处用） */
+export const pathOfEntriesDir = qaEntriesDirOf;
+
 export const argvOf = (argv) => {
   const has = (f) => argv.includes(f);
   const argOf = (n, d) => {
