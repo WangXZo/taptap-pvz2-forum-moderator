@@ -18,7 +18,7 @@
 //   node scripts/publish-repo.mjs --repo <dir> --check              # 只体检，不写
 //   node scripts/publish-repo.mjs --repo <dir> --files a.mjs,b.mjs   # 只同步指定文件
 
-import { readFile, writeFile, copyFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, mkdir, readdir, rm, stat } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -55,7 +55,6 @@ const DEFAULT_FILES = [
   '.gitattributes',
   'package.json',
   'assets/qa-library.example.md',
-  'qa/答疑库.md',
   'scripts/run-watch.cmd',
   'scripts/schedule.ps1',
   'scripts/api-write.mjs',
@@ -612,6 +611,84 @@ async function scanPersonal(dir, secrets) {
   return hits;
 }
 
+/**
+ * 剔除仓库里的旧内容（2026-11-26）
+ *
+ * 为什么要有：本脚本原来只「写」不「删」，于是 live 里删掉 / 改名 / 归档的东西
+ *   会**永远**留在仓库里。2026-11-26 审计实测积了 12 个死文件：
+ *     · 10 条已归档的答疑条目（live 已移到 qa/归档/，归档不进库）
+ *     · qa/资料/doc-garden-camp.md（已被 doc-garden + doc-summer-camp 取代）
+ *     · skills/baidu-websearch/（整个技能 live 里已不存在）
+ *
+ * 范围刻意收窄 —— 只清「发布时本来就是整体镜像」的地方：
+ *   ① RETIRED_FILES：明确退役、仓库里必须删的文件
+ *   ② MIRRORED_DIRS：仓库有、live 没有 → 删（live 是真源）
+ *   ③ skills/<name>/：仓库有、live 没有 → 删整个目录
+ *   白名单文件（DEFAULT_FILES）**不 prune** —— 从白名单去掉一个文件，
+ *   不代表仓库里该删它（可能只是这台机器上暂时不想更新）。
+ */
+const MIRRORED_DIRS = ['qa/entries', 'qa/资料', 'qa/素材'];
+/** 已退役：真源不再有这个文件，仓库里留着就是旧内容 */
+const RETIRED_FILES = ['qa/答疑库.md'];
+
+async function listDirSafe(dir) {
+  try {
+    return await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+}
+
+async function pruneStale() {
+  const removed = [];
+
+  // ① 退役文件
+  for (const f of RETIRED_FILES) {
+    const p = join(REPO, f);
+    try {
+      await stat(p);
+      await rm(p, { force: true });
+      removed.push(f);
+    } catch {
+      /* 本来就不在 */
+    }
+  }
+
+  // ② 镜像目录：仓库有、live 没有 → 删
+  for (const d of MIRRORED_DIRS) {
+    const keep = new Set(
+      (await listDirSafe(join(SKILL, d)))
+        .filter((e) => e.isFile())
+        .map((e) => e.name)
+    );
+    for (const e of await listDirSafe(join(REPO, d))) {
+      if (!e.isFile() || keep.has(e.name)) continue;
+      await rm(join(REPO, d, e.name), { force: true });
+      removed.push(`${d}/${e.name}`);
+    }
+  }
+
+  // ③ 随包分发的技能目录：仓库有、live 没有 → 删整个目录
+  const liveSkills = new Set(
+    (await listDirSafe(join(SKILL, 'skills')))
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+  );
+  for (const e of await listDirSafe(join(REPO, 'skills'))) {
+    if (!e.isDirectory() || liveSkills.has(e.name)) continue;
+    await rm(join(REPO, 'skills', e.name), { recursive: true, force: true });
+    removed.push(`skills/${e.name}/`);
+  }
+
+  if (removed.length) {
+    console.log(`\n  剔除仓库旧内容 ${removed.length} 项：`);
+    for (const r of removed) console.log(`   - ${r}`);
+  } else {
+    console.log('\n  仓库无旧内容需要剔除');
+  }
+  return removed;
+}
+
 async function main() {
   const files = ONLY_FILES || DEFAULT_FILES;
 
@@ -637,20 +714,11 @@ async function main() {
     console.log('  写入 scripts/config.json（myUserId / 私有马甲 已脱敏；助手别称保留）');
   }
 
-  // 答疑库：脱敏后写入（名字要在扫描前抽出来）
+  // 答疑库：只发「一条一文件」（qa/entries/），单文件形态**不再发布**（2026-11-26 大哥审计后定）
+  //   为什么：`qa/答疑库.md` 是兼容回退，内容已落后真源 —— 实测单文件 197 条、entries 189 条，
+  //   多出的 10 条是已归档的垃圾条目。继续发出去 = 仓库里两份不一致的库，协作者不知道信哪个。
+  //   它留在 live 本地当回退即可，靠 RETIRED_FILES 把它从仓库里剔掉。
   let qaNames = [];
-  if (!CHECK_ONLY) {
-    try {
-      const raw = await readFile(join(SKILL, QA_FILE), 'utf8');
-      const masked = maskQa(raw);
-      qaNames = masked.names;
-      await mkdir(join(REPO, 'qa'), { recursive: true });
-      await writeFile(join(REPO, QA_FILE), masked.text, 'utf8');
-      console.log(`  写入 ${QA_FILE}（摘自昵称遮罩 ${qaNames.length} 个）`);
-    } catch (e) {
-      console.log(`  跳过 ${QA_FILE}（读不到：${e.code || e.message}）`);
-    }
-  }
 
   // 条目目录（一条一文件形态）：逐个脱敏后写入
   // 为什么要单独处理：条目文件不进 DEFAULT_FILES 白名单（193 个文件，白名单会撑爆），
@@ -744,6 +812,9 @@ async function main() {
       console.log(`  跳过 ${EVIDENCE_FILE}（读不到：${e.code || e.message}）`);
     }
   }
+
+  // 剔除仓库旧内容（2026-11-26）：只清镜像目录 + 退役文件，白名单文件不动
+  if (!CHECK_ONLY && !ONLY_FILES) await pruneStale();
 
   // 体检①：发布清单覆盖度（防手写白名单漏文件 —— 2026-11-05 真踩到过）
   const unlisted = await findUnlisted(DEFAULT_FILES);

@@ -1,6 +1,6 @@
 ---
 name: taptap-pvz2-forum-moderator
-description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。按发布时间抓取 PVZ2 论坛最新帖子，用 skill 内置的答疑库（qa/答疑库.md）做关键词+相似度匹配，命中则通过 opencli 驱动已登录的 Chrome 打开帖子、点选 TapTap 表情并回复（带签名「版主助手-小鲸鱼」），同时把全部问题按「未回复待回复 / 已回复 / 无需回复 / 需人工处理」四类标记输出成 Markdown 与 CSV 报表，支持持续守护模式（2分钟重排队列）。适用于 TapTap 论坛版主日常答疑、补充答疑库后自动回复、问题清单统计与是否回复标注。
+description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。按发布时间抓取 PVZ2 论坛最新帖子，用 skill 内置的答疑库（qa/entries/，一条一文件）做关键词+相似度匹配，再叠加资料库（qa/资料/）里的机制/规则事实当参考，命中则通过 opencli 驱动已登录的 Chrome 打开帖子、点选 TapTap 表情并回复（带签名「版主助手-小鲸鱼」），同时把全部问题按「未回复待回复 / 已回复 / 无需回复 / 需人工处理」四类标记输出成 Markdown 与 CSV 报表，支持持续守护模式（2分钟重排队列）。适用于 TapTap 论坛版主日常答疑、补充答疑库后自动回复、问题清单统计与是否回复标注。
 ---
 # 植物大战僵尸2 · TapTap 论坛版主答疑自动化
 > 定位：把「每天收问题 → 命中答疑库就回 → 出全量清单 → 补答疑库后自动回」做成脚本。
@@ -9,7 +9,8 @@ description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。
 ## 📚 文档导航（本文件只留纲要，细节在 references/）
 | 想了解 | 看哪里 |
 |---|---|
-| **完整手册**（原 SKILL.md 全文，1830 行） | [references/skill-full.md](references/skill-full.md) |
+| **完整手册**（原 SKILL.md 全文，1830 行）**⚠️ 归档于 2026-11-19，部分已过时** | [references/skill-full.md](references/skill-full.md) |
+| **资料库**（机制/流程/活动规则，当事实参考） | [qa/资料/README.md](qa/资料/README.md) |
 | 检索链路（混合检索/重排/组装/验证） | [references/retrieval.md](references/retrieval.md) · [references/context-verify.md](references/context-verify.md) |
 | 置信体系与负反馈 | [references/confidence.md](references/confidence.md) |
 | 实体路由 + 评测 harness | [references/entity-eval.md](references/entity-eval.md) |
@@ -30,8 +31,12 @@ taptap-pvz2-forum-moderator/
 ├── skills/                   随包分发的独立 skill
 │   └── image-recognition-ai-ocr/   识图（任务驱动；安装/依赖见它的 docs/）
 ├── assets/                   模板 + game-features/（识图用的特征模板库）+ eval-set.json
-├── qa/entries/               ★ 答疑库（一条一文件，要点级置信度）
-├── qa/答疑库.md              旧单文件形态（兼容期：entries/ 为空时回退读它）
+├── qa/entries/               ★ 答疑库真源（一条一文件，要点级置信度）
+├── qa/资料/                  资料库（机制/流程/规则，一版块一文件，组答参考）
+├── qa/素材/                  素材库存档（有信息量但还作不了答案的原始内容，不参与组答）
+├── qa/归档/                  归档（零引用/垃圾条目，只移动不删除，不进仓库）
+├── qa/答疑库.md              旧单文件形态（**仅本机回退**，仓库不发布）
+├── docs/                     设计稿 / 安装文档 / 证据（evidence）
 ├── data/                     运行时状态（state.json / SQLite / 缓存）
 └── reports/                  运行时报表（含 trace / daily / eval）
 ```
@@ -48,7 +53,7 @@ node scripts/whoami.mjs
 #    也可以一条命令提交（自动质量闸 + 拆要点 + 合并）：
 #    node scripts/qa-admin.mjs submit --question "…" --answer-file 答案.md
 
-# 4) 全部自检（改规则前后都要跑，81 套）
+# 4) 全部自检（改规则前后都要跑，82 套）
 npm test
 node scripts/qa-lint.mjs            # 条目格式校验
 
@@ -99,7 +104,7 @@ node scripts/review-watch.mjs --status            # 看游标与队列
 | # | 规则 | 怎么落地 |
 |---|---|---|
 | 1 | **多次回复不要重复或雷同** | LLM 每次按上下文重新生成（`temperature 0.85`），天然不重样；历史和已发文本仍记账做参照 |
-| 2 | **只能答答疑库里的内容，不能泄露别的** | 事实来源仍是 `qa/答疑库.md`（命中后整理成资料）；发送前过**泄露自检**（命中「答疑库/state.json/scripts/机器人/WAF/api key」等就拒发转人工） |
+| 2 | **只能答答疑库里的内容，不能泄露别的** | 事实来源是 `qa/entries/`（命中后整理成资料）+ `qa/资料/`（机制/规则参考）；发送前过**泄露自检**（命中「答疑库/state.json/scripts/机器人/WAF/api key」等就拒发转人工） |
 | 3 | **可以自己搜、自己组织话** | 社区已答 → 沉淀进库 → LLM 用自己的话讲（不照抄）；库里没有就按第 4 条处理 |
 | 4 | **不知道 / 不能答的可以婉拒或不理会** | 提示词明确要求「拿不准就说拿不准，不许编造游戏数据」；默认**不理会**（转「🖐 需人工」） |
 
@@ -156,3 +161,5 @@ node scripts/test-variants.mjs       # 泄露自检（模板断言已删）
 - **附：2026-11-12 联网补答（答疑库没命中 → 搜一次）** → [完整手册](references/skill-full.md) 内搜索该标题
 ---
 *精简版生成于 2026-11-19（O8）；原文 1835 行完整保留在 references/skill-full.md。*
+*2026-11-26 口径对齐：答疑库真源改为 `qa/entries/`（单文件不再发布）、新增资料库 `qa/资料/`　
+上述章节索引指向的 skill-full.md 是 11-19 归档稿，**答疑库形态/协作方式以本文件与 CONTRIBUTING 为准**。*

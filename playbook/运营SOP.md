@@ -48,6 +48,13 @@
 ④ 本地真源           手上正在改的
         ↓ N 路合并 → 写回 config.collab.merge.writeBack（github-main / local-runtime / local-src）
 ```
+
+> ⚠️ **前置条件（2026-11-26 审计发现）**：上面 ①② 两路都靠 `collab.remote.{owner,repo}`。
+> 这两项**默认是空的**，空的就只剩 ③④ 一路 —— 实测 `qa-merge --status` 只显示 `local-runtime 189 条`，
+> `data/merge-lock.json` 从未生成过，等于**每日合并一直没真正跑**。
+> 每个使用者在 `config.collab.remote` 填**自己的** owner/repo（不写死，各人渠道不同），
+> 再把 `node scripts/qa-merge.mjs --schedule` 挂到系统计划任务，四路合并才算接通。
+
 **5. 冲突怎么办**
 - 不自动裁决的（人工条目正文不同、要点互相矛盾）→ 写进 `qa/归档/答疑库-合并冲突-YYYY-MM-DD.md`，**等人复核**
 - **涉及高置信度要点的冲突一律等人**，机器不许裁；合并本身**不覆盖高置信度要点**，新答案只能作为补充要点并列
