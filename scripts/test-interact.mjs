@@ -12,6 +12,7 @@ import {
   replyTargetFor,
   bumpCount,
   playerKey,
+  latestReplyState,
 } from './lib/interact.mjs';
 
 let ok = 0;
@@ -128,6 +129,56 @@ c = bumpCount(c, 'u_x');
 t('计数累加到 2', c.u_x.n === 2);
 t('不影响别的键', bumpCount(c, 'u_y').u_y.n === 1);
 
+
+// ---------- 帖级门控：最新回复是不是我们自己人（2026-11-26 大哥规则） ----------
+const CFG = { reply: { signature: '版主助手-小鲸鱼' }, myUserId: '10000001', teamUserIds: ['10000002'] };
+const TEAM = ['10000001', '10000002'];
+
+// 构造评论：我们签名结尾 = 自己人
+const ours = (id, t = 100) => ({ id_str: String(id), created_time: t, author: { id: 10000001, name: '小鲸鱼' }, contents: { json: [{ text: `就这样办吧 「版主助手-小鲸鱼」` }] } });
+const mate = (id, t = 100) => ({ id_str: String(id), created_time: t, author: { id: 10000002, name: '队友' }, contents: { json: [{ text: `这样做就行 「版主助手-小鲸鱼」` }] } });
+const player = (id, text = '那小鲸鱼这个怎么弄', t = 100) => ({ id_str: String(id), created_time: t, author: { id: 9999, name: '玩家甲' }, contents: { json: [{ text }] } });
+
+// A. 最新回复是我们 → 不回
+let st = latestReplyState([{ c: player(1, '@版主助手-小鲸鱼 求助', 100), parentId: null }, { c: ours(2, 200), parentId: null }], { config: CFG, teamIds: TEAM });
+t('最新回复是自己 → ours=true', st.ours === true);
+t('最新回复是自己 → 带说明', st.why.includes('我们'));
+
+// B. 最新回复是队友（靠签名认出，id 在 teamUserIds 里）→ 不回
+st = latestReplyState([{ c: player(1, '求助', 100), parentId: null }, { c: mate(3, 300), parentId: null }], { config: CFG, teamIds: TEAM });
+t('最新回复是队友 → ours=true', st.ours === true);
+
+// C. 队友的 id 不在 teamUserIds，但签名在结尾 → 靠签名也能认出来（多人协作的关键）
+st = latestReplyState([{ c: player(1, '求助', 100), parentId: null }, { c: { id_str: '4', created_time: 300, author: { id: 88888, name: '陌生队友' }, contents: { json: [{ text: '答：这样做 「版主助手-小鲸鱼」' }] } }, parentId: null }], { config: CFG, teamIds: TEAM });
+t('未知 id 但带签名 → ours=true', st.ours === true);
+
+// D. 最新回复是玩家 → 可以回
+st = latestReplyState([{ c: ours(2, 100), parentId: null }, { c: player(5, '那我再问一句', 400), parentId: null }], { config: CFG, teamIds: TEAM });
+t('最新回复是玩家 → ours=false', st.ours === false);
+t('最新回复是玩家 → 带作者名', st.author === '玩家甲');
+
+// E. 玩家在喊我们（签名在句中）≠ 我们回过 → 仍可回
+st = latestReplyState([{ c: player(6, '小鲸鱼在吗，这个关怎么过', 500), parentId: null }], { config: CFG, teamIds: TEAM });
+t('玩家喊我们不算自己人 → ours=false', st.ours === false);
+
+// F. 子回复也算（最新的是子回复）
+st = latestReplyState([{ c: player(7, '求助', 100), parentId: null }, { c: ours(8, 600), parentId: '7' }], { config: CFG, teamIds: TEAM });
+t('最新是子回复且是自己 → ours=true', st.ours === true);
+
+// G. 空列表
+st = latestReplyState([], { config: CFG, teamIds: TEAM });
+t('无评论 → why=no-comments', st.why === 'no-comments' && st.ours === false);
+
+// H. 按时间取最新（不按数组顺序）
+st = latestReplyState([{ c: ours(9, 900), parentId: null }, { c: player(10, '后来的', 1000), parentId: null }], { config: CFG, teamIds: TEAM });
+t('按 created_time 取最新', st.ours === false && st.time === 1000);
+// I. 边界：队友只回「同上 + 签名」→ 签名判定把「同上」当纯客套，认不出；靠 id 兜底
+const thanksMate = { id_str: '11', created_time: 700, author: { id: 10000002, name: '队友' }, contents: { json: [{ text: '同上 「版主助手-小鲸鱼」' }] } };
+st = latestReplyState([{ c: player(12, '求助', 100), parentId: null }, { c: thanksMate, parentId: null }], { config: CFG, teamIds: TEAM });
+t('纯客套+签名的队友回复，靠 id 认得出', st.ours === true);
+// 若 id 也没配（陌生队友）→ 认不出（已知边界，缓解办法：把队友好 id 加进 teamUserIds）
+st = latestReplyState([{ c: player(12, '求助', 100), parentId: null }, { c: { ...thanksMate, author: { id: 77777, name: '陌生队友' } }, parentId: null }], { config: CFG, teamIds: TEAM });
+t('纯客套+签名且 id 未知 → 认不出（已知边界）', st.ours === false);
 console.log(`通过 ${ok} 条`);
 if (fail) {
   console.log(`失败 ${fail} 条`);

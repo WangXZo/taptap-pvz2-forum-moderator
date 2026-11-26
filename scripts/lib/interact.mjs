@@ -14,7 +14,7 @@
 //   · 发送 → lib/interact-send.mjs（楼中楼执行器 + 记账）
 // 三个模块各管一段，谁都不掺和别人的活。
 
-import { commentText, isSummonText } from './signature.mjs';
+import { commentText, isSummonText, isOurComment } from './signature.mjs';
 
 // ---------- 1. 纯客套（「哈哈谢谢」这种不用回） ----------
 
@@ -135,6 +135,49 @@ export function pickInteractions(flat, { config = {}, ourCommentIds = new Set(),
 
   out.sort((a, b) => b.time - a.time);
   return out;
+}
+
+// ---------- 3.5 帖级门控：最新回复是不是我们自己人 ----------
+
+/**
+ * 帖子的**最新一条回复**是不是我们/队友发的（2026-11-26 大哥规则）
+ *
+ * 原话：
+ *   「当回复过的内容，有自己与队友（识别签名），不继续回复。即有其他人有新回复时
+ *    （即，帖子的最新回复非自己与队友。），才可继续回复（累计历史数，计算回复概率）。
+ *     当没有其他人有新回复时（即，帖子的最新回复是自己与队友。），不继续回复。」
+ *
+ * 为什么要在逐条判定**之前**加这一层：
+ *   现有 pickInteractions 是逐条看「这条评论是不是在回我们」——
+ *   玩家 A 回了我们、我们回了 A，最新回复就变成我们了。
+ *   这时逐条判定仍可能挑出「更早那条 A 的回复」去接话 → 变成自说自话。
+ *   帖级门控先看一眼「最后说话的是谁」，是我们就不开口，等别人接上再说。
+ *
+ * @param {Array<{c:object,parentId:string|null}>} flat 摊平后的评论（含子回复）
+ * @param {object} o
+ * @param {object} o.config
+ * @param {Array}  [o.teamIds] 团队 user id
+ * @param {Function} [o.isOurs] 自定义判定（默认用 isOurComment：id + 签名）
+ * @returns {{ours:boolean, author:string, text:string, time:number, why:string}}
+ */
+export function latestReplyState(flat, { config = {}, teamIds = [], isOurs = null } = {}) {
+  let latest = null;
+  for (const x of flat || []) {
+    const t = Number(x?.c?.created_time || 0);
+    if (!latest || t > latest.t) latest = { c: x.c, t, parentId: x.parentId };
+  }
+  if (!latest) return { ours: false, author: '', text: '', time: 0, why: 'no-comments' };
+
+  const c = latest.c;
+  const text = commentText(c);
+  const ours = isOurs ? isOurs(c) : isOurComment(c, { config, teamIds });
+  return {
+    ours: Boolean(ours),
+    author: c?.author?.name || '',
+    text,
+    time: latest.t,
+    why: ours ? '最新回复是我们/队友' : '最新回复是其他人',
+  };
 }
 
 // ---------- 4. 降概率（同帖 × 同玩家分别累计） ----------

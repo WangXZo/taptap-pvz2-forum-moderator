@@ -9,7 +9,7 @@
 //   · 护栏：assertKind + assertNoLeak（与旧块一致）
 //   · 事件：interact_reply（按 commentId 去重）
 
-import { decideInteraction, replyTargetFor, playerKey, pickInteractions } from '../lib/interact.mjs';
+import { decideInteraction, replyTargetFor, playerKey, pickInteractions, latestReplyState } from '../lib/interact.mjs';
 import { detectCallOut, auditBrief } from '../lib/complaint.mjs';
 import { assertKind } from '../lib/summon.mjs';
 import { assertNoLeak } from '../lib/variants.mjs';
@@ -46,6 +46,19 @@ function pickCandidates(r, { config = {}, db = null, hasDoneEvent = () => false,
     flat.push({ c, parentId: null });
     for (const k of c.child_posts || []) flat.push({ c: k, parentId: String(c.id_str || '') });
   }
+
+  // ②-0 帖级门控（2026-11-26 大哥规则）：最新回复是我们/队友 → 整帖不续聊
+  //
+  //   为什么要有这层：逐条判定只能看到「这条是不是在回我们」，
+  //   看不到「最后说话的是谁」。我们回完 A 之后，最新回复就是我们了，
+  //   这时再去接更早那条 A 的话，就是自说自话。
+  //   只有等别人接上（最新回复变成别人的）才该继续。
+  const latest = latestReplyState(flat, { config, teamIds: teamIdsOf(config) });
+  if (latest.ours) {
+    log(`  [互动] 跳过：${latest.why}（${latest.author || '未知'}：${String(latest.text || '').slice(0, 24)}）→ 等人接话`);
+    return [];
+  }
+  if (latest.why === 'no-comments') return [];
 
   // 我们发过的评论 id：数据库优先（跨轮次也在），列表反查兜底
   const ourIds = new Set([
