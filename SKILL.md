@@ -16,17 +16,22 @@ description: 植物大战僵尸2 TapTap 论坛版主/答疑组自动化助手。
 | 图片识别流水线 | [references/image-recognition.md](references/image-recognition.md) |
 | 安装/依赖/模型 | [references/install-guide.md](references/install-guide.md) |
 | 运维/排障/硬约束 | [references/ops.md](references/ops.md) |
+| **经验沉淀（踩过的坑怎么处理）** | [playbook/踩坑.md](playbook/踩坑.md) · [答疑库治理](playbook/答疑库治理.md) · [识图调优](playbook/识图调优.md) · [运营SOP](playbook/运营SOP.md) |
+| **怎么写一篇 playbook** | [playbook/写playbook的规范.md](playbook/写playbook的规范.md) |
+| 多人协作（分支策略/要点规范/合并节奏） | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 版本沿革与踩坑 | [CHANGELOG.md](CHANGELOG.md) |
 ## 目录结构
 ```
 taptap-pvz2-forum-moderator/
 ├── SKILL.md                  本文件（纲要）
 ├── references/               细节文档（skill-full.md = 原全文）
+├── playbook/                 经验沉淀（按主题，不按人）：踩坑/答疑库治理/识图调优/运营SOP
 ├── scripts/                  代码（零第三方依赖；rerank_server.py 需 pip install onnxruntime tokenizers）
 ├── skills/                   随包分发的独立 skill
 │   └── image-recognition-ai-ocr/   识图（任务驱动；安装/依赖见它的 docs/）
 ├── assets/                   模板 + game-features/（识图用的特征模板库）+ eval-set.json
-├── qa/答疑库.md              ★ 答疑数据库（直接编辑）
+├── qa/entries/               ★ 答疑库（一条一文件，要点级置信度）
+├── qa/答疑库.md              旧单文件形态（兼容期：entries/ 为空时回退读它）
 ├── data/                     运行时状态（state.json / SQLite / 缓存）
 └── reports/                  运行时报表（含 trace / daily / eval）
 ```

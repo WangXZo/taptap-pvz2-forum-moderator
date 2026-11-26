@@ -90,6 +90,7 @@ const DEFAULT_FILES = [
   'scripts/test-publish-mask.mjs',
   'scripts/test-qa-collab.mjs',
   'playbook/踩坑.md',
+  'playbook/写playbook的规范.md',
   'playbook/答疑库治理.md',
   'playbook/识图调优.md',
   'playbook/运营SOP.md',
